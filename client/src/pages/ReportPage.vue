@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {computed, onMounted, onUnmounted, ref} from 'vue'
+import {RouterLink} from 'vue-router'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faFileLines} from '@fortawesome/free-solid-svg-icons/faFileLines'
 import {faTrashCan} from '@fortawesome/free-solid-svg-icons/faTrashCan'
@@ -24,7 +25,6 @@ const loading = ref(true)
 const loadError = ref('')
 const pollError = ref('')
 const actionError = ref('')
-const notice = ref('')
 const advancing = ref(false)
 const deleting = ref<number[]>([])
 const selected = ref<ReportDocument | null>(null)
@@ -52,6 +52,11 @@ const finalPresent = computed(() => report.value?.documents.some(item => item.ro
 const canAdvance = computed(() => editable.value && !pollError.value && !uploads.value.length && !deleting.value.length
     && report.value?.documents.every(document => document.ocr_status === 'completed')
     && report.value?.available_actions.includes('run_entity_extraction'))
+const advanceTooltip = computed(() => [
+  ...(report.value?.blockers ?? []),
+  ...(uploads.value.length ? ['Дождитесь загрузки файлов и удалите неудачные загрузки.'] : []),
+  ...(deleting.value.length ? ['Дождитесь удаления файлов.'] : []),
+].join('\n'))
 const statusLabels: Record<ReportDocument['ocr_status'], string> = {
   queued: 'Загружен · в очереди',
   running: 'Обрабатывается',
@@ -90,7 +95,7 @@ async function poll() {
 
 async function addFiles(files: File[], role: DocumentRole) {
   if (!editable.value) return
-  actionError.value = notice.value = ''
+  actionError.value = ''
   if (role === 'final_report' && (files.length !== 1 || finalPresent.value)) {
     actionError.value = 'Выберите один итоговый отчёт. Чтобы заменить его, сначала удалите выбранный файл.'
     return
@@ -125,10 +130,9 @@ async function addFiles(files: File[], role: DocumentRole) {
 async function remove(document: ReportDocument) {
   if (!editable.value || deleting.value.includes(document.id)) return
   deleting.value.push(document.id)
-  actionError.value = notice.value = ''
+  actionError.value = ''
   try {
     await deleteDocument(props.reportId, document.id)
-    notice.value = `Файл «${document.name}» удалён. Можно загрузить его повторно.`
     await refresh()
   } catch (cause) {
     actionError.value = errorText(cause)
@@ -140,7 +144,7 @@ async function remove(document: ReportDocument) {
 async function advance() {
   if (!canAdvance.value) return
   advancing.value = true
-  actionError.value = notice.value = ''
+  actionError.value = ''
   try {
     ++fetchId
     const result = await runEntityExtraction(props.reportId)
@@ -163,7 +167,8 @@ onUnmounted(() => {
 
 <template>
   <main class="mx-auto max-w-6xl p-6">
-    <a href="#/" class="mb-5 inline-block text-slate-500 hover:text-blue-700">← Все отчёты</a>
+    <RouterLink :to="{name: 'reports'}" class="mb-5 inline-block text-slate-500 hover:text-blue-700">← Все отчёты
+    </RouterLink>
     <p v-if="loading" class="rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500" role="status">
       Загружаем отчёт…</p>
     <div v-else-if="!report" class="space-y-4 rounded-lg border border-slate-200 bg-white p-8 text-center">
@@ -200,7 +205,6 @@ onUnmounted(() => {
 
       <p v-if="pollError" class="mb-4 rounded bg-amber-50 p-3 text-amber-900" role="status">{{ pollError }}</p>
       <p v-if="actionError" class="mb-4 rounded bg-red-50 p-3 text-red-700" role="alert">{{ actionError }}</p>
-      <p v-if="notice" class="mb-4 rounded bg-green-50 p-3 text-green-800" role="status">{{ notice }}</p>
 
       <section v-if="report.stage === 'documents'" class="mb-5 rounded-lg border border-slate-200 bg-white p-5"
                aria-labelledby="upload-heading">
@@ -212,8 +216,7 @@ onUnmounted(() => {
           <UploadZone title="Подтверждающие документы" description="Первичные и расчётные документы" multiple
                       :disabled="advancing" @select="addFiles($event, 'supporting')"/>
         </div>
-        <p class="mt-3 text-xs text-slate-500">PDF, DOCX, XLSX, PNG, JPEG · до 20 МБ на файл. Обработка начинается
-          автоматически.</p>
+        <p class="mt-3 text-xs text-slate-500">PDF, DOCX, XLSX, PNG, JPEG · до 20 МБ на файл.</p>
       </section>
 
       <section class="rounded-lg border border-slate-200 bg-white" aria-labelledby="documents-heading">
@@ -224,7 +227,9 @@ onUnmounted(() => {
             <span class="text-xs text-slate-500" aria-live="polite">Обработано {{
                 report.progress.completed
               }} из {{ report.progress.total }}</span>
-            <button class="inline-flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-slate-600 hover:bg-slate-100 disabled:opacity-50" @click="refresh">
+            <button
+                class="inline-flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                @click="refresh">
               <FontAwesomeIcon :icon="faRotateRight" class="size-3 text-slate-400" aria-hidden="true"/>
               Обновить
             </button>
@@ -280,22 +285,13 @@ onUnmounted(() => {
         </ul>
       </section>
 
-      <div v-if="report.stage === 'documents'" class="mt-6 flex flex-wrap items-start justify-between gap-4">
-        <div class="text-sm text-slate-500" aria-live="polite">
-          <p v-if="!report.blockers.length && !uploads.length && !deleting.length" class="text-green-700">Все документы
-            обработаны. Можно перейти к разметке сущностей.</p>
-          <ul v-else class="space-y-1">
-            <li v-for="blocker in report.blockers" :key="blocker">{{ blocker }}</li>
-            <li v-if="uploads.length">Дождитесь загрузки файлов и удалите неудачные загрузки.</li>
-            <li v-if="deleting.length">Дождитесь удаления файлов.</li>
-          </ul>
-        </div>
-        <div class="sm:text-right">
+      <div v-if="report.stage === 'documents'" class="mt-6 flex flex-wrap items-start justify-end gap-4">
+        <div class="sm:text-right" :class="{'cursor-not-allowed': !canAdvance}"
+             :title="!canAdvance ? advanceTooltip : undefined">
           <button
-              class="cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              class="cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-50"
               :disabled="!canAdvance" @click="advance">{{ advancing ? 'Переходим…' : 'К разметке сущностей →' }}
           </button>
-          <p class="mt-2 text-xs text-slate-500">Следующий этап пока в разработке.</p>
         </div>
       </div>
     </template>

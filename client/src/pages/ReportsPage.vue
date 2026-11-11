@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import {onMounted, reactive, ref} from 'vue'
+import {RouterLink, useRouter} from 'vue-router'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faPlus} from '@fortawesome/free-solid-svg-icons/faPlus'
 import {faRotateRight} from '@fortawesome/free-solid-svg-icons/faRotateRight'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import {createReport, getReports, type Report} from '../api'
 
+const router = useRouter()
 const reports = ref<Report[]>([])
 const loading = ref(true)
 const loadError = ref('')
@@ -89,7 +91,7 @@ async function submitReport() {
     loadError.value = ''
     notice.value = `Отчёт «${report.name}» создан.`
     dialog.value?.close()
-    window.location.hash = `/reports/${report.id}`
+    await router.push({name: 'report', params: {reportId: report.id}})
   } catch (error) {
     createError.value = error instanceof TypeError || (error instanceof Error && error.name === 'TimeoutError')
         ? 'Не удалось получить ответ сервера. Обновите список перед повторной попыткой: отчёт мог быть создан.'
@@ -166,8 +168,9 @@ onMounted(loadReports)
           <tbody class="divide-y divide-slate-200">
           <tr v-for="report in reports" :key="report.id">
             <td class="p-4">
-              <a :href="`#/reports/${report.id}`"
-                 class="block max-w-sm font-medium break-all text-blue-700 hover:underline">{{ report.name }}</a>
+              <RouterLink :to="{name: 'report', params: {reportId: report.id}}"
+                          class="block max-w-sm font-medium break-all text-blue-700 hover:underline">{{ report.name }}
+              </RouterLink>
               <p v-if="report.target_row" class="mt-1 text-xs text-slate-500">{{ report.target_row }}</p>
             </td>
             <td class="p-4 whitespace-nowrap">

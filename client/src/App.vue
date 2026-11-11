@@ -1,31 +1,17 @@
 <script setup lang="ts">
-import {onMounted, onUnmounted, ref} from 'vue'
-import ReportPage from './pages/ReportPage.vue'
-import ReportsPage from './pages/ReportsPage.vue'
-
-const reportId = ref<number | null>(null)
-
-function readRoute() {
-  const match = window.location.hash.match(/^#\/reports\/(\d+)$/)
-  reportId.value = match ? Number(match[1]) : null
-}
-
-onMounted(() => {
-  readRoute()
-  window.addEventListener('hashchange', readRoute)
-})
-onUnmounted(() => window.removeEventListener('hashchange', readRoute))
+import {RouterLink, RouterView} from 'vue-router'
 </script>
 
 <template>
   <div class="min-h-screen bg-slate-50 font-sans text-sm text-slate-800">
     <header class="border-b border-slate-200 bg-white">
       <div class="mx-auto max-w-6xl p-6">
-        <a class="text-xl font-semibold" href="#/">Cyber Accountant</a>
+        <RouterLink class="text-xl font-semibold" :to="{name: 'reports'}">Cyber Accountant</RouterLink>
       </div>
     </header>
 
-    <ReportPage v-if="reportId !== null" :key="reportId" :report-id="reportId"/>
-    <ReportsPage v-else/>
+    <RouterView v-slot="{Component, route}">
+      <component :is="Component" :key="route.path"/>
+    </RouterView>
   </div>
 </template>

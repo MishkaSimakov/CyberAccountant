@@ -7,6 +7,8 @@ from typing import Literal, Self
 from fastapi import APIRouter, FastAPI
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.exceptions import HTTPException
+from starlette.types import Scope
 
 from .documents import router as document_router
 
@@ -71,9 +73,21 @@ async def create_report(payload: ReportCreate):
 api.include_router(document_router)
 app.include_router(api)
 
+
+class ClientStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Scope):
+        try:
+            return await super().get_response(path, scope)
+        except HTTPException as error:
+            if error.status_code != 404 or path.split("/")[0] in {"api", "assets"} or Path(path).suffix:
+                raise
+            return await super().get_response("index.html", scope)
+
+
 # The project layout is identical on the host and in Docker.
 client_dir = Path(__file__).resolve().parents[2] / "client" / "dist"
 
 # Before the first client build, the API can run alongside Vite independently.
 if client_dir.is_dir():
+    # app.mount("/", ClientStaticFiles(directory=client_dir, html=True), name="client")
     app.mount("/", StaticFiles(directory=client_dir, html=True), name="client")
