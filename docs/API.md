@@ -16,7 +16,7 @@ The frontend uses the same API contract with stubs and the real processing pipel
   Return report details, document statuses, processing progress, blockers, and available actions. This is the main polling endpoint.
 
 - PATCH /reports/{report_id}
-  Update the report name or context before verification starts.
+  Update the report name, main file, or context before verification starts. 
 
 - POST /reports/{report_id}/run-entity-extraction
   Start entity extraction across documents. Requires all documents to have completed OCR with no remaining file errors.

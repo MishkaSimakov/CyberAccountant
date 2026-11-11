@@ -8,6 +8,8 @@ from fastapi import APIRouter, FastAPI
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .documents import router as document_router
+
 app = FastAPI(title="Cyber Accountant API")
 api = APIRouter(prefix="/api/v1")
 
@@ -66,6 +68,7 @@ async def create_report(payload: ReportCreate):
     return report
 
 
+api.include_router(document_router)
 app.include_router(api)
 
 # The project layout is identical on the host and in Docker.
