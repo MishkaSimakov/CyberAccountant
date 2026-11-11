@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import {computed, onMounted, ref} from 'vue'
+import {computed, onMounted, onUnmounted, ref} from 'vue'
+import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
+import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
+import {faFloppyDisk} from '@fortawesome/free-solid-svg-icons/faFloppyDisk'
+import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import {getMarkdown, originalUrl, saveMarkdown, type ReportDocument} from '../api'
+import DocumentViewer from './viewers/DocumentViewer.vue'
 
 const props = defineProps<{ reportId: number; document: ReportDocument; readonly: boolean }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
@@ -12,8 +17,8 @@ const content = ref('')
 const savedContent = ref('')
 const revision = ref(0)
 const dirty = computed(() => content.value !== savedContent.value)
-const canPreview = computed(() => props.document.content_type === 'application/pdf' || props.document.content_type.startsWith('image/'))
 const url = computed(() => originalUrl(props.reportId, props.document.id))
+let restorePageScroll: (() => void) | undefined
 
 function close() {
   if (saving.value) return
@@ -52,61 +57,66 @@ async function save() {
 }
 
 onMounted(() => {
+  const rootOverflow = document.documentElement.style.overflow
+  const bodyOverflow = document.body.style.overflow
+  document.documentElement.style.overflow = 'hidden'
+  document.body.style.overflow = 'hidden'
+  restorePageScroll = () => {
+    document.documentElement.style.overflow = rootOverflow
+    document.body.style.overflow = bodyOverflow
+  }
   dialog.value?.showModal()
   void load()
 })
+
+onUnmounted(() => restorePageScroll?.())
 </script>
 
 <template>
   <dialog ref="dialog"
-          class="m-auto max-h-[95dvh] w-[95vw] max-w-7xl overflow-y-auto rounded-lg bg-white p-5 text-sm text-slate-800 backdrop:bg-slate-900/50"
+          class="m-0 h-dvh max-h-none w-screen max-w-none overflow-hidden overscroll-contain border-0 bg-white p-3 text-sm text-slate-800 open:flex open:flex-col sm:p-5 sm:pb-3 backdrop:bg-slate-900/50"
           aria-labelledby="editor-heading" @cancel.prevent="close">
-    <div class="mb-4 flex items-start justify-between gap-4">
+    <div class="mb-4 flex shrink-0 items-start justify-between gap-4">
       <div class="min-w-0">
-        <h2 id="editor-heading" class="break-all text-lg font-semibold">{{ document.name }}</h2>
+        <h2 id="editor-heading" class="line-clamp-2 break-all text-lg font-semibold">{{ document.name }}</h2>
       </div>
-      <button type="button"
-              class="cursor-pointer rounded border border-slate-300 px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
-              :disabled="saving" @click="close">Закрыть
-      </button>
+      <div class="flex shrink-0 items-center gap-2">
+        <button v-if="!readonly" type="button"
+                class="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded bg-blue-600 px-3 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                :aria-label="saving ? 'Сохраняем…' : 'Сохранить изменения'"
+                :title="saving ? 'Сохраняем…' : 'Сохранить изменения'" :aria-busy="saving"
+                :disabled="!revision || !dirty || !content.trim() || saving" @click="save">
+          <FontAwesomeIcon :icon="saving ? faSpinner : faFloppyDisk" class="size-4"
+                           :class="{'animate-spin': saving}" aria-hidden="true"/>
+          <span>{{ saving ? 'Сохраняем…' : 'Сохранить' }}</span>
+        </button>
+        <button type="button"
+                class="inline-flex size-9 cursor-pointer items-center justify-center rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+                aria-label="Закрыть" title="Закрыть" :disabled="saving" @click="close">
+          <FontAwesomeIcon :icon="faXmark" class="size-4" aria-hidden="true"/>
+        </button>
+      </div>
     </div>
 
-    <div class="grid gap-4 lg:grid-cols-2">
-      <section class="min-w-0 rounded border border-slate-200">
-        <div class="flex items-center justify-between gap-2 border-b border-slate-200 p-3">
-          <h3 class="font-medium">Оригинал</h3>
-          <a :href="url" target="_blank" rel="noopener" class="text-blue-700 hover:underline">Открыть файл ↗</a>
-        </div>
-        <iframe v-if="canPreview && document.content_type === 'application/pdf'" :src="url"
-                title="Оригинал документа PDF" class="h-[55dvh] w-full"/>
-        <div v-else-if="canPreview" class="h-[55dvh] overflow-auto bg-slate-50 p-3">
-          <img :src="url" :alt="`Оригинал: ${document.name}`" class="h-auto w-full"/>
-        </div>
-        <div v-else class="flex h-[55dvh] flex-col items-center justify-center gap-3 p-6 text-center text-slate-500">
-          <p>Для DOCX и XLSX предпросмотр в браузере недоступен.</p>
-          <a :href="url" download class="text-blue-700 hover:underline">Скачать оригинал</a>
-        </div>
-      </section>
-      <section class="min-w-0 rounded border border-slate-200" :aria-busy="loading">
-        <div class="border-b border-slate-200 p-3"><label for="markdown-content" class="font-medium">Markdown</label>
+    <p v-if="error" class="mb-4 max-h-[20dvh] shrink-0 overflow-auto rounded bg-red-50 p-3 text-red-700" role="alert">
+      {{ error }}</p>
+
+    <div class="grid min-h-0 flex-1 grid-rows-2 gap-4 sm:grid-cols-2 sm:grid-rows-1">
+      <DocumentViewer :src="url" :name="document.name" :content-type="document.content_type"/>
+      <section class="flex min-h-0 min-w-0 flex-col overflow-hidden rounded border border-slate-200"
+               :aria-busy="loading">
+        <div class="shrink-0 border-b border-slate-200 p-3"><label for="markdown-content"
+                                                                   class="font-medium">Markdown</label>
         </div>
         <p v-if="loading" class="p-6 text-slate-500" role="status">Загружаем текст…</p>
         <div v-else-if="!revision" class="p-6">
           <button class="cursor-pointer text-blue-700 hover:underline" @click="load">Повторить загрузку текста</button>
         </div>
         <textarea v-else id="markdown-content" v-model="content"
-                  class="block h-[55dvh] w-full resize-none p-4 font-mono text-sm leading-relaxed focus:outline-blue-500"
+                  class="block min-h-0 w-full flex-1 resize-none overflow-auto overscroll-contain p-4 font-mono text-sm leading-relaxed focus:outline-blue-500"
                   :readonly="readonly || saving" maxlength="1000000" spellcheck="false"/>
       </section>
     </div>
 
-    <p v-if="error" class="mt-4 rounded bg-red-50 p-3 text-red-700" role="alert">{{ error }}</p>
-    <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
-      <button v-if="!readonly"
-              class="cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="!revision || !dirty || !content.trim() || saving" @click="save">
-        {{ saving ? 'Сохраняем…' : 'Сохранить изменения' }}
-      </button>
-    </div>
   </dialog>
 </template>
