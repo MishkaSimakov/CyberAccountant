@@ -1,5 +1,8 @@
 # Cyber Accountant
 
+- [TASK.md](docs/TASK.md) - описание задачи.
+- [DESIGN.md](docs/DESIGN.md) - описание дизайна системы.
+
 ## Run with Docker
 
 Requires Docker with its daemon running. Build and start from the project root:

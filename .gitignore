@@ -1,5 +1,5 @@
-.DS_Store
 .idea/
+.DS_Store
 .vscode/
 node_modules/
 dist/
@@ -10,4 +10,3 @@ __pycache__/
 .env
 .env.*
 !.env.example
-
