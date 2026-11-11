@@ -1,0 +1,37 @@
+:root {
+    font-family: system-ui, sans-serif;
+    color: #1e293b;
+    background: #f8fafc;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+}
+
+body {
+    margin: 0;
+}
+
+main {
+    max-width: 40rem;
+    margin: 15vh auto;
+    padding: 2rem;
+}
+
+h1 {
+    letter-spacing: -0.04em;
+}
+
+button {
+    padding: 0.65rem 1rem;
+    border: 0;
+    border-radius: 0.4rem;
+    background: #1d4ed8;
+    color: white;
+    font: inherit;
+    cursor: pointer;
+}
+
+button:disabled {
+    opacity: 0.6;
+    cursor: wait;
+}

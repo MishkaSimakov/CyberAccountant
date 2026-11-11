@@ -1,0 +1,17 @@
+# Only send application sources and dependency manifests to Docker.
+**
+!client/
+!client/**
+!server/
+!server/app/
+!server/app/**
+!server/requirements.txt
+client/node_modules/
+client/dist/
+client/.gitignore
+client/.vscode/
+**/__pycache__/
+**/*.py[cod]
+**/.env
+**/.env.*
+
