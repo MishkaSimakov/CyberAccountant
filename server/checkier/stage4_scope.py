@@ -36,9 +36,13 @@ def _fmt_date(ordinal: int) -> str:
 
 
 def run_scope(
-    cfg: PipelineConfig,
-    registry: EntityRegistry,
-    mapping: dict,
+        cfg: PipelineConfig,
+        registry: EntityRegistry,
+        mapping: dict,
+        *,
+        target_contract: str | None = None,
+        target_period: list[int] | None = None,
+        target_label: str | None = None,
 ) -> dict:
     """Evaluate scope relations; return scope info dict and write scope.json.
 
@@ -62,12 +66,11 @@ def run_scope(
         elif e.type == "date" and e.value is not None:
             dates.append(e)
 
-    target_contract: str | None = None
-    if contracts:
+    if target_contract is None and contracts:
         # majority / first — they should all agree (request is truth)
         target_contract = contracts[0].raw.strip()
-    period: list[int] | None = None
-    if len(dates) >= 2:
+    period = target_period
+    if period is None and len(dates) >= 2:
         vals = sorted(int(d.value) for d in dates if d.value is not None)
         if len(vals) >= 2:
             period = [vals[0], vals[-1]]
@@ -76,7 +79,7 @@ def run_scope(
     scope_relations: list[dict] = []
     oos: dict[str, dict] = {}
     in_scope: list[str] = []
-    key = lambda e: e.mnemonic if cfg.id_style == "mnemonic" else str(e.num)  # noqa: E731
+    key = lambda e: e.mnemonic if cfg.id_style == "mnemonic" else f"#{e.num}"  # noqa: E731
 
     for h8, entry in sorted(mapping.items()):
         if entry["role"] != "data" or entry.get("duplicate_of"):
@@ -124,7 +127,7 @@ def run_scope(
         else:
             in_scope.append(h8)
 
-    target_row, target_label = find_target_row_keys(cfg, registry, mapping)
+    target_row, target_label = find_target_row_keys(cfg, registry, mapping, target_label=target_label)
 
     result = {
         "target_contract": target_contract,
@@ -145,18 +148,20 @@ def _eval_string_eq(entity_key: str, target: str, registry: EntityRegistry) -> b
     """String equality between an entity's raw value and a target string."""
     for e in registry.entities:
         k = e.mnemonic
-        if k == entity_key or str(e.num) == str(entity_key):
-            return e.raw.strip().strip('"') == target.strip()
+        if k == entity_key or str(e.num) == str(entity_key).lstrip("#"):
+            return str(e.value if e.value is not None else e.raw).strip().strip('"') == target.strip()
     return True  # unknown entity: don't fail scope on it
 
 
 def find_target_row_keys(
-    cfg: PipelineConfig,
-    registry: EntityRegistry,
-    mapping: dict,
-) -> tuple[set[str] | None, str | None]:
+        cfg: PipelineConfig,
+        registry: EntityRegistry,
+        mapping: dict,
+        *,
+        target_label: str | None = None,
+) -> tuple[set[str | int] | None, str | None]:
     """Locate the requested card row («3 этап, 2026 г.») and return the
-    mnemonics of every entity on it.
+    configured IDs of every entity on it.
 
     Returns (keys, label). ``keys is None`` means targeting is disabled or
     the row could not be located — the caller should then treat ALL card
@@ -171,13 +176,13 @@ def find_target_row_keys(
         p = cfg.tagged_dir / f"{h8}.md"
         if p.exists():
             request_plain += "\n" + _TAGMARKUP_RE.sub("", p.read_text(encoding="utf-8"))
-    label: str | None = None
+    label = target_label
     # prefer the «...» phrase naming a report row (digit + "этап") — a bare
     # «...этап_3.pdf» filename quote must not win; fall back to first quote
     m = re.search(r"«([^»]*\d+\s*этап[^»]*)»", request_plain, re.IGNORECASE) or _QUOTED_RE.search(
         request_plain
     )
-    if m:
+    if label is None and m:
         label = m.group(1).strip()
     stage_no = year = None
     if label:
@@ -185,7 +190,7 @@ def find_target_row_keys(
         my = re.search(r"(20\d{2})", label)
         stage_no = ms.group(1) if ms else None
         year = my.group(1) if my else None
-    if stage_no is None:
+    if not label:
         return None, label
 
     # --- card lines containing "<N> этап" -----------------------------------
@@ -205,7 +210,8 @@ def find_target_row_keys(
     hits = [
         (s, e)
         for s, e, plain in lines
-        if re.search(rf"(?<!\d){re.escape(stage_no)}\s*этап", plain, re.IGNORECASE)
+        if (re.search(rf"(?<!\d){re.escape(stage_no)}\s*этап", plain, re.IGNORECASE)
+            if stage_no is not None else " ".join(label.casefold().split()) in " ".join(plain.casefold().split()))
     ]
     if not hits:
         return None, label
@@ -218,10 +224,10 @@ def find_target_row_keys(
             hits = yr_hits
 
     keys = {
-        e.mnemonic
+        e.mnemonic if cfg.id_style == "mnemonic" else e.num
         for e in registry.entities
         if e.role == "card"
-        and e.file == card_h8
-        and any(s <= e.span[0] and e.span[1] <= en for s, en in hits)
+           and e.file == card_h8
+           and any(s <= e.span[0] and e.span[1] <= en for s, en in hits)
     }
     return (keys or None), label

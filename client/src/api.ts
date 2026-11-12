@@ -54,7 +54,7 @@ export interface ReportDetails extends Report {
     progress: { completed: number; total: number }
     blockers: string[]
     available_actions: string[]
-    processing_mode: 'ocr' | 'entities'
+    processing_mode: 'ocr' | 'entities' | 'verification'
 }
 
 export interface MarkdownRevision {
@@ -93,11 +93,15 @@ export const runEntityExtraction = (reportId: number) =>
 export const retryDocumentExtraction = (reportId: number, documentId: number) =>
     request<ReportDetails>(`/reports/${reportId}/documents/${documentId}/run-entity-extraction`, {method: 'POST'})
 
+export type RequirementVerdict = 'true' | 'false' | 'error' | 'unverifiable'
+
 export interface Requirement {
     id: number
-    verdict: boolean
+    verdict: RequirementVerdict
     equation: string | null
     evidence: string | null
+    source: string
+    error: string | null
     ids_related: number[]
     notes: string
     silenced: boolean

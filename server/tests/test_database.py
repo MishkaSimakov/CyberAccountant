@@ -3,11 +3,12 @@
 from datetime import date
 
 import pytest
-from sqlalchemy import delete, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import DataError, IntegrityError
 
 from app import database
 from app.models import EntityFile, File, Report, Requirement
+from app.models.requirement import RequirementVerdict
 
 
 def test_initialization_preserves_data_and_round_trips_models(db):
@@ -20,8 +21,9 @@ def test_initialization_preserves_data_and_round_trips_models(db):
             file_id=1, report_id=report_id, name="акт.pdf", path="originals/акт.pdf",
             hash="a" * 64, role="supporting", size=42, content_type="application/pdf",
         ))
-        session.add(Requirement(report_id=report_id, json_data={"evidence": "Проверить", "ids_related": [1]}))
-        session.add(EntityFile(report_id=report_id, entity_id=1, file_id=1))
+        session.add(Requirement(report_id=report_id, verdict=RequirementVerdict.UNVERIFIABLE,
+                                json_data={"evidence": "Проверить", "ids_related": [0]}))
+        session.add(EntityFile(report_id=report_id, entity_id=0, file_id=1))
 
     database.initialize_database()
 
@@ -32,13 +34,14 @@ def test_initialization_preserves_data_and_round_trips_models(db):
         assert report.created_at.tzinfo is not None
         file = session.scalar(select(File))
         assert (file.version, file.status, file.hand_edited) == (1, "queued", False)
-        assert session.get(EntityFile, (report_id, 1)).file_id == file.file_id
+        assert session.get(EntityFile, (report_id, 0)).file_id == file.file_id
         requirement = session.scalar(select(Requirement))
-        assert requirement.json_data["ids_related"] == [1]
-        requirement.json_data["verdict"] = False
+        assert requirement.json_data["ids_related"] == [0]
+        assert requirement.verdict == RequirementVerdict.UNVERIFIABLE
+        requirement.verdict = RequirementVerdict.FALSE
 
     with database.session_scope() as session:
-        assert session.scalar(select(Requirement)).json_data["verdict"] is False
+        assert session.scalar(select(Requirement)).verdict == RequirementVerdict.FALSE
 
 
 def test_initialization_adds_upload_sequence_to_existing_tables(db):
@@ -77,7 +80,8 @@ def test_file_revision_uniqueness_and_report_cascade(db):
             hash="a" * 64, role="supporting", size=42, content_type="application/pdf",
         )
         session.add_all([File(**fields, version=1), File(**fields, version=2, hand_edited=True)])
-        session.add(Requirement(report_id=report_id, json_data={"equation": "#1 == 2"}))
+        session.add(Requirement(report_id=report_id, verdict=RequirementVerdict.TRUE,
+                                json_data={"equation": "#1 == 2"}))
         session.add(EntityFile(report_id=report_id, entity_id=1, file_id=1))
 
     with pytest.raises(IntegrityError):
@@ -100,3 +104,35 @@ def test_database_rejects_invalid_report_state(db, fields):
     with pytest.raises(IntegrityError):
         with database.session_scope() as session:
             session.add(Report(name="Invalid report", **fields))
+
+
+def test_database_rejects_negative_entity_ids(db):
+    with pytest.raises(IntegrityError):
+        with database.session_scope() as session:
+            report = Report(name="Invalid entity")
+            session.add(report)
+            session.flush()
+            session.add(EntityFile(report_id=report.id, entity_id=-1, file_id=1))
+
+
+@pytest.mark.parametrize("verdict", list(RequirementVerdict))
+def test_requirement_verdict_round_trip(db, verdict):
+    with database.session_scope() as session:
+        report = Report(name="Requirement verdict")
+        session.add(report)
+        session.flush()
+        session.add(Requirement(report_id=report.id, verdict=verdict, json_data={"equation": "#0 == 2"}))
+
+    with database.session_scope() as session:
+        assert session.scalar(select(Requirement)).verdict is verdict
+
+
+def test_database_rejects_unknown_requirement_verdict(db):
+    with pytest.raises(DataError):
+        with database.session_scope() as session:
+            report = Report(name="Invalid verdict")
+            session.add(report)
+            session.flush()
+            session.execute(Requirement.__table__.insert().values({
+                "report_id": report.id, "verdict": text("'unknown'"), "json": {},
+            }))

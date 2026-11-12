@@ -1,4 +1,4 @@
-"""Separate FIFO queues for OCR and entries extraction."""
+"""Separate FIFO queues for document processing and report verification."""
 
 import os
 
@@ -22,9 +22,17 @@ def entities_queue() -> Queue:
     return _queue("entities")
 
 
+def verification_queue() -> Queue:
+    return _queue("verification")
+
+
 def enqueue_ocr(file_revision_id: int) -> None:
     ocr_queue().enqueue("app.jobs.ocr.process_ocr", file_revision_id)
 
 
 def enqueue_entities(file_revision_id: int) -> None:
     entities_queue().enqueue("app.jobs.entities.process_entities", file_revision_id)
+
+
+def enqueue_verification(report_id: int) -> None:
+    verification_queue().enqueue("app.jobs.verification.process_verification", report_id)

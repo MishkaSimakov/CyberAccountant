@@ -59,7 +59,7 @@ def test_pipeline_resumes_from_extracted_documents(tmp_path, monkeypatch):
     registry = pipeline.registry()
     assert len(registry.entities) == 1
     assert registry.entities[0].value == "100.00"
-    assert '<e id="' in pipeline.replace()["card1"]
+    assert '<ent id="' in pipeline.replace()["card1"]
     assert pipeline.scope()["target_row"] == [registry.entities[0].key]
 
 

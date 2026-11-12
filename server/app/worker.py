@@ -3,7 +3,7 @@
 from rq import Worker
 
 from .ocr import check_ocr_languages
-from .queue import entities_queue, ocr_queue
+from .queue import entities_queue, ocr_queue, verification_queue
 
 
 def main() -> None:
@@ -13,9 +13,9 @@ def main() -> None:
 
 
 def entities_main() -> None:
-    """Process one extraction at a time; Supervisor runs five processes."""
+    """Share the existing worker pool between extraction and report verification."""
     queue = entities_queue()
-    Worker([queue], connection=queue.connection).work()
+    Worker([queue, verification_queue()], connection=queue.connection).work()
 
 
 if __name__ == "__main__":

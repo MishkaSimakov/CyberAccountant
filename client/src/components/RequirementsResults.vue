@@ -8,6 +8,8 @@ import {faChevronDown} from '@fortawesome/free-solid-svg-icons/faChevronDown'
 import {faBellSlash} from '@fortawesome/free-solid-svg-icons/faBellSlash'
 import {faBell} from '@fortawesome/free-solid-svg-icons/faBell'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
+import {faCircleQuestion} from '@fortawesome/free-solid-svg-icons/faCircleQuestion'
+import {faTriangleExclamation} from '@fortawesome/free-solid-svg-icons/faTriangleExclamation'
 import type {Requirement} from '../api'
 import RequirementText from './RequirementText.vue'
 
@@ -20,7 +22,7 @@ export default defineComponent({
   emits: {select: (id: number) => Number.isInteger(id)},
   data() {
     return {
-      filter: 'all' as 'all' | 'failed' | 'passed' | 'silenced',
+      filter: 'all' as 'all' | 'failed' | 'passed' | 'unverifiable' | 'error' | 'silenced',
       notes: Object.fromEntries(this.requirements.map(item => [item.id, item.notes])) as Record<number, string>,
       faCheck, faXmark, faChevronDown, faBellSlash, faBell, faSpinner,
     }
@@ -28,18 +30,25 @@ export default defineComponent({
   computed: {
     ...mapState('requirements', ['saving', 'saveErrors']),
     failedCount(): number {
-      return this.requirements.filter(requirement => !requirement.verdict && !requirement.silenced).length
+      return this.requirements.filter(requirement => requirement.verdict === 'false' && !requirement.silenced).length
     },
     passedCount(): number {
-      return this.requirements.filter(requirement => requirement.verdict).length
+      return this.requirements.filter(requirement => requirement.verdict === 'true').length
+    },
+    unverifiableCount(): number {
+      return this.requirements.filter(requirement => requirement.verdict === 'unverifiable' && !requirement.silenced).length
+    },
+    errorCount(): number {
+      return this.requirements.filter(requirement => requirement.verdict === 'error' && !requirement.silenced).length
     },
     silencedCount(): number {
       return this.requirements.filter(requirement => requirement.silenced).length
     },
     filteredRequirements(): Requirement[] {
       return this.requirements.filter(requirement => {
-        if (this.filter === 'failed') return !requirement.verdict && !requirement.silenced
-        if (this.filter === 'passed') return requirement.verdict
+        if (this.filter === 'failed') return requirement.verdict === 'false' && !requirement.silenced
+        if (this.filter === 'passed') return requirement.verdict === 'true'
+        if (this.filter === 'unverifiable' || this.filter === 'error') return requirement.verdict === this.filter && !requirement.silenced
         if (this.filter === 'silenced') return requirement.silenced
         return true
       })
@@ -49,6 +58,8 @@ export default defineComponent({
         {value: 'all' as const, label: 'Все', count: this.requirements.length},
         {value: 'failed' as const, label: 'Нарушенные', count: this.failedCount},
         {value: 'passed' as const, label: 'Выполненные', count: this.passedCount},
+        {value: 'unverifiable' as const, label: 'Не удалось проверить', count: this.unverifiableCount},
+        {value: 'error' as const, label: 'Ошибки', count: this.errorCount},
         {value: 'silenced' as const, label: 'Отключённые', count: this.silencedCount},
       ]
     },
@@ -56,7 +67,30 @@ export default defineComponent({
   methods: {
     ...mapActions('requirements', ['update']),
     statusLabel(requirement: Requirement): string {
-      return requirement.verdict ? 'Выполнено' : requirement.silenced ? 'Предупреждение отключено' : 'Нарушено'
+      const label = {
+        true: 'Выполнено',
+        false: 'Нарушено',
+        error: 'Ошибка проверки',
+        unverifiable: 'Не удалось проверить',
+      }[requirement.verdict]
+      return requirement.silenced ? `${label} — предупреждение отключено` : label
+    },
+    statusClass(requirement: Requirement): string {
+      if (requirement.silenced) return 'border-slate-200 bg-slate-100 text-slate-400'
+      return {
+        true: 'border-green-200 bg-green-50 text-green-700',
+        false: 'border-red-200 bg-red-50 text-red-700',
+        error: 'border-orange-200 bg-orange-50 text-orange-700',
+        unverifiable: 'border-amber-200 bg-amber-50 text-amber-700',
+      }[requirement.verdict]
+    },
+    statusIcon(requirement: Requirement) {
+      return {
+        true: faCheck,
+        false: faXmark,
+        error: faTriangleExclamation,
+        unverifiable: faCircleQuestion,
+      }[requirement.verdict]
     },
   },
 })
@@ -79,9 +113,7 @@ export default defineComponent({
       <p v-if="!requirements.length" class="p-8 text-center text-slate-500">Проверка завершена. Требования не
         найдены.</p>
       <p v-else-if="!filteredRequirements.length" class="p-8 text-center text-slate-500">
-        {{
-          filter === 'failed' ? 'Активных нарушений нет.' : filter === 'silenced' ? 'Отключённых предупреждений нет.' : 'Выполненных требований нет.'
-        }}
+        Нет требований с выбранным результатом.
       </p>
       <ul v-else class="divide-y divide-slate-200">
         <li v-for="requirement in filteredRequirements" :key="requirement.id">
@@ -95,9 +127,9 @@ export default defineComponent({
                                class="min-w-0 whitespace-pre-wrap break-words text-sm leading-7"
                                :class="[requirement.equation ? 'font-mono' : '', requirement.silenced ? 'text-slate-500' : 'text-slate-800']"/>
               <span class="inline-flex h-7 w-10 items-center justify-center rounded border"
-                    :class="requirement.verdict ? 'border-green-200 bg-green-50 text-green-700' : requirement.silenced ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-red-200 bg-red-50 text-red-700'"
+                    :class="statusClass(requirement)"
                     :title="statusLabel(requirement)">
-                <FontAwesomeIcon :icon="requirement.verdict ? faCheck : faXmark" class="size-3.5" aria-hidden="true"/>
+                <FontAwesomeIcon :icon="statusIcon(requirement)" class="size-3.5" aria-hidden="true"/>
                 <span class="sr-only">{{ statusLabel(requirement) }}</span>
               </span>
               <FontAwesomeIcon :icon="faChevronDown"
@@ -107,8 +139,7 @@ export default defineComponent({
             <div class="border-t border-slate-100 p-4 sm:pl-18">
               <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
                 <span>{{ requirement.equation ? 'Формула' : 'Текстовое условие' }}</span>
-                <span
-                    :class="requirement.verdict ? 'text-green-700' : requirement.silenced ? 'text-slate-500' : 'text-red-700'">{{
+                <span>{{
                     statusLabel(requirement)
                   }}</span>
               </div>
@@ -116,6 +147,9 @@ export default defineComponent({
                  class="mt-3 whitespace-pre-wrap break-words text-sm leading-7">
                 <RequirementText :text="requirement.evidence" :entity-documents="entityDocuments"
                                  @select="$emit('select', $event)"/>
+              </p>
+              <p v-if="requirement.error" class="mt-3 whitespace-pre-wrap break-words text-sm text-orange-700">
+                {{ requirement.error }}
               </p>
               <div v-if="requirement.ids_related.length" class="mt-4 flex flex-wrap items-center gap-2 text-xs">
                 <span class="text-slate-500">Связанные сущности:</span>
@@ -142,7 +176,8 @@ export default defineComponent({
                         notes[requirement.id] !== requirement.notes ? 'Есть несохранённые изменения' : requirement.notes ? 'Заметка сохранена' : ''
                       }}</span>
                   </div>
-                  <button v-if="!requirement.verdict" type="button" :disabled="saving.includes(requirement.id)"
+                  <button v-if="requirement.verdict !== 'true'" type="button"
+                          :disabled="saving.includes(requirement.id)"
                           class="inline-flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 focus-visible:outline-blue-500 disabled:cursor-default disabled:opacity-50"
                           :aria-pressed="requirement.silenced"
                           @click="update({id: requirement.id, changes: {silenced: !requirement.silenced}})">

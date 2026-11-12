@@ -95,12 +95,14 @@ def original_document(report_id: int, file_id: int) -> File:
 
 def document_markdown(report_id: int, file_id: int) -> MarkdownRevision:
     with session_scope() as session:
-        find_report(session, report_id)
+        report = find_report(session, report_id)
         file = find_document(session, report_id, file_id)
         if not file.markdown_path:
             raise ServiceError(409, "Распознавание документа ещё не завершено.")
-        return MarkdownRevision(content=storage.artifact_path(file.entities_path or file.markdown_path)
-                                .read_text(encoding="utf-8"),
+        source = storage.artifact_path(file.entities_path or file.markdown_path)
+        if report.stage == "verification" and report.processing_status == "completed":
+            source = storage.artifact_path(f"{report_id}/verification/replaced/{file_id}.md")
+        return MarkdownRevision(content=source.read_text(encoding="utf-8"),
                                 revision=file.version)
 
 

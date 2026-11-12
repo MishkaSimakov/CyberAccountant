@@ -1,4 +1,4 @@
-"""Stage 3: replace <ent> tags with <e id="..."> using registry ids."""
+"""Stage 3: add global registry IDs to the existing <ent> tags."""
 
 from __future__ import annotations
 
@@ -7,16 +7,12 @@ import re
 from checkier.config import PipelineConfig
 from checkier.entities import ENT_RE, EntityRegistry
 
-# matches the opening tag of an <ent> we are about to replace, capturing attrs
-_ENT_OPEN_RE = re.compile(r"<ent\s+([^>]*)>")
-
-
 def run_replace(
-    cfg: PipelineConfig,
-    tagged_docs: dict[str, tuple[str, str]],
-    registry: EntityRegistry,
+        cfg: PipelineConfig,
+        tagged_docs: dict[str, tuple[str, str]],
+        registry: EntityRegistry,
 ) -> dict[str, str]:
-    """Rewrite tagged docs: <ent t="amount">245 000</ent> -> <e id="crumble-wink">245 000</e>.
+    """Add IDs while preserving <ent> tags, their attributes, and source text.
 
     Original text is kept inside the tag; `id` is authoritative. Returns
     {h8: replaced_text} and writes out/replaced/<h8>.md.
@@ -37,12 +33,10 @@ def run_replace(
             nonlocal idx
             ent = entities[idx] if idx < len(entities) else None
             idx += 1
-            inner = m.group(0)
-            body = inner[inner.index(">") + 1 : inner.rindex("</ent>")]
             if ent is None:
-                return body
+                return m.group(0)
             eid = ent.mnemonic if cfg.id_style == "mnemonic" else str(ent.num)
-            return f'<e id="{eid}">{body}</e>'
+            return f'<ent id="{eid}" {m.group(1)}>{m.group(2)}</ent>'
 
         replaced = ENT_RE.sub(repl, text)
         (cfg.replaced_dir / f"{h8}.md").write_text(replaced, encoding="utf-8")

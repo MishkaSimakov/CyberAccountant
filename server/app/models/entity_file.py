@@ -15,7 +15,7 @@ class EntityFile(Base):
 
     __tablename__ = "entity_files"
     __table_args__ = (
-        CheckConstraint("entity_id > 0", name="entity_file_positive_entity_id"),
+        CheckConstraint("entity_id >= 0", name="entity_file_nonnegative_entity_id"),
         CheckConstraint("file_id > 0", name="entity_file_positive_file_id"),
         Index("ix_entity_files_report_id_file_id", "report_id", "file_id"),
     )

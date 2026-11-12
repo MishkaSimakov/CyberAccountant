@@ -28,3 +28,6 @@ __pycache__/
 
 # Extracted entries can be regenerated from OCR markdown.
 /storage/*/*/versions/*/entities/
+
+# Verification artifacts can be regenerated from the reviewed document revisions.
+/storage/*/verification/

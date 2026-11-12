@@ -67,6 +67,8 @@ def blockers_for(items: list[Document], *, extracting: bool = False) -> list[str
         blockers.append("Дождитесь извлечения сущностей из всех документов.")
     if extracting and any(item.extraction_status == "failed" for item in items):
         blockers.append("Не удалось извлечь сущности из некоторых документов. Повторите извлечение.")
+    if extracting and any(item.extraction_status == "idle" for item in items):
+        blockers.append("Извлеките сущности из всех документов.")
     names = {item.id: item.name for item in items}
     for group in duplicate_groups_for(items):
         names_text = ", ".join(f"«{names[file_id]}»" for file_id in group)
@@ -75,6 +77,8 @@ def blockers_for(items: list[Document], *, extracting: bool = False) -> list[str
 
 
 def sync_processing_status(session: Session, report: Report) -> None:
+    if report.stage == "verification":
+        return
     session.flush()
     statuses = {file.status for file in report_documents(session, report.id)}
     if report.stage == "entities":
@@ -107,17 +111,24 @@ def create_report(payload: ReportCreate) -> ReportResponse:
 def report_details(report_id: int) -> dict:
     with session_scope() as session:
         report = find_report(session, report_id)
-        extracting = report.stage == "entities"
+        extracting = report.stage in {"entities", "verification"}
         items = [document_response(file, extracting=extracting) for file in report_documents(session, report_id)]
         blockers = blockers_for(items, extracting=extracting)
+        actions = []
+        if report.stage == "documents" and not blockers:
+            actions = ["run_entity_extraction"]
+        elif not blockers and (report.stage == "entities" or
+                               report.stage == "verification" and report.processing_status == "failed"):
+            actions = ["run_verification"]
+        verifying = report.stage == "verification"
         return {
             **ReportResponse.model_validate(report, from_attributes=True).model_dump(),
             "documents": items,
             "duplicate_groups": duplicate_groups_for(items),
-            "progress": {"completed": sum(
+            "progress": {"completed": int(report.processing_status == "completed") if verifying else sum(
                 (item.extraction_status if extracting else item.ocr_status) == "completed" for item in items
-            ), "total": len(items)},
+            ), "total": 1 if verifying else len(items)},
             "blockers": blockers,
-            "available_actions": ["run_entity_extraction"] if report.stage == "documents" and not blockers else [],
-            "processing_mode": "entities" if extracting else "ocr",
+            "available_actions": actions,
+            "processing_mode": "verification" if verifying else "entities" if extracting else "ocr",
         }

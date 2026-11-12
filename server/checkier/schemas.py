@@ -83,7 +83,7 @@ RELATIONS_SCHEMA = {
                         "items": {"type": "string"},
                         "minItems": 1,
                     },
-                    "verdict": {"const": "false"},
+                    "verdict": {"enum": ["false", "unverifiable"]},
                 },
                 "required": ["evidence", "ids_related", "verdict"],
                 "additionalProperties": False,
