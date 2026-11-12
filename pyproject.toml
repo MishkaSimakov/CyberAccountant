@@ -1,5 +1,5 @@
 [project]
-name = "cyberaccountant"
+name = "checkier"
 version = "0.1.0"
 readme = "README.md"
 authors = []
@@ -21,6 +21,9 @@ dev = [
 
 [tool.uv]
 package = true
+
+[tool.uv.build-backend]
+module-root = "server"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
