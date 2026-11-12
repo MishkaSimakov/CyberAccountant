@@ -113,6 +113,9 @@ markdown-файл.
 - period_start
 - period_end
 - target_row
+- stage
+- processing_status
+- timestamps
 
 ### files
 
@@ -123,3 +126,25 @@ markdown-файл.
 - entities_path
 - version
 - report_id
+- role - final or supporting
+- status
+- error
+- size
+- content_type
+- timestamps
+
+### requirements
+
+- id
+- report_id
+- json
+- note
+- is_silenced
+
+### entities
+
+Эта таблица полезна, когда надо вернуть пользователю то, из какого файла пришёл каждый из entity. Иначе надо будет
+загружать все файлы и заново их парсить.
+
+- report_id, id - combined primary key
+- file_id
