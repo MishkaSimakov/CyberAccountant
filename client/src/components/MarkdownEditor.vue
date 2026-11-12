@@ -1,25 +1,27 @@
 <script setup lang="ts">
-import {computed, onMounted, onUnmounted, ref, watch} from 'vue'
+import {computed, onMounted, onUnmounted, readonly as readOnly, ref, toRefs, watch} from 'vue'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import {faFloppyDisk} from '@fortawesome/free-solid-svg-icons/faFloppyDisk'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
-import {getMarkdown, originalUrl, saveMarkdown, type ReportDocument} from '../api'
+import type {ReportDocument} from '../api'
+import {useStore} from '../store'
 import DocumentViewer from './viewers/DocumentViewer.vue'
 import MarkdownViewer from './viewers/MarkdownViewer.vue'
 
 const props = defineProps<{ reportId: number; document: ReportDocument; readonly: boolean; entities?: boolean }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
 const dialog = ref<HTMLDialogElement | null>(null)
-const loading = ref(true)
-const saving = ref(false)
-const error = ref('')
-const content = ref('')
-const savedContent = ref('')
-const revision = ref(0)
+const store = useStore()
+const {loading, saving, error, revision} = toRefs(readOnly(store.state.editor))
+const content = computed({
+  get: () => store.state.editor.content,
+  set: value => store.commit('editor/setContent', value),
+})
+const dirty = computed<boolean>(() => store.getters['editor/dirty'])
+const url = computed<string>(() => store.getters['editor/originalUrl'])
 const preview = ref(props.readonly || props.entities)
-const dirty = computed(() => content.value !== savedContent.value)
-const url = computed(() => originalUrl(props.reportId, props.document.id))
+const load = () => store.dispatch('editor/load')
 let restorePageScroll: (() => void) | undefined
 
 watch(() => props.readonly || props.entities, previewOnly => {
@@ -32,34 +34,9 @@ function close() {
   emit('close')
 }
 
-async function load() {
-  loading.value = true
-  error.value = ''
-  try {
-    const markdown = await getMarkdown(props.reportId, props.document.id)
-    content.value = savedContent.value = markdown.content
-    revision.value = markdown.revision
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : 'Не удалось загрузить текст.'
-  } finally {
-    loading.value = false
-  }
-}
-
 async function save() {
-  if (!dirty.value || saving.value) return
-  saving.value = true
-  error.value = ''
-  try {
-    const markdown = await saveMarkdown(props.reportId, props.document.id, content.value, revision.value)
-    content.value = savedContent.value = markdown.content
-    revision.value = markdown.revision
-    emit('saved')
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : 'Не удалось сохранить текст.'
-  } finally {
-    saving.value = false
-  }
+  if (props.readonly) return
+  if (await store.dispatch('editor/save')) emit('saved')
 }
 
 function saveEntity(updatedContent: string) {
@@ -78,10 +55,17 @@ onMounted(() => {
     document.body.style.overflow = bodyOverflow
   }
   dialog.value?.showModal()
-  void load()
 })
 
-onUnmounted(() => restorePageScroll?.())
+watch(() => [props.reportId, props.document.id] as const, ([reportId, documentId]) => {
+  preview.value = props.readonly || props.entities
+  void store.dispatch('editor/open', {reportId, documentId})
+}, {immediate: true})
+
+onUnmounted(() => {
+  restorePageScroll?.()
+  store.commit('editor/reset', null)
+})
 </script>
 
 <template>

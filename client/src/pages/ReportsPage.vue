@@ -1,19 +1,17 @@
 <script setup lang="ts">
-import {onMounted, reactive, ref} from 'vue'
+import {onMounted, reactive, readonly, ref, toRefs} from 'vue'
 import {RouterLink, useRouter} from 'vue-router'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faPlus} from '@fortawesome/free-solid-svg-icons/faPlus'
 import {faRotateRight} from '@fortawesome/free-solid-svg-icons/faRotateRight'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
-import {createReport, getReports, type Report} from '../api'
+import type {Report} from '../api'
+import {useStore} from '../store'
 
 const router = useRouter()
-const reports = ref<Report[]>([])
-const loading = ref(true)
-const loadError = ref('')
-const createError = ref('')
-const saving = ref(false)
-const notice = ref('')
+const store = useStore()
+const {items: reports, loading, loadError, createError, saving, notice} = toRefs(readonly(store.state.reports))
+const loadReports = () => store.dispatch('reports/load')
 const dialog = ref<HTMLDialogElement | null>(null)
 const form = reactive({name: '', contract_number: '', period_start: '', period_end: '', target_row: ''})
 const stages: Record<Report['stage'], string> = {
@@ -41,21 +39,9 @@ function formatDate(value: string) {
   return dateFormatter.format(new Date(`${value}T00:00:00Z`))
 }
 
-async function loadReports() {
-  loading.value = true
-  loadError.value = ''
-  try {
-    reports.value = await getReports()
-  } catch {
-    loadError.value = 'Не удалось загрузить отчёты. Проверьте соединение с сервером и попробуйте ещё раз.'
-  } finally {
-    loading.value = false
-  }
-}
-
 function openCreateDialog() {
   Object.assign(form, {name: '', contract_number: '', period_start: '', period_end: '', target_row: ''})
-  createError.value = ''
+  store.commit('reports/patch', {createError: ''})
   dialog.value?.showModal()
 }
 
@@ -64,41 +50,10 @@ function closeCreateDialog() {
 }
 
 async function submitReport() {
-  if (saving.value) return
-  createError.value = ''
-  if (!form.name.trim()) {
-    createError.value = 'Введите название отчёта.'
-    return
-  }
-  if (Boolean(form.period_start) !== Boolean(form.period_end)) {
-    createError.value = 'Укажите начало и конец периода подтверждающих документов.'
-    return
-  }
-  if (form.period_start && form.period_end < form.period_start) {
-    createError.value = 'Конец периода не может быть раньше начала.'
-    return
-  }
-  saving.value = true
-  try {
-    const report = await createReport({
-      name: form.name.trim(),
-      contract_number: form.contract_number.trim() || null,
-      period_start: form.period_start || null,
-      period_end: form.period_end || null,
-      target_row: form.target_row.trim() || null,
-    })
-    reports.value.unshift(report)
-    loadError.value = ''
-    notice.value = `Отчёт «${report.name}» создан.`
-    dialog.value?.close()
-    await router.push({name: 'report', params: {reportId: report.id}})
-  } catch (error) {
-    createError.value = error instanceof TypeError || (error instanceof Error && error.name === 'TimeoutError')
-        ? 'Не удалось получить ответ сервера. Обновите список перед повторной попыткой: отчёт мог быть создан.'
-        : error instanceof Error ? error.message : 'Не удалось создать отчёт. Попробуйте ещё раз.'
-  } finally {
-    saving.value = false
-  }
+  const report: Report | null = await store.dispatch('reports/create', {...form})
+  if (!report) return
+  dialog.value?.close()
+  await router.push({name: 'report', params: {reportId: report.id}})
 }
 
 onMounted(loadReports)

@@ -4,6 +4,10 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
+    /* Vuex 4's exports omit its bundled TypeScript declarations. */
+    "paths": {
+      "vuex": ["./node_modules/vuex/types/index.d.ts"]
+    },
 
     /* Linting */
     "noUnusedLocals": true,
