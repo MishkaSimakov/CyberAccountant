@@ -13,7 +13,11 @@ from checkier.config import load_api_credentials
 
 
 class LLMError(RuntimeError):
-    pass
+    """LLM call failure. ``status_code`` is set for HTTP error responses."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 def _extract_text(data: dict) -> str:
@@ -48,7 +52,10 @@ def _post(payload: dict, timeout: float) -> dict:
         timeout=timeout,
     )
     if resp.status_code != 200:
-        raise LLMError(f"API {resp.status_code}: {resp.text[:500]}")
+        raise LLMError(
+            f"API {resp.status_code}: {resp.text[:500]}",
+            status_code=resp.status_code,
+        )
     return resp.json()
 
 
@@ -73,7 +80,10 @@ def _post_streaming(
         stream=True,
     )
     if resp.status_code != 200:
-        raise LLMError(f"API {resp.status_code}: {resp.text[:500]}")
+        raise LLMError(
+            f"API {resp.status_code}: {resp.text[:500]}",
+            status_code=resp.status_code,
+        )
     resp.encoding = "utf-8"  # force UTF-8; default guess mangles Cyrillic
     chunks: list[str] = []
     for raw in resp.iter_lines(decode_unicode=True):
@@ -151,7 +161,7 @@ def call_llm(
         return _extract_text(data)
 
 
-def _json_from_text(text: str) -> dict | list:
+def json_from_text(text: str) -> dict | list:
     """Extract and parse the first JSON object/array in *text*."""
     text = text.strip()
     # strip markdown fences if present
@@ -201,7 +211,7 @@ def call_llm_json(
             timeout=timeout, on_token=on_token, reasoning=reasoning,
         )
         try:
-            data = _json_from_text(text)
+            data = json_from_text(text)
             if schema is not None:
                 jsonschema.validate(data, schema)
             return data

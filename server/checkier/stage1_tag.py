@@ -31,8 +31,11 @@ from pathlib import Path
 from typing import Callable
 
 from checkier.config import PipelineConfig
-from checkier.llm import call_llm_json
+from checkier.llm import LLMError, call_llm, json_from_text
 from checkier.schemas import TAGGING_SCHEMA
+
+import jsonschema
+import requests
 
 # ---------------------------------------------------------------------------
 # Progress reporting (swap these callbacks for a frontend later)
@@ -220,13 +223,14 @@ def _segments_to_tagged(segments: list) -> str:
 
 
 def _is_transient(exc: Exception) -> bool:
-    """Network/5xx errors are worth retrying; schema/validation errors are not."""
-    name = type(exc).__name__.lower()
-    text = str(exc).lower()
-    return any(
-        s in name or s in text
-        for s in ("ssl", "timeout", "connection", "5", "rate limit", "temporar")
-    )
+    """Network/5xx/rate-limit errors are worth a blind retry; validation
+    errors (bad JSON, schema, rebuild mismatch) are not — those get the error
+    fed back to the model instead."""
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return True
+    if isinstance(exc, LLMError) and exc.status_code is not None:
+        return exc.status_code == 429 or 500 <= exc.status_code < 600
+    return False
 
 
 def _tag_one(
@@ -235,14 +239,21 @@ def _tag_one(
     original_name: str,
     on_token: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
-    """Tag one file. Returns (tagged_text, retries_used)."""
+    """Tag one file. Returns (tagged_text, retries_used).
+
+    Single retry budget (``cfg.max_retries``) covers every failure kind:
+    transient network/5xx errors retry with the same prompt; bad JSON, schema
+    violations and rebuild mismatches retry with the error fed back to the
+    model. At most ``cfg.max_retries + 1`` LLM calls per file.
+    """
     src = cfg.files_dir / f"{h8}.md"
     content = src.read_text(encoding="utf-8")
-    prompt = _build_prompt(original_name, content)
+    base_prompt = _build_prompt(original_name, content)
+    prompt = base_prompt
     last_err: Exception | None = None
     for attempt in range(cfg.max_retries + 1):
         try:
-            data = call_llm_json(
+            text = call_llm(
                 prompt,
                 model=cfg.tag_model,
                 schema=TAGGING_SCHEMA,
@@ -251,6 +262,8 @@ def _tag_one(
                 on_token=on_token,
                 reasoning=cfg.reasoning,
             )
+            data = json_from_text(text)
+            jsonschema.validate(data, TAGGING_SCHEMA)
             segments = _coerce_segments(data)
             problems = _validate_segments(content, segments)
             if problems:
@@ -258,20 +271,17 @@ def _tag_one(
             return _segments_to_tagged(segments), attempt
         except Exception as exc:  # noqa: BLE001
             last_err = exc
-            if attempt < cfg.max_retries and _is_transient(exc):
-                continue
-            if attempt < cfg.max_retries:
-                prompt = (
-                    _build_prompt(original_name, content)
-                    + "\n\nYour previous answer was wrong. Common mistake: repeating the "
-                    "document text instead of outputting the JSON segment array. "
-                    "You MUST output ONLY a JSON array of objects like "
-                    '[{"content":"...","wrap":"...","type":"..."}]. No prose, no document.\n'
-                    "Validation error from previous attempt:\n"
-                    + str(last_err)[:1500]
-                )
-            else:
+            if attempt >= cfg.max_retries:
                 break
+            if _is_transient(exc):
+                continue  # same prompt, no feedback needed
+            prompt = (
+                base_prompt
+                + "\n\nYour previous answer failed validation:\n"
+                + str(exc)[:1500]
+                + "\nReturn ONLY the corrected JSON array of segment objects. "
+                "No prose, no document."
+            )
     raise RuntimeError(f"tagging failed for {h8}: {last_err}")
 
 
