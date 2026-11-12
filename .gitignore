@@ -29,3 +29,9 @@ output/
 # Local hackathon documents are not published
 /данные/
 /*.docx
+
+
+data/
+data_md/
+out/
+.ipynb_checkpoints/
