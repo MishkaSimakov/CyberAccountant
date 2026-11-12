@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.entities import EntityRegistry, build_registry
+from checkier.config import PipelineConfig
+from checkier.entities import EntityRegistry, build_registry
 
 
 def run_registry(

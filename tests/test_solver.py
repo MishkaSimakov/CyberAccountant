@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from cyberaccountant.entities import EntityRegistry
-from cyberaccountant.solver import solve_system
+from checkier.entities import EntityRegistry
+from checkier.solver import solve_system
 
 
 def _reg_with_card(cards: dict, data: dict, seed: int = 0):

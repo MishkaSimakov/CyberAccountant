@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from typing import Callable
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.entities import Entity, EntityRegistry, parse_date
-from cyberaccountant.llm import call_llm_json
-from cyberaccountant.schemas import DATE_NORM_SCHEMA
+from checkier.config import PipelineConfig
+from checkier.entities import Entity, EntityRegistry, parse_date
+from checkier.llm import call_llm_json
+from checkier.schemas import DATE_NORM_SCHEMA
 
 DATE_NORM_PROMPT = """\
 You normalize Russian accounting period expressions to concrete dates.

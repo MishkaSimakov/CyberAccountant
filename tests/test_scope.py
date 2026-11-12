@@ -1,8 +1,8 @@
 """Tests for target-row detection (stage 4)."""
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.entities import EntityRegistry
-from cyberaccountant.stage4_scope import find_target_row_keys
+from checkier.config import PipelineConfig
+from checkier.entities import EntityRegistry
+from checkier.stage4_scope import find_target_row_keys
 
 
 def _mk(tmp_path, role_h8: dict[str, str], texts: dict[str, str]):

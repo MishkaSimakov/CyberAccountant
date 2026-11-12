@@ -9,7 +9,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from cyberaccountant.bip39 import MnemonicSampler
+from checkier.bip39 import MnemonicSampler
 
 # ---------------------------------------------------------------------------
 # Tag parsing

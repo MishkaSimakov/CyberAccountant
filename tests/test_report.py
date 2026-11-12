@@ -1,6 +1,6 @@
 """Smoke test for the human-readable report formatter."""
 
-from cyberaccountant.report import format_report_text
+from checkier.report import format_report_text
 
 
 def _sample_report() -> dict:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.entities import ENT_RE, EntityRegistry
+from checkier.config import PipelineConfig
+from checkier.entities import ENT_RE, EntityRegistry
 
 # matches the opening tag of an <ent> we are about to replace, capturing attrs
 _ENT_OPEN_RE = re.compile(r"<ent\s+([^>]*)>")

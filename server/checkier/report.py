@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import re
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.entities import EntityRegistry
-from cyberaccountant.solver import Fishy, Relation, Verdict
+from checkier.config import PipelineConfig
+from checkier.entities import EntityRegistry
+from checkier.solver import Fishy, Relation, Verdict
 
 
 def _entity_id(cfg: PipelineConfig, e) -> str:

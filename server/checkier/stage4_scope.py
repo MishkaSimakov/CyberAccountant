@@ -22,9 +22,9 @@ import re
 from datetime import date
 from decimal import Decimal
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.entities import Entity, EntityRegistry
-from cyberaccountant.formula import FormulaError, evaluate, parse
+from checkier.config import PipelineConfig
+from checkier.entities import Entity, EntityRegistry
+from checkier.formula import FormulaError, evaluate, parse
 
 _TAGMARKUP_RE = re.compile(r"</?ent\b[^>]*>")
 _QUOTED_RE = re.compile(r"«([^»]+)»")

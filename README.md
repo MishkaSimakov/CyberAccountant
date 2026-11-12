@@ -5,13 +5,13 @@
 
 ## Pipeline
 
-Library package `cyberaccountant` (under `src/`) that verifies the КФЗ card
+Library package `checkier` (under `server/`) that verifies the КФЗ card
 against primary documents via entity tagging, LLM-extracted relations and a
 deterministic equation solver.
 
 ```python
 from pathlib import Path
-from cyberaccountant import Pipeline, PipelineConfig
+from checkier import Pipeline, PipelineConfig
 
 cfg = PipelineConfig(
     data_dir=Path("data_md"),

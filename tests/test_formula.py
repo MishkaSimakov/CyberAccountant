@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from cyberaccountant.formula import (
+from checkier.formula import (
     BinOp,
     FormulaError,
     Id,

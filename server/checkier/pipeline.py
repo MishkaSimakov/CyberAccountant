@@ -5,17 +5,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.entities import EntityRegistry
-from cyberaccountant.report import build_report
-from cyberaccountant.solver import solve_system
-from cyberaccountant.stage0_ingest import run_ingest
-from cyberaccountant.stage1_tag import run_tag
-from cyberaccountant.stage2_registry import run_registry
-from cyberaccountant.stage2_dates import run_date_normalization
-from cyberaccountant.stage3_replace import run_replace
-from cyberaccountant.stage4_scope import run_scope
-from cyberaccountant.stage5_relations import run_relations
+from checkier.config import PipelineConfig
+from checkier.entities import EntityRegistry
+from checkier.report import build_report
+from checkier.solver import solve_system
+from checkier.stage0_ingest import run_ingest
+from checkier.stage1_tag import run_tag
+from checkier.stage2_registry import run_registry
+from checkier.stage2_dates import run_date_normalization
+from checkier.stage3_replace import run_replace
+from checkier.stage4_scope import run_scope
+from checkier.stage5_relations import run_relations
 
 
 class Pipeline:

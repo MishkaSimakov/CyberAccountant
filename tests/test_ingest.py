@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.stage0_ingest import run_ingest
+from checkier.config import PipelineConfig
+from checkier.stage0_ingest import run_ingest
 
 
 def _make_data(tmp_path: Path, files: dict[str, tuple[str, str]]) -> Path:

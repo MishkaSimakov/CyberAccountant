@@ -37,8 +37,8 @@ from fractions import Fraction
 
 import z3
 
-from cyberaccountant.entities import Entity, EntityRegistry, parse_amount
-from cyberaccountant.formula import (
+from checkier.entities import Entity, EntityRegistry, parse_amount
+from checkier.formula import (
     BinOp,
     DateLit,
     FormulaError,

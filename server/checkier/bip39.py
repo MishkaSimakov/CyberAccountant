@@ -60,7 +60,7 @@ def load_words() -> tuple[list[str], list[str]]:
     """
     try:
         text = (
-            resources.files("cyberaccountant.data")
+            resources.files("checkier.data")
             .joinpath(WORDLIST_RESOURCE)
             .read_text(encoding="utf-8")
         )

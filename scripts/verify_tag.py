@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import requests
 
-from cyberaccountant.config import PipelineConfig, load_api_credentials
-from cyberaccountant.stage1_tag import TagStats, TagProgress, run_tag
+from checkier.config import PipelineConfig, load_api_credentials
+from checkier.stage1_tag import TagStats, TagProgress, run_tag
 
 
 def main() -> None:

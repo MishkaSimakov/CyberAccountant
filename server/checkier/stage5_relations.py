@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.entities import EntityRegistry
-from cyberaccountant.llm import call_llm_json
-from cyberaccountant.schemas import RELATIONS_SCHEMA
+from checkier.config import PipelineConfig
+from checkier.entities import EntityRegistry
+from checkier.llm import call_llm_json
+from checkier.schemas import RELATIONS_SCHEMA
 
 REL_PROMPT = """\
 You are an auditor building a system of equations that pins down every value

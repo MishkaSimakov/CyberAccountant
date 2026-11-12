@@ -9,7 +9,7 @@ from typing import Callable
 import jsonschema
 import requests
 
-from cyberaccountant.config import load_api_credentials
+from checkier.config import load_api_credentials
 
 
 class LLMError(RuntimeError):

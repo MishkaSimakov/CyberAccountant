@@ -8,7 +8,7 @@ import secrets
 import shutil
 from pathlib import Path
 
-from cyberaccountant.config import PipelineConfig, ROLE_DIRS
+from checkier.config import PipelineConfig, ROLE_DIRS
 
 
 def _sha256(path: Path) -> str:

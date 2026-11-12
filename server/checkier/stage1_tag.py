@@ -30,9 +30,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from cyberaccountant.config import PipelineConfig
-from cyberaccountant.llm import call_llm_json
-from cyberaccountant.schemas import TAGGING_SCHEMA
+from checkier.config import PipelineConfig
+from checkier.llm import call_llm_json
+from checkier.schemas import TAGGING_SCHEMA
 
 # ---------------------------------------------------------------------------
 # Progress reporting (swap these callbacks for a frontend later)
