@@ -1,0 +1,20 @@
+# Node.js dependencies and framework caches
+node_modules/
+.next/
+.nuxt/
+.turbo/
+.parcel-cache/
+.svelte-kit/
+
+# Python virtualenvs and tool caches
+.venv/
+/venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+
+# Vite production output
+/client/dist/

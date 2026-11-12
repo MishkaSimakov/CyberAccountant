@@ -1,5 +1,31 @@
 # Дизайн системы
 
+## Сущности
+
+Алгоритм выделяет в каждом документе сущности. Примерный вариант разметки показан ниже.
+
+```
+## Ведомость
+
+РАСЧЕТНАЯ ВЕДОМОСТЬ ПО ОПЛАТЕ ТРУДА
+
+Документ: <entity type="id" value="ВЕД-ЗП-2026-02" unit="string" id="143">ВЕД-ЗП-2026-02</entity>
+
+Проект: <entity type="id" value="24/03/15-01" unit="string" id="144">24/03/15-01</entity> | Период: <entity type="date" value="2026-02" unit="date" id="145">Февраль 2026</entity>
+
+| Код статьи | Вид начисления | Сумма, руб. | Основание |
+| --- | --- | --- | --- |
+| <entity type="id" value="0201" unit="string" id="146">0201</entity> | Основная заработная плата | <entity type="number" value="1015500.00" unit="rubles" id="147">1 015 500,00</entity> | Табель и расчет начислений |
+| <entity type="id" value="0202" unit="string" id="148">0202</entity> | Дополнительная заработная плата и резерв отпусков | <entity type="number" value="101500.00" unit="rubles" id="149">101 500,00</entity> | Доплаты и компенсационные начисления |
+|  | ИТОГО | <entity type="number" value="1117000.00" unit="rubles" id="150">1 117 000,00</entity> |  |
+```
+
+Виды сущностей:
+
+- type="id" value="<string value>" unit="string" id="<unique number>"
+- type="date" value="<date in standard form>" unit="date" id="<unique number>"
+- type="number" value="<number in standard form>" unit="<rubles/euros/kg>" id="<unique number>"
+
 ## Требования
 
 По первичным файлам и итоговому отчёту алгоритм составляет список требований. Он представляет собой JSON. Требования
@@ -76,3 +102,50 @@ markdown-файл.
 
 К требованиям можно оставлять комментарии. Если требование составлено на естественном языке и проверено моделью, то
 должна быть возможность его заглушить. То есть отметить, что на самом деле нарушения нет. Требование при этом остаётся.
+
+## База данных
+
+### reports
+
+- id
+- name
+- contract_number
+- period_start
+- period_end
+- target_row
+- stage
+- processing_status
+- timestamps
+
+### files
+
+- id
+- name
+- path
+- hash
+- markdown_path
+- entities_path
+- version
+- report_id
+- role - final or supporting
+- status
+- error
+- size
+- content_type
+- timestamps
+
+### requirements
+
+- id
+- report_id
+- json
+- note
+- is_silenced
+
+### entity file
+
+Эта таблица полезна, когда надо вернуть пользователю то, из какого файла пришёл каждый из entity. Иначе надо будет
+загружать все файлы и заново их парсить.
+
+- report_id, entity_id - combined primary key
+- file_id
