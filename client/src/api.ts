@@ -95,6 +95,8 @@ export interface Requirement {
     equation: string | null
     evidence: string | null
     ids_related: number[]
+    notes: string
+    silenced: boolean
 }
 
 export const runVerification = (reportId: number) =>
@@ -102,3 +104,12 @@ export const runVerification = (reportId: number) =>
 
 export const getRequirements = (reportId: number) =>
     request<Requirement[]>(`/reports/${reportId}/requirements`)
+
+export type RequirementUpdate = Partial<Pick<Requirement, 'notes' | 'silenced'>>
+
+export const updateRequirement = (reportId: number, requirementId: number, changes: RequirementUpdate) =>
+    request<Requirement>(`/reports/${reportId}/requirements/${requirementId}`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(changes),
+    })

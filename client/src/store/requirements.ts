@@ -1,5 +1,12 @@
 import type {Module} from 'vuex'
-import {getReport, getRequirements, type Report, type Requirement} from '../api'
+import {
+    getReport,
+    getRequirements,
+    updateRequirement,
+    type Report,
+    type Requirement,
+    type RequirementUpdate
+} from '../api'
 import type {RootState} from './index'
 
 export interface RequirementsState {
@@ -9,10 +16,13 @@ export interface RequirementsState {
     items: Requirement[] | null
     loading: boolean
     error: string
+    saving: number[]
+    saveErrors: Record<number, string>
 }
 
 const initialState = (): RequirementsState => ({
     id: null, session: 0, report: null, items: null, loading: false, error: '',
+    saving: [], saveErrors: {},
 })
 
 export const requirements: Module<RequirementsState, RootState> = {
@@ -52,6 +62,31 @@ export const requirements: Module<RequirementsState, RootState> = {
                 })
             } finally {
                 if (state.session === session) commit('patch', {loading: false})
+            }
+        },
+        async update({state, commit}, {id, changes}: { id: number; changes: RequirementUpdate }) {
+            if (state.id === null || state.saving.includes(id)) return false
+            const reportId = state.id
+            const session = state.session
+            commit('patch', {
+                saving: [...state.saving, id],
+                saveErrors: {...state.saveErrors, [id]: ''},
+            })
+            try {
+                const updated = await updateRequirement(reportId, id, changes)
+                if (state.session !== session) return false
+                commit('patch', {items: state.items?.map(item => item.id === id ? updated : item) ?? null})
+                return true
+            } catch (cause) {
+                if (state.session === session) commit('patch', {
+                    saveErrors: {
+                        ...state.saveErrors,
+                        [id]: cause instanceof Error ? cause.message : 'Не удалось сохранить изменения.',
+                    },
+                })
+                return false
+            } finally {
+                if (state.session === session) commit('patch', {saving: state.saving.filter(item => item !== id)})
             }
         },
     },

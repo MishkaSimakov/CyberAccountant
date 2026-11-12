@@ -3,7 +3,7 @@
 import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from .documents import blockers_for, documents, find_report, report_details
 
@@ -16,6 +16,15 @@ class Requirement(BaseModel):
     equation: str | None = None
     evidence: str | None = None
     ids_related: list[int] = []
+    notes: str = ""
+    silenced: bool = False
+
+
+class RequirementUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notes: str = Field(default="", max_length=10000)
+    silenced: bool = False
 
 
 requirements: dict[int, list[Requirement]] = {}
@@ -69,3 +78,16 @@ async def report_requirements(report_id: int):
     if report.stage != "verification" or report.processing_status != "completed":
         raise HTTPException(409, "Проверка требований ещё не завершена.")
     return requirements.get(report_id, [])
+
+
+@router.patch("/reports/{report_id}/requirements/{requirement_id}", response_model=Requirement)
+async def update_requirement(report_id: int, requirement_id: int, payload: RequirementUpdate):
+    items = await report_requirements(report_id)
+    requirement = next((item for item in items if item.id == requirement_id), None)
+    if requirement is None:
+        raise HTTPException(404, "Требование не найдено.")
+    if payload.silenced and requirement.verdict:
+        raise HTTPException(409, "У выполненного требования нет предупреждения.")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(requirement, field, value)
+    return requirement
