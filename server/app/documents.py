@@ -10,6 +10,8 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from .entities import assign_entity_ids, prepare_entities
+
 router = APIRouter()
 MAX_FILE_SIZE = 20 * 1024 * 1024
 FILE_TYPES = {
@@ -149,7 +151,7 @@ async def simulate_ocr(report_id: int, document_id: int):
             f"# {document.name}\n\n"
             "> Демонстрационный результат: OCR пока работает как заглушка. "
             "Ниже приведён пример текста с сущностями. Текст документа не распознан.\n\n"
-            + MOCK_PAYROLL_MARKDOWN
+            + assign_entity_ids(MOCK_PAYROLL_MARKDOWN)
         )
         revisions[document_id] = [MarkdownRevision(content=content, revision=1)]
         document.markdown_revision = 1
@@ -244,7 +246,8 @@ async def document_markdown(report_id: int, document_id: int):
 
 @router.post("/reports/{report_id}/documents/{document_id}/markdown", response_model=MarkdownRevision)
 async def edit_markdown(report_id: int, document_id: int, payload: MarkdownEdit):
-    require_upload_stage(report_id)
+    if find_report(report_id).stage not in {"documents", "entities"}:
+        raise HTTPException(409, "Редактирование недоступно на этапе проверки требований.")
     document = find_document(report_id, document_id)
     if document.ocr_status != "completed":
         raise HTTPException(409, "Распознавание документа ещё не завершено.")
@@ -252,7 +255,10 @@ async def edit_markdown(report_id: int, document_id: int, payload: MarkdownEdit)
         raise HTTPException(409, "Текст уже изменён в другом окне. Скопируйте свои правки и заново откройте документ.")
     if not payload.content.strip():
         raise HTTPException(422, "Текст документа не может быть пустым.")
-    revision = MarkdownRevision(content=payload.content, revision=document.markdown_revision + 1)
+    content = prepare_entities(payload.content, revisions[document_id][-1].content)
+    if len(content) > 1_000_000:
+        raise HTTPException(422, "Текст документа вместе с разметкой не должен превышать 1 000 000 символов.")
+    revision = MarkdownRevision(content=content, revision=document.markdown_revision + 1)
     revisions[document_id].append(revision)
     document.markdown_revision = revision.revision
     document.user_edited = True

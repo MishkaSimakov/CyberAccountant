@@ -296,7 +296,9 @@ onUnmounted(() => {
       </div>
     </template>
 
-    <MarkdownEditor v-if="selected" :report-id="reportId" :document="selected" :readonly="!editable"
+    <MarkdownEditor v-if="selected" :report-id="reportId" :document="selected"
+                    :readonly="advancing || report?.stage === 'verification'"
+                    :entities="report?.stage !== 'documents'"
                     @close="selected = null" @saved="refresh"/>
   </main>
 </template>

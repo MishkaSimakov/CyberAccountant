@@ -8,7 +8,7 @@ import {getMarkdown, originalUrl, saveMarkdown, type ReportDocument} from '../ap
 import DocumentViewer from './viewers/DocumentViewer.vue'
 import MarkdownViewer from './viewers/MarkdownViewer.vue'
 
-const props = defineProps<{ reportId: number; document: ReportDocument; readonly: boolean }>()
+const props = defineProps<{ reportId: number; document: ReportDocument; readonly: boolean; entities?: boolean }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
 const dialog = ref<HTMLDialogElement | null>(null)
 const loading = ref(true)
@@ -17,13 +17,13 @@ const error = ref('')
 const content = ref('')
 const savedContent = ref('')
 const revision = ref(0)
-const preview = ref(props.readonly)
+const preview = ref(props.readonly || props.entities)
 const dirty = computed(() => content.value !== savedContent.value)
 const url = computed(() => originalUrl(props.reportId, props.document.id))
 let restorePageScroll: (() => void) | undefined
 
-watch(() => props.readonly, readonly => {
-  if (readonly) preview.value = true
+watch(() => props.readonly || props.entities, previewOnly => {
+  if (previewOnly) preview.value = true
 })
 
 function close() {
@@ -60,6 +60,12 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+function saveEntity(updatedContent: string) {
+  if (props.readonly || saving.value || !revision.value) return
+  content.value = updatedContent
+  void save()
 }
 
 onMounted(() => {
@@ -114,20 +120,23 @@ onUnmounted(() => restorePageScroll?.())
         <div class="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-3">
           <h3 v-if="preview" class="font-medium">Текст документа</h3>
           <label v-else for="markdown-content" class="font-medium">Markdown</label>
-          <div v-if="!readonly" class="flex gap-1" role="group" aria-label="Режим просмотра текста">
+          <div v-if="!readonly && !entities" class="flex gap-1" role="group" aria-label="Режим просмотра текста">
             <button type="button" class="cursor-pointer rounded px-2 py-1 hover:bg-slate-100"
                     :class="preview ? 'bg-blue-50 text-blue-700' : 'text-slate-500'"
-                    :aria-pressed="preview" @click="preview = true">Просмотр</button>
+                    :aria-pressed="preview" @click="preview = true">Просмотр
+            </button>
             <button type="button" class="cursor-pointer rounded px-2 py-1 hover:bg-slate-100"
                     :class="!preview ? 'bg-blue-50 text-blue-700' : 'text-slate-500'"
-                    :aria-pressed="!preview" @click="preview = false">Исходный текст</button>
+                    :aria-pressed="!preview" @click="preview = false">Исходный текст
+            </button>
           </div>
         </div>
         <p v-if="loading" class="p-6 text-slate-500" role="status">Загружаем текст…</p>
         <div v-else-if="!revision" class="p-6">
           <button class="cursor-pointer text-blue-700 hover:underline" @click="load">Повторить загрузку текста</button>
         </div>
-        <MarkdownViewer v-else-if="preview" :content="content"/>
+        <MarkdownViewer v-else-if="preview" :content="content" :entities="entities" :readonly="readonly || saving"
+                        @update:content="saveEntity"/>
         <textarea v-else id="markdown-content" v-model="content"
                   class="block min-h-0 w-full flex-1 resize-none overflow-auto overscroll-contain p-4 font-mono text-sm leading-relaxed focus:outline-blue-500"
                   :readonly="readonly || saving" maxlength="1000000" spellcheck="false"/>

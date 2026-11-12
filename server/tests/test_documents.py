@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from server.app import documents as store
+from server.app import entities
 from server.app.main import Report, app, report_store
 
 
@@ -16,6 +17,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         store.originals.clear()
         store.revisions.clear()
         store.next_document_id = 1
+        entities.next_entity_id = 1
         self.sleep_patch = patch.object(store.asyncio, "sleep", new_callable=AsyncMock)
         self.sleep_patch.start()
         self.addCleanup(self.sleep_patch.stop)
@@ -165,7 +167,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         status, _ = await self.json_request("DELETE", f'/reports/1/documents/{uploaded["id"]}')
         self.assertEqual(status, 409)
         status, _ = await self.json_request("POST", f'/reports/1/documents/{uploaded["id"]}/markdown', {"content": "edit", "base_revision": 1})
-        self.assertEqual(status, 409)
+        self.assertEqual(status, 200)
         status, _ = await self.json_request("GET", f'/reports/1/documents/{uploaded["id"]}/markdown')
         self.assertEqual(status, 200)
 
@@ -176,6 +178,78 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 404)
         status, _ = await self.json_request("GET", "/reports/999")
         self.assertEqual(status, 404)
+
+    async def test_entity_creation_editing_and_server_ids(self):
+        import re
+
+        _, uploaded = await self.upload()
+        path = f'/reports/1/documents/{uploaded["id"]}/markdown'
+        _, original = await self.json_request("GET", path)
+        initial_id = re.search(r'id="(\d+)"', original["content"])[1]
+        content = original["content"].replace('value="ВЕД-ЗП-2026-02"', 'value="corrected &amp; quoted &quot;value&quot;"', 1)
+        content += '\n<entity type="number" value="12.50" unit="euros">12,50 €</entity>'
+        status, saved = await self.json_request("POST", path, {"content": content, "base_revision": 1})
+        self.assertEqual(status, 200)
+        self.assertIn(f'id="{initial_id}"', saved["content"])
+        self.assertIn('value="corrected &amp; quoted &quot;value&quot;"', saved["content"])
+        ids = re.findall(r'\bid="(\d+)"', saved["content"])
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(len(ids), 9)
+        self.assertTrue(store.documents[1][uploaded["id"]].user_edited)
+        self.assertEqual(len(store.revisions[uploaded["id"]]), 2)
+        status, _ = await self.json_request("POST", path, {"content": content, "base_revision": 1})
+        self.assertEqual(status, 409)
+        # Re-saving existing markup preserves every assigned ID.
+        status, again = await self.json_request("POST", path, {"content": saved["content"], "base_revision": 2})
+        self.assertEqual(status, 200)
+        self.assertEqual(again["content"], saved["content"])
+
+    async def test_entity_validation_and_id_protection(self):
+        _, uploaded = await self.upload()
+        path = f'/reports/1/documents/{uploaded["id"]}/markdown'
+        _, original = await self.json_request("GET", path)
+        for markup in [
+            original["content"] + original["content"],
+            '<entity type="unknown" value="x" unit="string">x</entity>',
+            '<entity type="id" value="   " unit="string">x</entity>',
+            '<entity type="id" value="x" unit="kg">x</entity>',
+            '<entity type="number" value="1" unit="dollars">1</entity>',
+            '<entity type="number" value="NaN" unit="kg">1</entity>',
+            '<entity type="number" value="1,25" unit="kg">1</entity>',
+            '<entity type="date" value="2026-02-30" unit="date">date</entity>',
+            '<entity type="date" value="2026-13" unit="date">date</entity>',
+            '<entity type="id" value="x" unit="string" id="999999">x</entity>',
+            '<entity type="id" value="x" unit="string" extra="x">x</entity>',
+            '<entity type="id" value="x" unit="string">unclosed',
+            '<entity type="id" value="x" unit="string"><entity type="id" value="y" unit="string">y</entity></entity>',
+        ]:
+            with self.subTest(markup=markup):
+                status, _ = await self.json_request("POST", path, {"content": markup, "base_revision": 1})
+                self.assertEqual(status, 422)
+                self.assertEqual(len(store.revisions[uploaded["id"]]), 1)
+
+    async def test_entity_ids_unique_across_documents_and_types(self):
+        import re
+
+        _, first = await self.upload(role="final_report")
+        _, second = await self.upload()
+        path = f'/reports/1/documents/{second["id"]}/markdown'
+        _, a = await self.json_request("GET", f'/reports/1/documents/{first["id"]}/markdown')
+        _, b = await self.json_request("GET", path)
+        self.assertTrue(set(re.findall(r'\bid="(\d+)"', a["content"])).isdisjoint(re.findall(r'\bid="(\d+)"', b["content"])))
+        await self.json_request("POST", "/reports/1/run-entity-extraction")
+        content = '\n'.join([
+            '<entity type="id" value="code" unit="string">code</entity>',
+            '<entity type="date" value="2026-02" unit="date">Февраль</entity>',
+            '<entity type="date" value="2024-02-29" unit="date">29 февраля</entity>',
+            '<entity type="number" value="-12.5" unit="kg">-12,5</entity>',
+        ])
+        status, saved = await self.json_request("POST", path, {"content": content, "base_revision": 1})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(re.findall(r'\bid="(\d+)"', saved["content"])), 4)
+        report_store[0].stage = "verification"
+        status, _ = await self.json_request("POST", path, {"content": content, "base_revision": 2})
+        self.assertEqual(status, 409)
 
     async def test_deletion_during_ocr_does_not_recreate_document(self):
         from fastapi import BackgroundTasks, UploadFile

@@ -20,6 +20,12 @@
 |  | ИТОГО | <entity type="number" value="1117000.00" unit="rubles" id="150">1 117 000,00</entity> |  |
 ```
 
+Виды сущностей:
+
+- type="id" value="<string value>" unit="string" id="<unique number>"
+- type="date" value="<date in standard form>" unit="date" id="<unique number>"
+- type="number" value="<number in standard form>" unit="<rubles/euros/kg>" id="<unique number>"
+
 ## Требования
 
 По первичным файлам и итоговому отчёту алгоритм составляет список требований. Он представляет собой JSON. Требования
