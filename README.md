@@ -3,6 +3,7 @@
 - [TASK.md](docs/TASK.md) - описание задачи.
 - [DESIGN.md](docs/DESIGN.md) - описание дизайна системы.
 - [OCR.md](docs/OCR.md) - локальная конвертация документов в Markdown и координаты символов.
+- [INSURANCE_CONSTRAINTS.md](docs/INSURANCE_CONSTRAINTS.md) - алгоритмические ограничения для страховых взносов, статья `0300`.
 
 ## Local development start
 
