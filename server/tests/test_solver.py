@@ -252,3 +252,84 @@ def test_boolean_vs_number_is_type_clash_not_crash():
     relations, _, _, _ = solve_system(rels, reg)
     assert relations[0].status == "error"
     assert "type clash" in relations[0].error
+
+
+# ---------------------------------------------------------------------------
+# Dimensionality
+# ---------------------------------------------------------------------------
+
+
+def _amount(reg, raw, unit="RUB", norm="1", role="data", file="f1"):
+    return reg.add(type_="amount", raw=raw, unit=unit, norm=norm,
+                   file=file, role=role, span=(0, 0))
+
+
+def test_dimension_mismatch_different_currencies():
+    reg = EntityRegistry(0)
+    a = _amount(reg, "600")                    # RUB
+    u = _amount(reg, "400", unit="USD")        # USD
+    c = _amount(reg, "1000", role="card", file="f2")
+    rels = [{"equation": f"{a.key} + {u.key} == {c.key}"}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "error"
+    assert "dimension mismatch" in (relations[0].error or "")
+
+
+def test_scaled_unit_is_compatible_after_normalization():
+    # RUB_K with norm=1000 normalizes to RUB: 600 RUB + 400 RUB_K = 400600 RUB
+    reg = EntityRegistry(0)
+    a = _amount(reg, "600")
+    b = _amount(reg, "400", unit="RUB_K", norm="1000")
+    c = _amount(reg, "400600", role="card", file="f2")
+    rels = [{"equation": f"{a.key} + {b.key} == {c.key}"}]
+    relations, _, verdicts, _ = solve_system(rels, reg)
+    assert relations[0].status == "true"
+    v = next(v for v in verdicts if v.mnemonic == c.mnemonic)
+    assert v.status == "ok"
+
+
+def test_dimension_mismatch_amount_vs_number():
+    reg = EntityRegistry(0)
+    a = _amount(reg, "600")
+    n = reg.add(type_="number", raw="5", unit="", norm="1", file="f1",
+                role="data", span=(0, 0))
+    c = _amount(reg, "605", role="card", file="f2")
+    rels = [{"equation": f"{a.key} + {n.key} == {c.key}"}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "error"
+    assert "dimension mismatch" in (relations[0].error or "")
+
+
+def test_dimension_mismatch_date_vs_amount():
+    reg = EntityRegistry(0)
+    d = reg.add(type_="date", raw="01.01.2026", unit="", norm="1",
+                file="f1", role="data", span=(0, 0))
+    a = _amount(reg, "600")
+    rels = [{"equation": f"{d.key} + {a.key} == 700000"}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "error"
+    assert "dimension mismatch" in (relations[0].error or "")
+
+
+def test_bare_number_literal_adopts_dimension():
+    # literals are wildcards: a + 400 == c stays legal
+    reg = EntityRegistry(0)
+    a = _amount(reg, "600")
+    c = _amount(reg, "1000", role="card", file="f2")
+    rels = [{"equation": f"{a.key} + 400 == {c.key}"}]
+    relations, _, verdicts, _ = solve_system(rels, reg)
+    assert relations[0].status == "true"
+    v = next(v for v in verdicts if v.mnemonic == c.mnemonic)
+    assert v.status == "ok"
+
+
+def test_allowed_dim_pairs_permit_mixing():
+    reg = EntityRegistry(0)
+    a = _amount(reg, "600")
+    u = _amount(reg, "400", unit="USD")
+    c = _amount(reg, "1000", role="card", file="f2")
+    rels = [{"equation": f"{a.key} + {u.key} == {c.key}"}]
+    relations, _, _, _ = solve_system(
+        rels, reg, allowed_dim_pairs={("amount:RUB", "amount:USD")}
+    )
+    assert relations[0].status == "true"

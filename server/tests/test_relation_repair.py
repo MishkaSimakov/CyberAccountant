@@ -133,3 +133,23 @@ def test_no_errors_no_repair_call(tmp_path, monkeypatch):
 
     assert rels[0].status == "true"
     assert fake.prompts == []
+
+
+def test_dimension_mismatch_repaired(tmp_path, monkeypatch):
+    """RUB + USD is a dimension mismatch -> fed to the model -> dropped."""
+    cfg = _cfg(tmp_path)
+    reg = EntityRegistry(seed=1)
+    a = reg.add("amount", "600", "RUB", "1", "cardfile", "data", (0, 3))
+    u = reg.add("amount", "400", "USD", "1", "cardfile", "data", (0, 3))
+    bad = f"{a.mnemonic} + {u.mnemonic} == 1000"
+    relations_raw = [{"equation": bad, "tag": "agg", "source": "llm"}]
+    fake = _FakeRepair([[{"index": 0, "drop": True}]])
+    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", fake)
+
+    rels, *_ = solve_with_repairs(
+        cfg, relations_raw, reg, {"in_scope": {"cardfile"}}
+    )
+
+    assert rels == []  # model dropped the dimensionally-invalid equation
+    assert bad in fake.prompts[0]
+    assert "dimension mismatch" in fake.prompts[0]

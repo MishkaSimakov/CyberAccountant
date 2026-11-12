@@ -53,6 +53,11 @@ from checkier.formula import (
 NUMERIC_TYPES = ("amount", "number", "pct", "ratio")
 NUMERIC_SORTS = (z3.Z3_REAL_SORT, z3.Z3_INT_SORT)
 
+#: unit -> base unit for amounts whose ``norm`` scaling makes them compatible
+#: (an RUB_K entity with norm=1000 is normalized to RUB, so its dimension is
+#: "amount:RUB"). Units not listed here are their own base unit.
+BASE_UNITS = {"RUB_K": "RUB"}
+
 
 class FormulaUndetermined(FormulaError):
     """A relation is well-formed but cannot be decided for lack of data
@@ -137,6 +142,7 @@ class Solver:
         relations: list[Relation],
         registry: EntityRegistry,
         variable_keys: set | list | None = None,
+        allowed_dim_pairs: set[tuple[str, str]] | None = None,
     ) -> None:
         self.relations = relations
         self.registry = registry
@@ -146,6 +152,9 @@ class Solver:
             self.by_key[e.num] = e
         # None -> every card entity is a variable (targeting disabled)
         self.variable_keys = None if variable_keys is None else set(variable_keys)
+        #: dimension pairs allowed to mix under + / - (both orders). Empty:
+        #: no mixed-dimension arithmetic is allowed at all.
+        self.allowed_dim_pairs = set(allowed_dim_pairs or ())
         self.consts: dict[int, z3.ExprRef] = {}
         #: entity keys with asserted grounding facts (constants)
         self.grounded: set[str | int] = set()
@@ -294,6 +303,37 @@ class Solver:
                 yield from Solver._eq_leaves(node.left)
                 yield from Solver._eq_leaves(node.right)
 
+    # -- dimensionality ------------------------------------------------------
+    def _dim(self, node: Node) -> str | None:
+        """Dimension of a numeric expression ("amount:RUB", "date", "number",
+        ...). None is a wildcard that matches anything: bare number literals
+        adopt the other side's dimension, and products/quotients are not
+        tracked — so only entity-to-entity mismatches under + / - are flagged.
+        """
+        if isinstance(node, DateLit):
+            return "date"
+        if isinstance(node, Id):
+            e = self.by_key.get(node.key)
+            if e is None:
+                return None
+            if node.func == "raw":
+                # raw(id) is NOT normalized to base units — its dimension is
+                # the unit exactly as printed in the document
+                return f"raw:{e.type}:{e.unit}"
+            if e.type == "date":
+                return "date"
+            if e.type == "amount":
+                return f"amount:{BASE_UNITS.get(e.unit, e.unit)}"
+            if e.type in NUMERIC_TYPES:
+                return e.type  # number | pct | ratio
+            return None  # string-typed ids: handled by string rules
+        if isinstance(node, BinOp) and node.op in ("+", "-"):
+            l, r = self._dim(node.left), self._dim(node.right)
+            # children were already translated (and mismatches raised) by
+            # to_z3 before the parent's check runs, so l != r can't happen
+            return l or r
+        return None  # Num, *, /, comparisons, logic: wildcard
+
     # -- formula translation ----------------------------------------------------
     def to_z3(self, node: Node):
         """Translate to a z3 Bool/Arith expr, a constant bool (decided string
@@ -419,6 +459,19 @@ class Solver:
                 f"non-numeric operand to '{op}': {self._describe(node.left)}"
                 f" vs {self._describe(node.right)}"
             )
+        if op in ("+", "-"):
+            dl, dr = self._dim(node.left), self._dim(node.right)
+            if (
+                dl is not None
+                and dr is not None
+                and dl != dr
+                and (dl, dr) not in self.allowed_dim_pairs
+                and (dr, dl) not in self.allowed_dim_pairs
+            ):
+                raise FormulaError(
+                    f"dimension mismatch in '{op}': {self._describe(node.left)}"
+                    f" [{dl}] vs {self._describe(node.right)} [{dr}]"
+                )
         if op == "+":
             return l + r
         if op == "-":
@@ -582,13 +635,16 @@ def solve_system(
     relations_raw: list[dict],
     registry: EntityRegistry,
     variable_keys: set | list | None = None,
+    allowed_dim_pairs: set[tuple[str, str]] | None = None,
 ) -> tuple[list[Relation], list[Fishy], list[Verdict], list[str]]:
     """Top-level entry: build relations, solve against the registry.
 
     *relations_raw* items either have an ``equation`` key (Relation) or an
     ``evidence`` key (Fishy). *variable_keys* (entity mnemonics/nums of the
     requested card row) selects which card entities are treated as variables;
-    ``None`` treats all card entities as variables.
+    ``None`` treats all card entities as variables. *allowed_dim_pairs* lists
+    dimension pairs (e.g. ``{("amount:RUB", "amount:USD")}``) that may mix
+    under + / -; empty means no mixed-dimension arithmetic is allowed.
     Returns (relations, fishy, verdicts, dangling).
     """
     rels: list[Relation] = []
@@ -612,6 +668,10 @@ def solve_system(
                     verdict=r.get("verdict", "false"),
                 )
             )
-    solver = Solver(rels, registry, variable_keys=variable_keys)
+    solver = Solver(
+        rels, registry,
+        variable_keys=variable_keys,
+        allowed_dim_pairs=allowed_dim_pairs,
+    )
     solver.solve()
     return rels, fishy, solver.verdicts(), solver.dangling_files()
