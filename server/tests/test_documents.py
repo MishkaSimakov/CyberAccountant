@@ -11,6 +11,21 @@ from server.app import requirements as verification
 from server.app.main import Report, app, report_store
 
 
+OCR_MARKDOWN = """## Ведомость
+
+РАСЧЕТНАЯ ВЕДОМОСТЬ ПО ОПЛАТЕ ТРУДА
+
+Документ: <entity type="id" value="ВЕД-ЗП-2026-02" unit="string" id="143">ВЕД-ЗП-2026-02</entity>
+
+Проект: <entity type="id" value="24/03/15-01" unit="string" id="144">24/03/15-01</entity> | Период: <entity type="date" value="2026-02" unit="date" id="145">Февраль 2026</entity>
+
+| Код статьи | Вид начисления | Сумма, руб. | Основание |
+| --- | --- | --- | --- |
+| <entity type="id" value="0201" unit="string" id="146">0201</entity> | Основная заработная плата | <entity type="number" value="1015500.00" unit="rubles" id="147">1 015 500,00</entity> | Табель и расчет начислений |
+| <entity type="id" value="0202" unit="string" id="148">0202</entity> | Дополнительная заработная плата и резерв отпусков | <entity type="number" value="101500.00" unit="rubles" id="149">101 500,00</entity> | Доплаты и компенсационные начисления |
+|  | ИТОГО | <entity type="number" value="1117000.00" unit="rubles" id="150">1 117 000,00</entity> |  |
+"""
+
 class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         report_store[:] = [Report(id=1, name="Test report"), Report(id=2, name="Other report")]
@@ -20,9 +35,13 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         store.next_document_id = 1
         entities.next_entity_id = 1
         verification.requirements.clear()
-        self.sleep_patch = patch.object(store.asyncio, "sleep", new_callable=AsyncMock)
+        self.sleep_patch = patch.object(verification.asyncio, "sleep", new_callable=AsyncMock)
         self.sleep_patch.start()
         self.addCleanup(self.sleep_patch.stop)
+        self.real_extract_markdown = store.extract_markdown
+        self.ocr_patch = patch.object(store, "extract_markdown", side_effect=lambda name, data: entities.assign_entity_ids(OCR_MARKDOWN))
+        self.ocr_mock = self.ocr_patch.start()
+        self.addCleanup(self.ocr_patch.stop)
 
     async def request(self, method, path, body=b"", content_type="application/json"):
         messages = []
@@ -128,7 +147,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(other_report["blockers"], [])
 
     async def test_duplicates_are_reported_before_ocr_finishes(self):
-        with patch.object(store, "simulate_ocr", new_callable=AsyncMock):
+        with patch.object(store, "process_ocr", new_callable=AsyncMock):
             _, first = await self.upload(role="final_report", name="report.pdf", content=b"%PDF-1.4\nsame\n%%EOF")
             _, second = await self.upload(name="copy.pdf", content=b"%PDF-1.4\nsame\n%%EOF")
         _, details = await self.json_request("GET", "/reports/1")
@@ -149,39 +168,38 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(store.documents)
 
     async def test_polling_exposes_queued_running_and_completed(self):
-        first_wait = asyncio.Event()
-        second_wait = asyncio.Event()
-        release_first = asyncio.Event()
-        release_second = asyncio.Event()
+        from fastapi import BackgroundTasks, UploadFile
+        from io import BytesIO
 
-        async def wait_for_test(delay):
-            if delay == 1:
-                first_wait.set()
-                await release_first.wait()
-            else:
-                second_wait.set()
-                await release_second.wait()
+        tasks = BackgroundTasks()
+        document = await store.upload_document(1, tasks, UploadFile(BytesIO(b"%PDF-1.4\n%%EOF"), filename="report.pdf"),
+                                               "final_report")
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["documents"][0]["ocr_status"], "queued")
+        self.assertFalse(details["available_actions"])
+        running = asyncio.Event()
+        release = asyncio.Event()
 
-        with patch.object(store.asyncio, "sleep", side_effect=wait_for_test):
-            upload_task = asyncio.create_task(self.upload())
+        async def convert_in_background(function, *args):
+            running.set()
+            await release.wait()
+            return function(*args)
+
+        with patch.object(store, "run_in_threadpool", side_effect=convert_in_background):
+            processing = asyncio.create_task(tasks())
             try:
-                await asyncio.wait_for(first_wait.wait(), timeout=2)
-                _, details = await self.json_request("GET", "/reports/1")
-                self.assertEqual(details["documents"][0]["ocr_status"], "queued")
-                self.assertFalse(details["available_actions"])
-                release_first.set()
-                await asyncio.wait_for(second_wait.wait(), timeout=2)
+                await asyncio.wait_for(running.wait(), timeout=2)
                 _, details = await self.json_request("GET", "/reports/1")
                 self.assertEqual(details["documents"][0]["ocr_status"], "running")
                 self.assertEqual(details["progress"]["completed"], 0)
-                release_second.set()
-                await asyncio.wait_for(upload_task, timeout=2)
+                release.set()
+                await asyncio.wait_for(processing, timeout=2)
                 _, details = await self.json_request("GET", "/reports/1")
                 self.assertEqual(details["documents"][0]["ocr_status"], "completed")
+                self.assertIn(document.id, store.revisions)
             finally:
-                release_first.set()
-                release_second.set()
-                await upload_task
+                release.set()
+                await processing
 
     async def test_failed_document_blocks_until_deleted_and_reuploaded(self):
         await self.upload(role="final_report", name="report.pdf")
@@ -199,6 +217,42 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         await self.upload()
         _, details = await self.json_request("GET", "/reports/1")
         self.assertEqual(details["available_actions"], ["run_entity_extraction"])
+
+    async def test_ocr_failure_is_reported_without_saving_markdown(self):
+        self.ocr_mock.side_effect = RuntimeError("OCR unavailable")
+        _, uploaded = await self.upload()
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["documents"][0]["ocr_status"], "failed")
+        self.assertTrue(details["documents"][0]["error"])
+        self.assertNotIn(uploaded["id"], store.revisions)
+        status, _ = await self.json_request("GET", f'/reports/1/documents/{uploaded["id"]}/markdown')
+        self.assertEqual(status, 409)
+
+    async def test_deletion_while_ocr_runs_does_not_restore_markdown(self):
+        async def delete_during_conversion(function, *args):
+            await store.delete_document(1, 1)
+            return "Recognized text"
+
+        with patch.object(store, "run_in_threadpool", side_effect=delete_during_conversion):
+            await self.upload()
+        self.assertFalse(store.documents[1])
+        self.assertFalse(store.originals)
+        self.assertFalse(store.revisions)
+
+    async def test_real_pdf_upload_returns_recognized_markdown_and_preserves_preview(self):
+        import pymupdf as fitz
+
+        self.ocr_mock.side_effect = self.real_extract_markdown
+        with fitz.open() as pdf:
+            pdf.new_page().insert_text((50, 50), "Invoice total 12345.67")
+            data = pdf.tobytes()
+        _, uploaded = await self.upload(content=data)
+        status, markdown = await self.json_request("GET", f'/reports/1/documents/{uploaded["id"]}/markdown')
+        self.assertEqual(status, 200)
+        self.assertIn("Invoice total 12345.67", markdown["content"])
+        self.assertNotIn("ВЕД-ЗП", markdown["content"])
+        status, original = await self.request("GET", f'/reports/1/documents/{uploaded["id"]}/original')
+        self.assertEqual((status, original), (200, data))
 
     async def test_markdown_revisions_conflicts_and_empty_edits(self):
         _, uploaded = await self.upload()

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cyber-accountant-office-sandbox"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["fastapi==0.162.4", "uvicorn==0.54.0"]
+# LibreOffice's UNO binding is supplied by Debian's python3-uno in Dockerfile.
+# The venv exposes system packages so it uses that matching Python binding.
+
+[tool.setuptools]
+py-modules = ["service", "office_worker"]

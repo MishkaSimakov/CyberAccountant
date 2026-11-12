@@ -5,7 +5,8 @@
 !server/
 !server/app/
 !server/app/**
-!server/requirements.txt
+!server/pyproject.toml
+!server/Dockerfile
 client/node_modules/
 client/dist/
 client/.gitignore
