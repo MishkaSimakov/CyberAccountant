@@ -9,6 +9,7 @@ dependencies = [
     "sympy>=1.13",
     "python-dotenv>=1.0",
     "jsonschema>=4.23",
+    "z3-solver>=4.12",
 ]
 
 [dependency-groups]

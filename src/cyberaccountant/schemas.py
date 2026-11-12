@@ -33,6 +33,24 @@ TAGGING_SCHEMA = {
 
 TAG_TYPES = ("amount", "date", "docid", "contract", "number", "pct", "ratio")
 
+# Stage 2b: date normalization. One entry per unparsed period expression;
+# "normalized" is always DD.MM.YYYY (first day of the period).
+DATE_NORM_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "raw": {"type": "string"},
+            "normalized": {
+                "type": "string",
+                "description": "DD.MM.YYYY — first day of the period",
+            },
+        },
+        "required": ["raw", "normalized"],
+        "additionalProperties": False,
+    },
+}
+
 TAG_ATTR_SCHEMA = {
     "t": TAG_TYPES,
     "u": None,  # free-form unit string

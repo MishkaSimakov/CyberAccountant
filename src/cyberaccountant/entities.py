@@ -170,6 +170,7 @@ class Entity:
     span: tuple[int, int]  # (start, end) in the tagged doc
     loc: str = "body"  # body | filename
     source_text: str = ""  # the raw fragment inside the tag
+    normalized_from: str = ""  # set when an LLM normalized an unparsable date raw
 
     def to_dict(self) -> dict:
         return {
@@ -185,6 +186,7 @@ class Entity:
             "span": list(self.span),
             "loc": self.loc,
             "source_text": self.source_text,
+            "normalized_from": self.normalized_from,
         }
 
     @property

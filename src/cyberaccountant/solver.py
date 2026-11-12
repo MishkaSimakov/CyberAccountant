@@ -1,28 +1,42 @@
-"""Equation system solver.
+"""Stage 6: SMT-backed equation system solver (Z3 for numeric/date
+constraints, union-find for string identities).
 
-The system is built from relations (equations) over entity ids. Entities from
-данные/request documents are constants; entities from the card are variables
-whose stated values we verify.
+Model:
+  - данные/request entities are constants (truth by definition);
+  - entities of the requested card row (``variable_keys``) are variables to
+    solve and check against their stated values;
+  - every other card entity is trusted and grounded as a constant.
 
-Strategy:
-1. Substitute known constants into every relation.
-2. Evaluate relations that become fully ground -> boolean verdict.
-3. Equalities with exactly one unknown -> solve directly (linear inversion).
-4. Remaining multi-variable linear equalities -> sympy linear solve.
-5. Inequalities with unknowns -> bound propagation (best effort).
-6. Card variables never constrained -> "unverified"; variables whose solved
-   value differs from the card's stated value -> "mismatch".
+String identities (docids, contract numbers) are NOT given to z3 — the
+String/seq theory in this z3 build hangs on mixed string+arithmetic contexts
+(ignoring solver timeouts). Instead, all ``==``/``!=`` between string-typed
+operands are resolved with a union-find over a shared value universe:
+entities with grounded values and string literals form components; a
+component with exactly one distinct value pins every member (including
+card string variables); a component with two distinct values is contradictory
+(``==`` evaluates false, ``!=`` true). This is complete for ==/!= systems.
+
+Numeric/date relations go to z3 as LRA/LIA (amounts as Real, dates as Int
+ordinals). Each relation is either *entailed* by the constants, *contradicted*
+by them, or *contingent*; contingent relations accumulate into one growing
+constraint set, so systems only solvable jointly (``x + y == a &&
+x - y == b``) pin their variables exactly like single-unknown equations.
+
+After solving, every target-row variable is checked for *rigidity*: if the
+negation of its model value is still satisfiable, the system underdetermines
+it and the cell is reported ``unverified`` (недостаточно данных) rather than
+``ok``/``mismatch``.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from decimal import Decimal
-from pathlib import Path
-from typing import Any
+from fractions import Fraction
 
-from cyberaccountant.entities import Entity, EntityRegistry
+import z3
+
+from cyberaccountant.entities import Entity, EntityRegistry, parse_amount
 from cyberaccountant.formula import (
     BinOp,
     DateLit,
@@ -31,11 +45,12 @@ from cyberaccountant.formula import (
     Node,
     Num,
     Str,
-    Sym,
     collect_ids,
-    evaluate,
     parse,
 )
+
+NUMERIC_TYPES = ("amount", "number", "pct", "ratio")
+NUMERIC_SORTS = (z3.Z3_REAL_SORT, z3.Z3_INT_SORT)
 
 
 @dataclass
@@ -43,147 +58,70 @@ class Relation:
     index: int
     equation: str
     tag: str | None = None
-    source: str = "llm"  # llm | scope
-    # filled during solving:
+    source: str = "llm"
     ast: Node | None = None
-    status: str = "pending"  # pending | true | false | unverifiable | error
+    status: str = "pending"  # pending | true | false | error | unverifiable
     error: str | None = None
-    unknowns: list[str | int] = field(default_factory=list)
-    involved_files: list[str] = field(default_factory=list)
+    unknowns: list = field(default_factory=list)
+    involved_files: list = field(default_factory=list)
 
 
 @dataclass
 class Fishy:
-    """LLM observation about suspicious data that cannot be an equation."""
-
     index: int
     evidence: str
-    ids_related: list[str | int]
+    ids_related: list = field(default_factory=list)
     verdict: str = "false"
 
 
 @dataclass
 class Verdict:
-    key: str | int
-    num: int
-    mnemonic: str
-    role: str
-    file: str
-    raw: str
-    type: str
-    status: str  # ok | mismatch | unverified | unused
-    stated: Any = None
-    expected: Any = None
-    diff: Any = None
-    relations: list[int] = field(default_factory=list)
+    key: str | int | None = None
+    num: int = 0
+    mnemonic: str = ""
+    role: str = ""
+    file: str = ""
+    raw: str = ""
+    type: str = ""
+    status: str = ""  # ok | mismatch | unverified | constant
+    stated: str | None = None
+    expected: str | None = None
+    diff: str | None = None
+    target: bool = True  # False for non-target card cells (trusted constants)
 
 
-# ---------------------------------------------------------------------------
-# Symbolic linear forms
-# ---------------------------------------------------------------------------
+class _StrVal:
+    """Resolved (or unresolvable) string operand — never enters z3."""
+
+    __slots__ = ("value", "desc")
+
+    def __init__(self, value: str | None, desc: str) -> None:
+        self.value = value
+        self.desc = desc
+
+    def __repr__(self) -> str:
+        return f"_StrVal({self.value!r}, {self.desc})"
 
 
-@dataclass
-class Linear:
-    """A linear combination: coeffs {key: Decimal} + const Decimal."""
-
-    coeffs: dict[Any, Decimal]
-    const: Decimal = Decimal(0)
-
-    @classmethod
-    def constant(cls, v: Decimal) -> "Linear":
-        return cls({}, v)
-
-    @classmethod
-    def symbol(cls, key: Any) -> "Linear":
-        return cls({key: Decimal(1)}, Decimal(0))
-
-    def is_const(self) -> bool:
-        return not self.coeffs
-
-    def value(self) -> Decimal | None:
-        return self.const if self.is_const() else None
-
-    def __add__(self, other: "Linear") -> "Linear":
-        c = dict(self.coeffs)
-        for k, v in other.coeffs.items():
-            c[k] = c.get(k, Decimal(0)) + v
-        return Linear(c, self.const + other.const)
-
-    def __sub__(self, other: "Linear") -> "Linear":
-        c = dict(self.coeffs)
-        for k, v in other.coeffs.items():
-            c[k] = c.get(k, Decimal(0)) - v
-        return Linear(c, self.const - other.const)
-
-    def __mul__(self, other: "Linear | Decimal") -> "Linear":
-        if isinstance(other, Decimal):
-            return Linear(
-                {k: v * other for k, v in self.coeffs.items()}, self.const * other
-            )
-        if self.is_const():
-            return other * self.const
-        if other.is_const():
-            return self * other.const
-        raise FormulaError("non-linear multiplication")
-
-    def __truediv__(self, other: "Linear | Decimal") -> "Linear":
-        if isinstance(other, Decimal):
-            return Linear(
-                {k: v / other for k, v in self.coeffs.items()}, self.const / other
-            )
-        if other.is_const():
-            return self / other.const
-        raise FormulaError("division by symbolic expression")
-
-
-def to_linear(node: Node, env: dict) -> Linear:
-    """Convert an AST to a Linear form. Dates -> ordinal constants.
-    Strings/bools only allowed as bare equality operands (handled by caller).
-    Raises FormulaError on non-linear structure.
-    """
-    if isinstance(node, Num):
-        return Linear.constant(node.value)
-    if isinstance(node, DateLit):
-        return Linear.constant(Decimal(node.value.toordinal()))
-    if isinstance(node, Id):
-        v = env.get(node.key)
-        if isinstance(v, Decimal):
-            return Linear.constant(v)
-        if isinstance(v, (int,)) and not isinstance(v, bool):
-            return Linear.constant(Decimal(v))
-        return Linear.symbol(node.key)
-    if isinstance(node, Str):
-        raise FormulaError("string operand outside equality comparison")
-    if isinstance(node, BinOp):
-        if node.op in ("&&", "||"):
-            raise FormulaError("boolean operator inside arithmetic expression")
-        if node.op in ("==", "!=", "<", "<=", ">", ">="):
-            raise FormulaError("comparison inside arithmetic expression")
-        l = to_linear(node.left, env)
-        r = to_linear(node.right, env)
-        if node.op == "+":
-            return l + r
-        if node.op == "-":
-            return l - r
-        if node.op == "*":
-            return l * r
-        if node.op == "/":
-            return l / r
-    raise FormulaError(f"cannot linearize {node!r}")
-
-
-# ---------------------------------------------------------------------------
-# Solver
-# ---------------------------------------------------------------------------
-
-
-def _to_decimal(value: Any) -> Decimal | None:
-    """Best-effort Decimal conversion; None if the value isn't numeric."""
+def _to_decimal(value) -> Decimal | None:
     try:
         return Decimal(str(value))
-    except Exception:  # noqa: BLE001 - Decimal raises InvalidOperation on bad input
+    except Exception:  # noqa: BLE001 - Decimal raises InvalidOperation
         return None
+
+
+def _real_val(d: Decimal):
+    return z3.RealVal(format(d, "f"))
+
+
+def _dec_of(v) -> Decimal | str:
+    """Convert a z3 model value to Decimal (numbers) or plain str (strings)."""
+    if z3.is_rational_value(v):
+        f = Fraction(v.numerator_as_long(), v.denominator_as_long())
+        return Decimal(f.numerator) / Decimal(f.denominator)
+    if z3.is_int_value(v):
+        return Decimal(v.as_long())
+    return str(v).strip('"')
 
 
 class Solver:
@@ -191,6 +129,7 @@ class Solver:
         self,
         relations: list[Relation],
         registry: EntityRegistry,
+        variable_keys: set | list | None = None,
     ) -> None:
         self.relations = relations
         self.registry = registry
@@ -198,54 +137,308 @@ class Solver:
         for e in registry.entities:
             self.by_key[e.mnemonic] = e
             self.by_key[e.num] = e
-        # known values: Decimal for amounts/dates (as ordinal), str for ids
-        self.values: dict[str | int, Any] = {}
-        for e in registry.entities:
-            if e.value is None:
+        # None -> every card entity is a variable (targeting disabled)
+        self.variable_keys = None if variable_keys is None else set(variable_keys)
+        self.consts: dict[int, z3.ExprRef] = {}
+        #: entity keys with asserted grounding facts (constants)
+        self.grounded: set[str | int] = set()
+        #: solved (rigid) values for target-row variables (Decimal | str)
+        self.pin: dict[str, Decimal | str] = {}
+        #: target-row variables the system underdetermines
+        self.free: set[str] = set()
+        #: num -> resolved string value for string-typed entities
+        self.str_value: dict[int, str | None] = {}
+        #: nums whose string component is contradictory (== false, != true)
+        self.str_contra: set[int] = set()
+        self.acc = z3.Solver()
+        self.acc.set("timeout", 20_000)  # ms; unknown -> "unverifiable"
+        self._build_consts()
+
+    # -- entity classification -------------------------------------------------
+    def _is_variable(self, e: Entity) -> bool:
+        if e.role != "card":
+            return False
+        if self.variable_keys is None:
+            return True
+        return e.mnemonic in self.variable_keys or e.num in self.variable_keys
+
+    def _const_sort(self, e: Entity) -> str:
+        """int | real | string — mirrors how the const was/will be built.
+
+        An unparsable numeric raw (e.g. "3/1") becomes a string const so
+        identity comparisons work and only arithmetic on it is rejected.
+        """
+        if e.type == "date":
+            return "int"
+        if e.type in NUMERIC_TYPES and (
+            e.value is None or _to_decimal(e.value) is not None
+        ):
+            return "real"
+        return "string"
+
+    def _new_const(self, e: Entity) -> z3.ExprRef:
+        sort = self._const_sort(e)
+        c: z3.ExprRef
+        if sort == "int":
+            c = z3.Int(f"e{e.num}")
+        elif sort == "real":
+            c = z3.Real(f"e{e.num}")
+        else:
+            # string consts are symbolic only — they never enter z3
+            self.str_value.setdefault(e.num, None)
+            return z3.String(f"s{e.num}")  # placeholder, unused in assertions
+        if self._is_variable(e):
+            return c  # variable: deliberately unbound
+        val = e.value
+        if val is None:
+            return c  # truth unknown — leave free, relations may pin it
+        d = _to_decimal(val)
+        if d is None:
+            return c
+        lit = z3.IntVal(int(d)) if sort == "int" else _real_val(d)
+        self.acc.add(c == lit)
+        self.grounded.add(e.mnemonic)
+        self.grounded.add(e.num)
+        return c
+
+    def _const(self, e: Entity, func: str | None = None) -> z3.ExprRef:
+        if func == "raw":
+            if e.num in self.consts:
+                return self.consts[e.num]
+            v = parse_amount(e.raw)
+            if v is None:
+                raise FormulaError(
+                    f"raw({e.mnemonic}) has no numeric raw value: {e.raw!r}"
+                )
+            c: z3.ExprRef = z3.Real(f"raw_{e.num}")
+            self.acc.add(c == _real_val(v))
+            self.grounded.add(e.mnemonic)
+            self.grounded.add(e.num)
+            self.consts[e.num] = c
+            return c
+        if e.num not in self.consts:
+            self.consts[e.num] = self._new_const(e)
+        return self.consts[e.num]
+
+    def _build_consts(self) -> None:
+        for e in self.registry.entities:
+            self._const(e)
+
+    # -- string identity resolution (union-find, no z3) -------------------------
+    def _resolve_strings(self) -> None:
+        parent: dict[tuple, tuple] = {}
+
+        def find(x: tuple) -> tuple:
+            parent.setdefault(x, x)
+            root = x
+            while parent[root] != root:
+                root = parent[root]
+            while parent[x] != root:  # path compression
+                parent[x], x = root, parent[x]
+            return root
+
+        def union(a: tuple, b: tuple) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        def key_of(node: Node) -> tuple | None:
+            if isinstance(node, Str):
+                return ("lit", node.value)
+            if isinstance(node, Id) and node.func is None:
+                e = self.by_key.get(node.key)
+                if e is not None and self._const_sort(e) == "string":
+                    return ("ent", e.num)
+            return None
+
+        neq: list[tuple[tuple, tuple]] = []
+        for rel in self.relations:
+            if rel.ast is None:
                 continue
-            if e.role in ("data", "request"):
-                if e.type == "date":
-                    dec = _to_decimal(e.value)
-                    self.values[e.key] = dec if dec is not None else str(e.value)
-                elif e.type in ("amount", "number", "pct", "ratio"):
-                    dec = _to_decimal(e.value)
-                    # non-numeric "number" values (e.g. "3/1") stay strings
-                    self.values[e.key] = dec if dec is not None else str(e.value)
+            for op, l_node, r_node in self._eq_leaves(rel.ast):
+                ka, kb = key_of(l_node), key_of(r_node)
+                if ka is None or kb is None:
+                    continue
+                if op == "==":
+                    union(ka, kb)
                 else:
-                    self.values[e.key] = str(e.value)
-        # card entities are variables (even though we know their stated value)
-        self.stated: dict[str | int, Any] = {}
-        for e in registry.entities:
-            if e.role == "card":
-                if e.type == "date" and e.value is not None:
-                    dec = _to_decimal(e.value)
-                    self.stated[e.key] = dec if dec is not None else str(e.value)
-                elif e.type in ("amount", "number", "pct", "ratio") and e.value is not None:
-                    dec = _to_decimal(e.value)
-                    self.stated[e.key] = dec if dec is not None else str(e.value)
+                    neq.append((ka, kb))
+
+        # component values from grounded entities and literals
+        values: dict[tuple, set[str]] = {}
+
+        def add_val(k: tuple, v: str) -> None:
+            values.setdefault(find(k), set()).add(v)
+
+        for e in self.registry.entities:
+            if self._const_sort(e) == "string" and e.value is not None:
+                add_val(("ent", e.num), str(e.value))
+        for pair in neq:
+            for k in pair:
+                if k[0] == "lit":
+                    add_val(k, k[1])
+
+        def resolve(k: tuple) -> tuple[str | None, bool]:
+            vals = values.get(find(k), set())
+            if len(vals) == 1:
+                return next(iter(vals)), False
+            if len(vals) > 1:
+                return None, True
+            return None, False
+
+        for e in self.registry.entities:
+            if self._const_sort(e) != "string":
+                continue
+            v, contra = resolve(("ent", e.num))
+            if contra:
+                self.str_contra.add(e.num)
+            self.str_value[e.num] = v
+            if self._is_variable(e):
+                if v is not None:
+                    self.pin[e.mnemonic] = v  # rigid by propagation
+                    self.grounded.add(e.mnemonic)
+                    self.grounded.add(e.num)
                 else:
-                    self.stated[e.key] = e.value
-        # bounds for inequality propagation
-        self._bounds: dict[Any, tuple[str, Decimal]] = {}
+                    self.free.add(e.mnemonic)
 
     @staticmethod
-    def _bound_tighter(old: tuple[str, Decimal], new: tuple[str, Decimal]) -> bool:
-        # Conservative: always accept new bound (bounds only get tighter with
-        # monotone propagation in this simple scheme).
-        return True
+    def _eq_leaves(node: Node):
+        """All ==/!= comparisons anywhere in the boolean expression tree."""
+        if isinstance(node, BinOp):
+            if node.op in ("==", "!="):
+                yield node.op, node.left, node.right
+            else:
+                yield from Solver._eq_leaves(node.left)
+                yield from Solver._eq_leaves(node.right)
 
-    # -- main loop ----------------------------------------------------------
+    # -- formula translation ----------------------------------------------------
+    def to_z3(self, node: Node):
+        """Translate to a z3 Bool/Arith expr, a constant bool (decided string
+        comparison or folded logic), or a _StrVal (string operand)."""
+        if isinstance(node, Num):
+            return _real_val(node.value)
+        if isinstance(node, Str):
+            return _StrVal(node.value, repr(node.value))
+        if isinstance(node, DateLit):
+            return z3.IntVal(node.value.toordinal())
+        if isinstance(node, Id):
+            e = self.by_key.get(node.key)
+            if e is None:
+                raise FormulaError(f"unknown entity id {node.key!r}")
+            if self._const_sort(e) == "string" and node.func != "raw":
+                return _StrVal(self.str_value.get(e.num), f"{node.key} (raw={e.raw!r})")
+            return self._const(e, node.func)
+        if isinstance(node, BinOp):
+            return self._binop(node)
+        raise FormulaError(f"unknown AST node {node!r}")
+
+    def _describe(self, x) -> str:
+        if isinstance(x, _StrVal):
+            return x.desc
+        if isinstance(x, Id):
+            e = self.by_key.get(x.key)
+            extra = f" (type={e.type}, raw={e.raw!r})" if e else ""
+            return f"{x.key}{extra}"
+        return repr(getattr(x, "value", x))[:80]
+
+    @staticmethod
+    def _fold(op: str, parts: list):
+        """Combine &&/|| operands that may mix bools and z3 BoolRefs."""
+        exprs = [p for p in parts if not isinstance(p, bool)]
+        if op == "&&":
+            if any(p is False for p in parts):
+                return False
+        else:
+            if any(p is True for p in parts):
+                return True
+        if not exprs:
+            return op == "&&"
+        return exprs[0] if len(exprs) == 1 else (z3.And(*exprs) if op == "&&" else z3.Or(*exprs))
+
+    def _binop(self, node: BinOp):
+        op = node.op
+        if op in ("&&", "||"):
+            l = self.to_z3(node.left)
+            r = self.to_z3(node.right)
+            for side, sub in ((l, node.left), (r, node.right)):
+                if not isinstance(side, bool) and side.sort().kind() != z3.Z3_BOOL_SORT:
+                    raise FormulaError(
+                        f"non-boolean operand to '{op}': {self._describe(sub)}"
+                    )
+            return self._fold(op, [l, r])
+        l = self.to_z3(node.left)
+        r = self.to_z3(node.right)
+        # string comparisons are decided here, never in z3
+        if isinstance(l, _StrVal) or isinstance(r, _StrVal):
+            if not (isinstance(l, _StrVal) and isinstance(r, _StrVal)):
+                raise FormulaError(
+                    f"type clash in '{op}': {self._describe(l)}"
+                    f" vs {self._describe(r)}"
+                )
+            e_l = self.by_key.get(node.left.key) if isinstance(node.left, Id) else None
+            e_r = self.by_key.get(node.right.key) if isinstance(node.right, Id) else None
+            contra = (
+                (e_l is not None and e_l.num in self.str_contra)
+                or (e_r is not None and e_r.num in self.str_contra)
+            )
+            if contra:
+                return op == "!="
+            if l.value is None or r.value is None:
+                raise FormulaError(
+                    f"string value undetermined in '{op}': {l.desc} vs {r.desc}"
+                )
+            eq = l.value == r.value
+            return eq if op == "==" else not eq
+        lk = l.sort().kind()
+        rk = r.sort().kind()
+        if op in ("==", "!="):
+            clash = (lk in NUMERIC_SORTS) != (rk in NUMERIC_SORTS)
+            if clash:
+                raise FormulaError(
+                    f"type clash in '{op}': {self._describe(node.left)}"
+                    f" vs {self._describe(node.right)}"
+                )
+            return l == r if op == "==" else l != r
+        if op in ("<", "<=", ">", ">="):
+            if lk not in NUMERIC_SORTS or rk not in NUMERIC_SORTS:
+                raise FormulaError(
+                    f"non-numeric operand to '{op}': {self._describe(node.left)}"
+                    f" vs {self._describe(node.right)}"
+                )
+            if op == "<":
+                return l < r
+            if op == "<=":
+                return l <= r
+            if op == ">":
+                return l > r
+            return l >= r
+        # arithmetic
+        if lk not in NUMERIC_SORTS or rk not in NUMERIC_SORTS:
+            raise FormulaError(
+                f"non-numeric operand to '{op}': {self._describe(node.left)}"
+                f" vs {self._describe(node.right)}"
+            )
+        if op == "+":
+            return l + r
+        if op == "-":
+            return l - r
+        if op == "*":
+            return l * r
+        return l / r
+
+    # -- solving ----------------------------------------------------------------
+    def _check(self, assertion: z3.ExprRef):
+        self.acc.push()
+        self.acc.add(assertion)
+        res = self.acc.check()
+        self.acc.pop()
+        return res
+
     def solve(self) -> None:
-        # Parse all relations first
         for rel in self.relations:
             try:
                 rel.ast = parse(rel.equation)
                 ids = collect_ids(rel.ast)
-                rel.unknowns = [
-                    k
-                    for k in ids
-                    if self._entity_role(k) == "card" and k not in self.values
-                ]
                 rel.involved_files = sorted(
                     {self.by_key[k].file for k in ids if k in self.by_key}
                 )
@@ -253,286 +446,117 @@ class Solver:
                 rel.status = "error"
                 rel.error = str(exc)
 
-        for _ in range(50):  # fixpoint
-            progressed = self._iterate()
-            if not progressed:
-                break
-        # Final classification
-        for rel in self.relations:
-            if rel.status == "error":
-                continue
-            self._classify(rel)
+        self._resolve_strings()
 
-    def _iterate(self) -> bool:
-        progressed = False
         for rel in self.relations:
             if rel.status != "pending" or rel.ast is None:
                 continue
             try:
-                if self._try_relation(rel):
-                    progressed = True
-            except Exception as exc:  # noqa: BLE001 - one bad relation must not
-                rel.status = "error"   # kill the solve; diagnose and move on
-                rel.error = f"{type(exc).__name__}: {exc}"
-        return progressed
-
-    # -- relation handling --------------------------------------------------
-    def _try_relation(self, rel: Relation) -> bool:
-        """Try to make progress on one relation. Returns True if a new value
-        was learned."""
-        node = rel.ast
-        try:
-            if isinstance(node, BinOp) and node.op in ("&&", "||"):
-                # Split into parts and handle each
-                parts = self._flatten_bool(node)
-                all_done = True
-                learned = False
-                for part in parts:
-                    sub = Relation(
-                        index=rel.index,
-                        equation="(part)",
-                        tag=rel.tag,
-                        source=rel.source,
-                        ast=part,
-                    )
-                    self._fill_unknowns(sub)
-                    if sub.status == "pending":
-                        if self._try_simple(sub):
-                            learned = True
-                        else:
-                            all_done = False
-                    elif sub.status == "error":
-                        rel.status = "error"
-                        rel.error = sub.error
-                        return False
-                if all_done:
-                    rel.status = "true"
-                return learned
-            return self._try_simple(rel)
-        except FormulaError as exc:
-            rel.status = "error"
-            rel.error = str(exc)
-            return False
-
-    def _flatten_bool(self, node: Node) -> list[Node]:
-        if isinstance(node, BinOp) and node.op in ("&&", "||"):
-            return self._flatten_bool(node.left) + self._flatten_bool(node.right)
-        return [node]
-
-    def _fill_unknowns(self, rel: Relation) -> None:
-        if rel.ast is None:
-            rel.unknowns = []
-            return
-        ids = collect_ids(rel.ast)
-        rel.unknowns = [
-            k for k in ids if self._entity_role(k) == "card" and k not in self.values
-        ]
-
-    def _try_simple(self, rel: Relation) -> bool:
-        """Handle a single comparison or equality. Returns True if progress."""
-        node = rel.ast
-        if node is None:
-            return False
-        if not isinstance(node, BinOp):
-            # bare boolean expression — just evaluate
-            v = evaluate(node, self.values)
-            if isinstance(v, Sym):
-                return False
-            rel.status = "true" if v else "false"
-            return False
-        op = node.op
-        if op in ("==", "!="):
-            return self._try_equality(rel, node, op)
-        if op in ("<", "<=", ">", ">="):
-            return self._try_inequality(rel, node, op)
-        # arithmetic top-level (shouldn't happen in well-formed relations)
-        v = evaluate(node, self.values)
-        if isinstance(v, Sym):
-            return False
-        rel.status = "true" if v else "false"
-        return False
-
-    def _try_equality(self, rel: Relation, node: BinOp, op: str) -> bool:
-        # string identity equalities: only when at least one side is a string
-        # literal or an id that resolves to a string value
-        if isinstance(node.left, Str) or isinstance(node.right, Str):
-            lv = self._ground_string(node.left)
-            rv = self._ground_string(node.right)
-            if lv is not None and rv is not None:
-                eq = lv == rv
-                rel.status = "true" if (eq if op == "==" else not eq) else "false"
-                return False
-            # one side unknown string variable bound to a literal
-            if op == "==":
-                for side, other in ((node.left, node.right), (node.right, node.left)):
-                    if (
-                        isinstance(side, Id)
-                        and isinstance(other, Str)
-                        and side.key not in self.values
-                    ):
-                        self.values[side.key] = other.value
-                        rel.status = "true"
-                        return True
-            return False
-        # linear form
-        try:
-            l = to_linear(node.left, self.values)
-            r = to_linear(node.right, self.values)
-        except FormulaError:
-            v = evaluate(node, self.values)
-            if isinstance(v, Sym):
-                return False
-            rel.status = "true" if v else "false"
-            return False
-        diff = l - r
-        if diff.is_const():
-            eq = diff.const == 0
-            rel.status = "true" if (eq if op == "==" else not eq) else "false"
-            return False
-        if op == "!=":
-            return False  # can't prove disequality of symbolic forms
-        # diff = sum(coeff_k * k) + const == 0
-        # a "known" entity with a non-numeric value (e.g. docid-like "3/1"
-        # tagged as number) can't take part in arithmetic — flag the relation
-        bad = [
-            k for k in diff.coeffs
-            if k in self.values and not isinstance(self.values[k], Decimal)
-        ]
-        if bad:
-            detail = "; ".join(
-                f"{k}={self.values[k]!r} "
-                f"(type={self.by_key[k].type}, raw={self.by_key[k].raw!r}, file={self.by_key[k].file})"
-                for k in bad
-            )
-            rel.status = "error"
-            rel.error = f"non-numeric entity in arithmetic equation: {detail}"
-            return False
-        unknowns = {k: v for k, v in diff.coeffs.items() if k not in self.values}
-        known_coeffs = {
-            k: v for k, v in diff.coeffs.items() if k in self.values
-        }
-        const_total = diff.const + sum(
-            self.values[k] * c for k, c in known_coeffs.items()
-        )
-        if len(unknowns) == 1:
-            (key, coeff) = next(iter(unknowns.items()))
-            try:
-                val = -const_total / coeff
-            except Exception:
+                result = self.to_z3(rel.ast)
+            except FormulaError as exc:
                 rel.status = "error"
-                rel.error = "division by zero solving linear equation"
-                return False
-            self.values[key] = val
-            rel.status = "true"
-            return True
-        # multi-variable: leave pending (sympy pass could go here)
-        return False
+                rel.error = str(exc)
+                continue
+            rel.unknowns = [
+                k
+                for k in collect_ids(rel.ast)
+                if k in self.by_key
+                and self.by_key[k].mnemonic not in self.grounded
+                and self.by_key[k].num not in self.grounded
+            ]
+            if isinstance(result, bool):
+                rel.status = "true" if result else "false"
+                if not result:
+                    rel.error = "string identity comparison is false"
+                continue
+            if self._check(z3.Not(result)) == z3.unsat:
+                rel.status = "true"  # entailed by facts alone
+            elif self._check(result) == z3.sat:
+                self.acc.add(result)  # contingent: accumulate, solve jointly
+                rel.status = "true"
+            elif self._check(result) == z3.unsat:
+                rel.status = "false"
+                rel.error = "contradicts documents or accepted relations"
+            else:
+                rel.status = "unverifiable"
+                rel.error = "solver returned unknown (timeout?)"
 
-    def _ground_string(self, node: Node) -> str | None:
-        if isinstance(node, Str):
-            return node.value
-        if isinstance(node, Id):
-            v = self.values.get(node.key)
-            return v if isinstance(v, str) else None
-        return None
+        self._solve_variables()
 
-    def _try_inequality(self, rel: Relation, node: BinOp, op: str) -> bool:
-        # Only handle fully-ground inequalities for now; bound propagation
-        # for single-unknown cases.
-        try:
-            l = to_linear(node.left, self.values)
-            r = to_linear(node.right, self.values)
-        except FormulaError:
-            v = evaluate(node, self.values)
-            if isinstance(v, Sym):
-                return False
-            rel.status = "true" if v else "false"
-            return False
-        diff = l - r
-        if diff.is_const():
-            c = diff.const
-            ok = {
-                "<": c < 0,
-                "<=": c <= 0,
-                ">": c > 0,
-                ">=": c >= 0,
-            }[op]
-            rel.status = "true" if ok else "false"
-            return False
-        # single unknown -> derive a bound
-        unknowns = {k: v for k, v in diff.coeffs.items() if k not in self.values}
-        if len(unknowns) == 1:
-            (key, coeff) = next(iter(unknowns.items()))
-            const_total = diff.const + sum(
-                self.values[k] * c
-                for k, c in diff.coeffs.items()
-                if k in self.values and isinstance(self.values[k], Decimal)
-            )
-            # coeff*x + const_total <op> 0  ->  x <op'> -const_total/coeff
-            bound = -const_total / coeff
-            op_norm = op if coeff > 0 else {"<": ">", "<=": ">=", ">": "<", ">=": "<="}[op]
-            existing = self._bounds.get(key)
-            new_bound = (op_norm, bound)
-            if existing is None or self._bound_tighter(existing, new_bound):
-                self._bounds[key] = new_bound
-                return True
-            return False
-        return False
+    def _solve_variables(self) -> None:
+        if self.acc.check() != z3.sat:
+            return  # acc only grows consistent constraints — defensive
+        m = self.acc.model()
+        for e in self.registry.entities:
+            if not self._is_variable(e) or self._const_sort(e) == "string":
+                continue  # string vars resolved by propagation in _resolve_strings
+            c = self._const(e)
+            # NOTE: no model_completion — completion makes z3 construct
+            # arbitrary values for unconstrained constants (pathologically
+            # slow). Without it, eval returns the const itself when the
+            # model doesn't fix it — i.e. "free".
+            val = m.eval(c)
+            if isinstance(val, z3.ExprRef) and val.eq(c):
+                self.free.add(e.mnemonic)
+                continue
+            # rigidity: can the variable still differ from the model value?
+            self.acc.push()
+            self.acc.add(c != val)
+            rigid = self.acc.check() == z3.unsat
+            self.acc.pop()
+            if rigid:
+                try:
+                    self.pin[e.mnemonic] = _dec_of(val)
+                except ValueError:
+                    self.free.add(e.mnemonic)  # non-arithmetic pinned value
+            else:
+                self.free.add(e.mnemonic)
 
-    # -- classification -----------------------------------------------------
-    def _classify(self, rel: Relation) -> None:
-        if rel.status == "error":
-            return
-        if rel.status == "pending":
-            rel.status = "unverifiable"
-
-    def _entity_role(self, key: str | int) -> str | None:
-        e = self.by_key.get(key)
-        return e.role if e else None
-
-    # -- verdicts ------------------------------------------------------------
+    # -- outputs ----------------------------------------------------------------
     def verdicts(self) -> list[Verdict]:
         out: list[Verdict] = []
         for e in self.registry.entities:
-            key = e.key
-            stated = self.stated.get(key)
-            if e.role == "card":
-                if key in self.values:
-                    expected = self.values[key]
-                    if stated is not None and expected is not None:
-                        diff = None
-                        try:
-                            d = abs(Decimal(str(expected)) - Decimal(str(stated)))
-                            diff = str(d)
-                        except Exception:
-                            diff = None
-                        status = "ok" if str(expected) == str(stated) else "mismatch"
-                    else:
-                        status = "ok"
+            stated = str(e.value) if e.value is not None else None
+            if self._is_variable(e):
+                if e.mnemonic not in self.pin:
                     out.append(
                         Verdict(
-                            key=key, num=e.num, mnemonic=e.mnemonic, role=e.role,
-                            file=e.file, raw=e.raw, type=e.type, status=status,
-                            stated=str(stated) if stated is not None else None,
-                            expected=str(expected), diff=diff,
+                            key=e.mnemonic, num=e.num, mnemonic=e.mnemonic,
+                            role=e.role, file=e.file, raw=e.raw, type=e.type,
+                            status="unverified", stated=stated, target=True,
                         )
                     )
+                    continue
+                expected = self.pin[e.mnemonic]
+                exp_str = str(expected)
+                if stated is None:
+                    status, diff = "ok", None
                 else:
-                    out.append(
-                        Verdict(
-                            key=key, num=e.num, mnemonic=e.mnemonic, role=e.role,
-                            file=e.file, raw=e.raw, type=e.type, status="unverified",
-                            stated=str(stated) if stated is not None else None,
+                    d_stated = _to_decimal(stated)
+                    if isinstance(expected, Decimal) and d_stated is not None:
+                        status = "ok" if expected == d_stated else "mismatch"
+                        diff = (
+                            str(abs(expected - d_stated))
+                            if status == "mismatch"
+                            else None
                         )
-                    )
-            else:
-                # data/request entities: check contradictions among themselves
+                    else:
+                        status = "ok" if exp_str == stated else "mismatch"
+                        diff = None
                 out.append(
                     Verdict(
-                        key=key, num=e.num, mnemonic=e.mnemonic, role=e.role,
-                        file=e.file, raw=e.raw, type=e.type,
-                        status="constant",
-                        stated=str(e.value),
+                        key=e.mnemonic, num=e.num, mnemonic=e.mnemonic,
+                        role=e.role, file=e.file, raw=e.raw, type=e.type,
+                        status=status, stated=stated, expected=exp_str,
+                        diff=diff, target=True,
+                    )
+                )
+            else:
+                out.append(
+                    Verdict(
+                        key=e.mnemonic, num=e.num, mnemonic=e.mnemonic,
+                        role=e.role, file=e.file, raw=e.raw, type=e.type,
+                        status="constant", stated=stated, target=False,
                     )
                 )
         return out
@@ -549,15 +573,19 @@ class Solver:
 def solve_system(
     relations_raw: list[dict],
     registry: EntityRegistry,
+    variable_keys: set | list | None = None,
 ) -> tuple[list[Relation], list[Fishy], list[Verdict], list[str]]:
-    """Top-level entry: build relations, solve.
+    """Top-level entry: build relations, solve against the registry.
 
     *relations_raw* items either have an ``equation`` key (Relation) or an
-    ``evidence`` key (Fishy). Returns (relations, fishy, verdicts, dangling).
+    ``evidence`` key (Fishy). *variable_keys* (entity mnemonics/nums of the
+    requested card row) selects which card entities are treated as variables;
+    ``None`` treats all card entities as variables.
+    Returns (relations, fishy, verdicts, dangling).
     """
     rels: list[Relation] = []
     fishy: list[Fishy] = []
-    for i, r in enumerate(relations_raw):
+    for r in relations_raw:
         if "equation" in r:
             rels.append(
                 Relation(
@@ -576,6 +604,6 @@ def solve_system(
                     verdict=r.get("verdict", "false"),
                 )
             )
-    solver = Solver(rels, registry)
+    solver = Solver(rels, registry, variable_keys=variable_keys)
     solver.solve()
     return rels, fishy, solver.verdicts(), solver.dangling_files()

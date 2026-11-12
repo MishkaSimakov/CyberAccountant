@@ -144,3 +144,86 @@ def test_string_valued_entity_in_arithmetic_is_flagged_not_crash():
     assert relations[0].status == "error"
     assert "3/1" in relations[0].error
     assert frac.key in relations[0].error
+
+
+def test_joint_two_unknown_system_solves_both():
+    """x + y == 1000 && x - y == 200: no single-unknown rule fires, but the
+    joint system pins both — exactly what the old fixpoint could not do."""
+    reg, ents = _reg_with_card(
+        cards={"card-x": ("amount", "600", "600", "card"),
+               "card-y": ("amount", "400", "400", "card")},
+        data={},
+    )
+    x, y = ents["card-x"].key, ents["card-y"].key
+    rels = [{"equation": f"{x} + {y} == 1000"},
+            {"equation": f"{x} - {y} == 200"}]
+    relations, _, verdicts, _ = solve_system(rels, reg)
+    assert all(r.status == "true" for r in relations)
+    by_mn = {v.mnemonic: v for v in verdicts}
+    assert by_mn[ents["card-x"].mnemonic].status == "ok"
+    assert by_mn[ents["card-y"].mnemonic].status == "ok"
+
+
+def test_joint_system_mismatch_detected():
+    reg, ents = _reg_with_card(
+        cards={"card-x": ("amount", "600", "600", "card"),
+               "card-y": ("amount", "999", "999", "card")},
+        data={},
+    )
+    x, y = ents["card-x"].key, ents["card-y"].key
+    rels = [{"equation": f"{x} + {y} == 1000"},
+            {"equation": f"{x} - {y} == 200"}]
+    _, _, verdicts, _ = solve_system(rels, reg)
+    by_mn = {v.mnemonic: v for v in verdicts}
+    assert by_mn[ents["card-x"].mnemonic].status == "ok"
+    v = by_mn[ents["card-y"].mnemonic]
+    assert v.status == "mismatch"
+    assert v.expected == "400"
+
+
+def test_bounded_variable_is_unverified_not_pinned():
+    """A variable only constrained by a range has no unique solution."""
+    reg, ents = _reg_with_card(
+        cards={"card-d": ("date", "Январь 2026", None, "card")},
+        data={},
+    )
+    d = ents["card-d"].key
+    rels = [{"equation": f"01.01.2026 <= {d} && {d} <= 31.05.2026"}]
+    relations, _, verdicts, _ = solve_system(rels, reg)
+    assert relations[0].status == "true"  # consistent, accepted
+    v = next(v for v in verdicts if v.mnemonic == ents["card-d"].mnemonic)
+    assert v.status == "unverified"  # bounds don't pin a unique value
+
+
+def test_and_chain_of_identities_resolves():
+    """a == b && b == c with c ungrounded: jointly pins c to a's value."""
+    reg, ents = _reg_with_card(
+        cards={},
+        data={"doc-a": ("docid", "КЛ-31", "КЛ-31", "data"),
+              "doc-b": ("docid", "КЛ-31", "КЛ-31", "data"),
+              "doc-c": ("docid", "КЛ-31", "КЛ-31", "data")},
+    )
+    a, b, c = (ents[k].key for k in ("doc-a", "doc-b", "doc-c"))
+    reg.entities[2].value = None  # c ungrounded
+    rels = [{"equation": f"{a} == {b} && {b} == {c}"}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "true"
+
+
+def test_non_target_card_cells_become_constants():
+    """variable_keys selects the target row; other card cells are trusted."""
+    reg, ents = _reg_with_card(
+        cards={"card-x": ("amount", "600", "600", "card"),
+               "card-y": ("amount", "400", "400", "card")},
+        data={"doc-a": ("amount", "600", "600", "data")},
+    )
+    a, x = ents["doc-a"].key, ents["card-x"].key
+    rels = [{"equation": f"{a} == {x}"}]
+    _, _, verdicts, _ = solve_system(
+        rels, reg, variable_keys={ents["card-x"].mnemonic}
+    )
+    by_mn = {v.mnemonic: v for v in verdicts}
+    assert by_mn[ents["card-x"].mnemonic].status == "ok"
+    vy = by_mn[ents["card-y"].mnemonic]
+    assert vy.status == "constant"  # trusted, not verified
+    assert vy.target is False

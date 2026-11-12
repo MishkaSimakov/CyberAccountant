@@ -45,8 +45,8 @@ def build_report(
             "file": v.file,
         }
 
-    card_verdicts = [v for v in verdicts if v.role == "card"]
-    const_verdicts = [v for v in verdicts if v.role != "card"]
+    card_verdicts = [v for v in verdicts if v.role == "card" and v.target]
+    const_verdicts = [v for v in verdicts if not (v.role == "card" and v.target)]
 
     dup_files = {
         h8: entry["duplicate_of"]
@@ -90,6 +90,8 @@ def build_report(
             "file": next(
                 (h8 for h8, e in mapping.items() if e["role"] == "card"), None
             ),
+            "target_label": scope.get("target_label"),
+            "target_ids": [_entity_id(cfg, v) for v in card_verdicts],
             "cells": [cell_json(v) for v in card_verdicts],
         },
         "constants": [cell_json(v) for v in const_verdicts],

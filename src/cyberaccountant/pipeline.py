@@ -12,6 +12,7 @@ from cyberaccountant.solver import solve_system
 from cyberaccountant.stage0_ingest import run_ingest
 from cyberaccountant.stage1_tag import run_tag
 from cyberaccountant.stage2_registry import run_registry
+from cyberaccountant.stage2_dates import run_date_normalization
 from cyberaccountant.stage3_replace import run_replace
 from cyberaccountant.stage4_scope import run_scope
 from cyberaccountant.stage5_relations import run_relations
@@ -56,6 +57,16 @@ class Pipeline:
         self._registry = run_registry(self.cfg, tagged)
         return self._registry
 
+    def normalize_dates(self, on_token=None) -> list:
+        """LLM-normalize period-style date raws ('Январь 2026' -> ordinal of
+        01.01.2026) for date entities the deterministic parser could not
+        handle. Saves the registry; call after ``registry()``."""
+        reg = self._registry or self.registry()
+        changed = run_date_normalization(self.cfg, reg, on_token=on_token)
+        if changed:
+            reg.save(self.cfg.entities_path)
+        return changed
+
     def replace(self) -> dict[str, str]:
         if self._replaced is not None:
             return self._replaced
@@ -84,7 +95,12 @@ class Pipeline:
     def solve(self):
         reg = self._registry or self.registry()
         relations_raw = self._relations_raw or self.relations()
-        return solve_system(relations_raw, reg)
+        scope = self._scope or self.scope()
+        # only entities of the requested card row stay variables; all other
+        # card entities are trusted as constants
+        return solve_system(
+            relations_raw, reg, variable_keys=scope.get("target_row")
+        )
 
     def report(self) -> dict:
         mapping = self._mapping or self._load_mapping()
