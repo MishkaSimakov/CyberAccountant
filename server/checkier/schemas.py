@@ -91,3 +91,20 @@ RELATIONS_SCHEMA = {
         ]
     },
 }
+
+# Stage 5b: repair of erroring equations. One entry per broken equation;
+# either the corrected "equation" or "drop": true when no real relation
+# corresponds to it.
+RELATION_REPAIR_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "index": {"type": "integer"},
+            "equation": {"type": "string"},
+            "drop": {"type": "boolean"},
+        },
+        "required": ["index"],
+        "additionalProperties": False,
+    },
+}

@@ -1,4 +1,12 @@
-"""Stage 5: LLM relation extraction over the whole corpus."""
+"""Stage 5: LLM relation extraction over the whole corpus.
+
+Stage 5b: equation repair. After solving, relations with ``status == "error"``
+(parse failures, unknown ids, type clashes — e.g. ``mono-geba == 3/1`` where
+the docid '3/1' must be a quoted string, or ``maniqyxo`` where the model
+dropped the hyphen from ``mani-qyxo``) are fed back to the model with their
+error messages; the corrected equations are re-solved. Bounded by
+``cfg.max_retries`` repair rounds via :func:`solve_with_repairs`.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +15,8 @@ import json
 from checkier.config import PipelineConfig
 from checkier.entities import EntityRegistry
 from checkier.llm import call_llm_json
-from checkier.schemas import RELATIONS_SCHEMA
+from checkier.schemas import RELATIONS_SCHEMA, RELATION_REPAIR_SCHEMA
+from checkier.solver import solve_system
 
 REL_PROMPT = """\
 You are an auditor building a system of equations that pins down every value
@@ -34,11 +43,17 @@ Write relations in this exact JSON format (array of objects):
    {{"evidence": "one short sentence describing the problem", "ids_related": ["id1"], "verdict": "false"}}
 
 Formula language:
-- ids: mnemonic-word pairs (or #N when numeric style is used)
+- ids: copy ids EXACTLY as listed in the registry. Mnemonic ids are two
+  lowercase words joined by one hyphen ("mani-qyxo"); the hyphen is part of
+  the id — "maniqyxo" is INVALID. (With numeric id style, ids are #N.)
 - ops: + - * / ( ) == != < <= > >= && ||
 - functions: norm(id) — value normalized to base units (same as bare id); raw(id) — unnormalized
-- dates: DD.MM.YYYY literals compare with date ids
-- strings only in == / != comparisons
+- entity types and their literals — an id may only be compared with a literal
+  of its own type:
+  - docid | contract — strings: ONLY == / != against a QUOTED string literal,
+    e.g. mono-geba == "3/1". Writing mono-geba == 3/1 is a type clash.
+  - amount | number | pct | ratio — numeric: bare numbers, arithmetic allowed
+  - date — DD.MM.YYYY literals compare with date ids
 
 Rules:
 - PREFER ids over literal numbers: write "a + b == c", not "a + 1000 == c".
@@ -48,6 +63,21 @@ Rules:
 - Cross-document identity: if the same logical value appears in two docs, relate them with tag "ref".
 - Output ONLY the JSON array, nothing else.
 """
+
+
+def _registry_lines(
+    cfg: PipelineConfig, registry: EntityRegistry, in_scope: set
+) -> str:
+    """Registry lines for card entities and entities of in-scope files."""
+    lines = []
+    for e in registry.entities:
+        if e.role == "card" or e.file in in_scope:
+            eid = e.mnemonic if cfg.id_style == "mnemonic" else f"#{e.num}"
+            lines.append(
+                f"{eid}\ttype={e.type}\tvalue={e.value}\tunit={e.unit}\t"
+                f"role={e.role}\tfile={e.file}"
+            )
+    return "\n".join(lines)
 
 
 def run_relations(
@@ -64,17 +94,9 @@ def run_relations(
             e.file == h8 and e.role == "card" for e in registry.entities
         ):
             documents.append(f"--- file {h8} ---\n{text}")
-    reg_lines = []
-    for e in registry.entities:
-        if e.role == "card" or e.file in in_scope:
-            eid = e.mnemonic if cfg.id_style == "mnemonic" else f"#{e.num}"
-            reg_lines.append(
-                f"{eid}\ttype={e.type}\tvalue={e.value}\tunit={e.unit}\t"
-                f"role={e.role}\tfile={e.file}"
-            )
     prompt = REL_PROMPT.format(
         documents="\n\n".join(documents),
-        registry="\n".join(reg_lines),
+        registry=_registry_lines(cfg, registry, in_scope),
     )
     relations = call_llm_json(
         prompt,
@@ -93,3 +115,148 @@ def run_relations(
         json.dumps(all_relations, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return all_relations
+
+
+# ---------------------------------------------------------------------------
+# Stage 5b: equation repair — feed solver errors back to the model
+# ---------------------------------------------------------------------------
+
+REPAIR_PROMPT = """\
+You are an auditor building a system of equations that pins down every value
+in the summary report (the "card") using the primary documents ("data").
+
+Some equations you wrote earlier failed to parse or type-check. Fix each one.
+
+=== ENTITY REGISTRY ===
+%%REGISTRY%%
+
+=== FORMULA LANGUAGE ===
+- ids: copy ids EXACTLY as listed in the registry. Mnemonic ids are two
+  lowercase words joined by one hyphen ("mani-qyxo"); the hyphen is part of
+  the id — "maniqyxo" is INVALID. (With numeric id style, ids are #N.)
+- ops: + - * / ( ) == != < <= > >= && ||
+- functions: norm(id), raw(id)
+- entity types and their literals — an id may only be compared with a literal
+  of its own type:
+  - docid | contract — strings: ONLY == / != against a QUOTED string literal,
+    e.g. mono-geba == "3/1". Writing mono-geba == 3/1 is a type clash.
+  - amount | number | pct | ratio — numeric: bare numbers, arithmetic allowed
+  - date — DD.MM.YYYY literals compare with date ids
+
+=== BROKEN EQUATIONS ===
+%%BROKEN%%
+
+TASK
+Return a JSON array with ONE entry per broken equation:
+- {"index": N, "equation": "the corrected equation"} — or
+- {"index": N, "drop": true} if the equation does not correspond to any real
+  relation in the documents and should be removed.
+
+Return ONLY the JSON array.
+"""
+
+
+def repair_relations(
+    cfg: PipelineConfig,
+    broken: list[tuple[int, str | None, str, str]],
+    reg_text: str,
+    on_token=None,
+) -> dict[int, str | None]:
+    """Ask the model to fix erroring equations.
+
+    *broken*: (relation_index, tag, equation, error) tuples.
+    Returns {relation_index: corrected equation}, or None values for
+    equations the model says to drop.
+    """
+    items = "\n".join(
+        f"#{idx} [{tag or ''}] {eq}\n  error: {err}"
+        for idx, tag, eq, err in broken
+    )
+    prompt = REPAIR_PROMPT.replace("%%REGISTRY%%", reg_text).replace(
+        "%%BROKEN%%", items
+    )
+    data = call_llm_json(
+        prompt,
+        model=cfg.rel_model,
+        schema=RELATION_REPAIR_SCHEMA,
+        schema_name="relation_repairs",
+        timeout=cfg.request_timeout,
+        max_retries=cfg.max_retries,
+        on_token=on_token,
+        reasoning=cfg.reasoning,
+    )
+    entries = data if isinstance(data, list) else data.get("repairs", [])
+    fixes: dict[int, str | None] = {}
+    for item in entries:
+        if not isinstance(item, dict) or "index" not in item:
+            continue
+        if item.get("drop"):
+            fixes[int(item["index"])] = None
+        elif item.get("equation"):
+            fixes[int(item["index"])] = str(item["equation"])
+    return fixes
+
+
+def solve_with_repairs(
+    cfg: PipelineConfig,
+    relations_raw: list[dict],
+    registry: EntityRegistry,
+    scope: dict,
+    variable_keys: set | list | None = None,
+    on_token=None,
+):
+    """Solve the system; feed erroring equations back to the model and
+    re-solve — at most ``cfg.max_retries`` repair rounds.
+
+    Mutates *relations_raw* in place with the corrected equations and
+    rewrites relations.json when anything changed. Returns the same
+    (relations, fishy, verdicts, dangling) tuple as ``solve_system``.
+    """
+    in_scope = set(scope.get("in_scope") or [])
+    rels, fishy, verdicts, dangling = [], [], [], []
+    changed = False
+    for attempt in range(cfg.max_retries + 1):
+        rels, fishy, verdicts, dangling = solve_system(
+            relations_raw, registry, variable_keys=variable_keys
+        )
+        broken = [
+            (r.index, r.tag, r.equation, r.error or "")
+            for r in rels
+            if r.status == "error" and r.source == "llm"
+        ]
+        if not broken or attempt == cfg.max_retries:
+            break
+        fixes = repair_relations(
+            cfg, broken, _registry_lines(cfg, registry, in_scope),
+            on_token=on_token,
+        )
+        if not fixes:
+            break
+        # Relation.index counts equation-relations only; map back to
+        # relations_raw positions (fishy entries are interleaved).
+        eq_pos = [i for i, r in enumerate(relations_raw) if "equation" in r]
+        drops: set[int] = set()
+        applied = False
+        for rel_idx, new_eq in fixes.items():
+            if rel_idx >= len(eq_pos):
+                continue
+            raw_idx = eq_pos[rel_idx]
+            if new_eq is None:
+                drops.add(raw_idx)
+                applied = True
+            elif new_eq != relations_raw[raw_idx]["equation"]:
+                relations_raw[raw_idx]["equation"] = new_eq
+                applied = True
+        if drops:
+            relations_raw[:] = [
+                r for i, r in enumerate(relations_raw) if i not in drops
+            ]
+        if not applied:
+            break
+        changed = True
+    if changed:
+        cfg.relations_path.write_text(
+            json.dumps(relations_raw, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    return rels, fishy, verdicts, dangling

@@ -8,14 +8,13 @@ from pathlib import Path
 from checkier.config import PipelineConfig
 from checkier.entities import EntityRegistry
 from checkier.report import build_report
-from checkier.solver import solve_system
 from checkier.stage0_ingest import run_ingest
 from checkier.stage1_tag import run_tag
 from checkier.stage2_registry import run_registry
 from checkier.stage2_dates import run_date_normalization
 from checkier.stage3_replace import run_replace
 from checkier.stage4_scope import run_scope
-from checkier.stage5_relations import run_relations
+from checkier.stage5_relations import run_relations, solve_with_repairs
 
 
 class Pipeline:
@@ -97,9 +96,14 @@ class Pipeline:
         relations_raw = self._relations_raw or self.relations()
         scope = self._scope or self.scope()
         # only entities of the requested card row stay variables; all other
-        # card entities are trusted as constants
-        return solve_system(
-            relations_raw, reg, variable_keys=scope.get("target_row")
+        # card entities are trusted as constants. Erroring LLM equations are
+        # fed back to the model and re-solved (bounded by cfg.max_retries).
+        return solve_with_repairs(
+            self.cfg,
+            relations_raw,
+            reg,
+            scope,
+            variable_keys=scope.get("target_row"),
         )
 
     def report(self) -> dict:
