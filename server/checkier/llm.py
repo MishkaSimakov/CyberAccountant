@@ -140,6 +140,8 @@ def call_llm(
         payload["reasoning"] = {"enabled": False}
     elif reasoning == "exclude":
         payload["reasoning"] = {"exclude": True}
+    elif reasoning == "enabled":
+        payload["reasoning"] = {"enabled": True, "exclude": True}
     if schema is not None:
         payload["response_format"] = {
             "type": "json_schema",

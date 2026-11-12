@@ -22,16 +22,6 @@ REL_PROMPT = """\
 You are an auditor building a system of equations that pins down every value
 in the summary report (the "card") using the primary documents ("data").
 
-Below are the primary documents. Entity references look like <e id="mnemonic">raw text</e>.
-The registry lists every entity: id, type, normalized value, unit, role
-(data = truth / constant, card = variable to verify, request = scope definition).
-
-=== DOCUMENTS ===
-{documents}
-
-=== ENTITY REGISTRY ===
-{registry}
-
 === TASK ===
 Write relations in this exact JSON format (array of objects):
 
@@ -43,9 +33,7 @@ Write relations in this exact JSON format (array of objects):
    {{"evidence": "one short sentence describing the problem", "ids_related": ["id1"], "verdict": "false"}}
 
 Formula language:
-- ids: copy ids EXACTLY as listed in the registry. Mnemonic ids are two
-  lowercase words joined by one hyphen ("mani-qyxo"); the hyphen is part of
-  the id — "maniqyxo" is INVALID. (With numeric id style, ids are #N.)
+- ids: copy ids EXACTLY as listed in the registry. {ids_description}
 - ops: + - * / ( ) == != < <= > >= && ||
 - functions: norm(id) — value normalized to base units (same as bare id); raw(id) — unnormalized
 - entity types and their literals — an id may only be compared with a literal
@@ -54,14 +42,28 @@ Formula language:
     e.g. mono-geba == "3/1". Writing mono-geba == 3/1 is a type clash.
   - amount | number | pct | ratio — numeric: bare numbers, arithmetic allowed
   - date — DD.MM.YYYY literals compare with date ids
+- dimensionality: NEVER add or subtract values of different dimensions —
+  different currencies/units (RUB vs USD), amounts vs plain numbers or
+  percentages, dates vs anything. Such equations are rejected.
 
 Rules:
 - PREFER ids over literal numbers: write "a + b == c", not "a + 1000 == c".
-- Every CARD cell of the target report row must appear in at least one equation,
-  or be explicitly marked unverifiable via a fishy entry.
+- Our target is to make all possible formulas, so we can pin all relevant (respective to request) fields in card exactly, using only data from other documents.
+  I.e. we will need to be able to solve F(constants, x) = x, where x is vector of those relevant fields, and F(constants,x) = x is set of all equations/inequations that we built.
 - Cover ALL aggregations: card totals == sum of their components (from both card and data).
 - Cross-document identity: if the same logical value appears in two docs, relate them with tag "ref".
 - Output ONLY the JSON array, nothing else.
+
+Below are the primary documents. Entity references look like <e id="id of entry">raw text</e>.
+The registry lists every entity: id, type, normalized value, unit, role
+(data = truth / constant, card = variable to verify, request = scope definition).
+
+=== DOCUMENTS ===
+{documents}
+
+=== ENTITY REGISTRY ===
+{registry}
+
 """
 
 
@@ -95,6 +97,7 @@ def run_relations(
         ):
             documents.append(f"--- file {h8} ---\n{text}")
     prompt = REL_PROMPT.format(
+        ids_description=(" Mnemonic ids are two lowercase words joined by one hyphen (\"mani-qyxo\"); the hyphen is part of the id — \"maniqyxo\" is INVALID." if cfg.id_style=="mnemonic" else "Ids are numbers, predicated with #, example: #123. Treat all examples with mnemonic-based ids, as ones with numeric ids."),
         documents="\n\n".join(documents),
         registry=_registry_lines(cfg, registry, in_scope),
     )
@@ -105,6 +108,7 @@ def run_relations(
         schema_name="relations",
         timeout=cfg.request_timeout,
         max_retries=cfg.max_retries,
+        reasoning="enabled"
     )
     if isinstance(relations, dict):
         relations = [relations]
@@ -142,6 +146,10 @@ Some equations you wrote earlier failed to parse or type-check. Fix each one.
     e.g. mono-geba == "3/1". Writing mono-geba == 3/1 is a type clash.
   - amount | number | pct | ratio — numeric: bare numbers, arithmetic allowed
   - date — DD.MM.YYYY literals compare with date ids
+- dimensionality: NEVER add or subtract values of different dimensions —
+  different currencies/units (RUB vs USD), amounts vs plain numbers or
+  percentages, dates vs anything. Such equations are rejected. (RUB_K amounts
+  are normalized to base RUB, so RUB and RUB_K CAN be mixed.)
 
 === BROKEN EQUATIONS ===
 %%BROKEN%%
