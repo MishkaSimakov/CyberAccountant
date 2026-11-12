@@ -13,15 +13,17 @@ Only Docker Compose is required on the host. From the project root:
 cp -n .env.example .env
 
 # Start the API, Vite, PostgreSQL, Redis and the Office sandbox.
-docker compose -f compose.yaml -f compose.dev.yaml up --build
+docker compose -f compose.dev.yaml up --build
 
 # Stop the development containers.
-docker compose -f compose.yaml -f compose.dev.yaml down
+docker compose -f compose.dev.yaml down
 ```
 
 Open http://localhost:5173 for the frontend; the API is available at http://localhost:8000.
-`compose.dev.yaml` overrides the server configuration and adds Vite. PostgreSQL, Redis and the Office sandbox
-are inherited from `compose.yaml`, so always pass both files for development.
+`compose.dev.yaml` is a complete development stack. It reuses the backend service definitions from
+`compose.yaml` through `extends`, adds Vite, and enables source mounts and reloads. Pass only
+`compose.dev.yaml` for development, including in your IDE's Docker Compose run configuration.
+The client waits for the API health check before starting.
 
 Both development containers bind-mount the workdir at `/app`. Python changes restart Uvicorn;
 frontend changes use Vite hot reload. Polling is enabled for Docker Desktop/WSL bind mounts.
@@ -32,7 +34,7 @@ After changing Python dependencies, rebuild with the startup command above. Afte
 `client/package.json` or its lockfile, refresh the frontend dependency volume:
 
 ```sh
-docker compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps client npm ci
+docker compose -f compose.dev.yaml run --rm --no-deps client npm ci
 ```
 
 `.env` is passed to the API if present. Compose overrides `DATABASE_URL`, `REDIS_URL` and `OFFICE_SANDBOX_URL`
@@ -55,7 +57,7 @@ With the development stack running, execute database integration tests inside th
 They create/drop only a temporary schema:
 
 ```sh
-docker compose -f compose.yaml -f compose.dev.yaml exec server \
+docker compose -f compose.dev.yaml exec server \
   sh -c 'TEST_DATABASE_URL="$DATABASE_URL" python -m pytest server/tests/test_database.py'
 ```
 
@@ -70,7 +72,7 @@ The API waits for Redis to become healthy before starting.
 Check the development Redis service:
 
 ```sh
-docker compose -f compose.yaml -f compose.dev.yaml exec redis redis-cli ping
+docker compose -f compose.dev.yaml exec redis redis-cli ping
 # PONG
 ```
 

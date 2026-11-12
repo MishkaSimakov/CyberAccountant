@@ -2,6 +2,9 @@ name: cyberaccountant-dev
 
 services:
   server:
+    extends:
+      file: compose.yaml
+      service: server
     build:
       context: ./server
       dockerfile: Dockerfile.dev
@@ -10,6 +13,21 @@ services:
       WATCHFILES_FORCE_POLLING: "true"
     volumes:
       - .:/app
+
+  postgres:
+    extends:
+      file: compose.yaml
+      service: postgres
+
+  redis:
+    extends:
+      file: compose.yaml
+      service: redis
+
+  office_sandbox:
+    extends:
+      file: compose.yaml
+      service: office_sandbox
 
   client:
     build:
@@ -25,7 +43,14 @@ services:
       - .:/app
       - client_node_modules:/app/client/node_modules
     depends_on:
-      - server
+      server:
+        condition: service_healthy
+
+networks:
+  office:
+    internal: true
 
 volumes:
+  postgres_data:
+  redis_data:
   client_node_modules:
