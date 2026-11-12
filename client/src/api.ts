@@ -50,6 +50,7 @@ export interface ReportDocument {
 
 export interface ReportDetails extends Report {
     documents: ReportDocument[]
+    duplicate_groups: number[][]
     progress: { completed: number; total: number }
     blockers: string[]
     available_actions: string[]

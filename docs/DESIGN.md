@@ -122,6 +122,7 @@ markdown-файл.
 - id
 - name
 - path
+- hash
 - markdown_path
 - entities_path
 - version

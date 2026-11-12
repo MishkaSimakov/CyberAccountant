@@ -49,11 +49,6 @@ export const report: Module<ReportState, RootState> = {
         canAdvance: state => Boolean(!state.advancing && !state.pollError && !state.uploads.length
             && !state.deleting.length && state.current?.documents.every(item => item.ocr_status === 'completed')
             && state.current?.available_actions.some(action => ['run_entity_extraction', 'run_verification'].includes(action))),
-        advanceTooltip: state => [
-            ...(state.current?.blockers ?? []),
-            ...(state.uploads.length ? ['Дождитесь загрузки файлов и удалите неудачные загрузки.'] : []),
-            ...(state.deleting.length ? ['Дождитесь удаления файлов.'] : []),
-        ].join('\n'),
     },
     mutations: {
         reset(state, id: number | null) {

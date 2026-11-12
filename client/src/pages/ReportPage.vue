@@ -26,7 +26,7 @@ export default defineComponent({
   },
   computed: {
     ...mapState('report', ['loading', 'loadError', 'pollError', 'actionError', 'advancing']),
-    ...mapGetters('report', ['canAdvance', 'advanceTooltip']),
+    ...mapGetters('report', ['canAdvance']),
     report(): ReportDetails | null {
       return this.$store.state.report.current
     },
@@ -95,8 +95,7 @@ export default defineComponent({
       <VerificationStage v-else-if="report.stage === 'verification'" :report="report"/>
 
       <div v-if="report.stage !== 'verification'" class="mt-6 flex flex-wrap items-start justify-end gap-4">
-        <div class="sm:text-right" :class="{'cursor-not-allowed': !canAdvance}"
-             :title="!canAdvance ? advanceTooltip : undefined">
+        <div class="sm:text-right" :class="{'cursor-not-allowed': !canAdvance}">
           <button
               class="cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-50"
               :disabled="!canAdvance" @click="advance">{{

@@ -1,6 +1,7 @@
 """In-memory document API with simulated asynchronous OCR, pending the real pipeline."""
 
 import asyncio
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
@@ -44,6 +45,7 @@ class Document(BaseModel):
     size: int
     content_type: str
     role: Literal["final_report", "supporting"]
+    content_sha256: str = Field(exclude=True)
     ocr_status: Literal["queued", "running", "completed", "failed"] = "queued"
     extraction_status: Literal["idle", "completed"] = "idle"
     markdown_revision: int = 0
@@ -91,6 +93,13 @@ def require_upload_stage(report_id: int):
     return report
 
 
+def duplicate_groups_for(items: list[Document]) -> list[list[int]]:
+    groups: dict[str, list[int]] = {}
+    for item in items:
+        groups.setdefault(item.content_sha256, []).append(item.id)
+    return [group for group in groups.values() if len(group) > 1]
+
+
 def blockers_for(items: list[Document]) -> list[str]:
     blockers = []
     if not any(item.role == "final_report" for item in items):
@@ -101,6 +110,10 @@ def blockers_for(items: list[Document]) -> list[str]:
         blockers.append("Дождитесь обработки всех документов.")
     if any(item.ocr_status == "failed" for item in items):
         blockers.append("Удалите документы с ошибками и загрузите их повторно.")
+    names = {item.id: item.name for item in items}
+    for group in duplicate_groups_for(items):
+        files = ", ".join(f"«{names[document_id]}»" for document_id in group)
+        blockers.append(f"Одинаковые файлы: {files}. Удалите лишние копии.")
     return blockers
 
 
@@ -167,6 +180,7 @@ async def report_details(report_id: int):
     return {
         **report.model_dump(),
         "documents": items,
+        "duplicate_groups": duplicate_groups_for(items),
         "progress": {"completed": sum(item.ocr_status == "completed" for item in items), "total": len(items)},
         "blockers": blockers,
         "available_actions": (
@@ -205,7 +219,8 @@ async def upload_document(
     report_documents = documents.setdefault(report_id, {})
     if role == "final_report" and any(item.role == role for item in report_documents.values()):
         raise HTTPException(409, "Итоговый отчёт уже загружен. Сначала удалите его, чтобы загрузить другой.")
-    document = Document(id=next_document_id, name=name, size=len(data), content_type=FILE_TYPES[suffix], role=role)
+    document = Document(id=next_document_id, name=name, size=len(data), content_type=FILE_TYPES[suffix], role=role,
+                        content_sha256=sha256(data).hexdigest())
     next_document_id += 1
     report_documents[document.id] = document
     originals[document.id] = data

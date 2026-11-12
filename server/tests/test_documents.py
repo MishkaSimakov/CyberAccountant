@@ -51,7 +51,9 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         status, body = await self.request(method, path, json.dumps(payload).encode() if payload is not None else b"")
         return status, json.loads(body) if body else None
 
-    async def upload(self, role="supporting", name="invoice.pdf", content=b"%PDF-1.4\nexample\n%%EOF", report_id=1):
+    async def upload(self, role="supporting", name="invoice.pdf", content=None, report_id=1):
+        if content is None:
+            content = f"%PDF-1.4\n{role}:{name}\n%%EOF".encode()
         body = (
                    f'--boundary\r\nContent-Disposition: form-data; name="role"\r\n\r\n{role}\r\n'
                    f'--boundary\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
@@ -71,7 +73,69 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(details["progress"], {"completed": 1, "total": 1})
         status, original = await self.request("GET", f'/reports/1/documents/{uploaded["id"]}/original')
         self.assertEqual(status, 200)
-        self.assertEqual(original, b"%PDF-1.4\nexample\n%%EOF")
+        self.assertEqual(original, b"%PDF-1.4\nsupporting:invoice.pdf\n%%EOF")
+
+    async def test_duplicate_groups_block_until_extra_copies_deleted(self):
+        await self.upload(role="final_report", name="report.pdf")
+        content = b"%PDF-1.4\nduplicate invoice\n%%EOF"
+        copies = []
+        for name in ("invoice.pdf", "renamed.pdf", "third-copy.pdf"):
+            status, document = await self.upload(name=name, content=content)
+            self.assertEqual(status, 201)
+            copies.append(document["id"])
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["duplicate_groups"], [copies])
+        self.assertFalse(details["available_actions"])
+        self.assertTrue(all(item["ocr_status"] == "completed" for item in details["documents"]))
+        self.assertFalse(any("content_sha256" in item for item in details["documents"]))
+        self.assertEqual(len(details["blockers"]), 1)
+        for name in ("invoice.pdf", "renamed.pdf", "third-copy.pdf"):
+            self.assertIn(name, details["blockers"][0])
+        status, error = await self.json_request("POST", "/reports/1/run-entity-extraction")
+        self.assertEqual(status, 409)
+        self.assertEqual(error["detail"], details["blockers"][0])
+        self.assertEqual(report_store[0].stage, "documents")
+
+        # Either copy can be removed; groups always reflect the remaining files.
+        for index, document_id in enumerate(copies[:-1]):
+            status, _ = await self.request("DELETE", f"/reports/1/documents/{document_id}")
+            self.assertEqual(status, 204)
+            _, details = await self.json_request("GET", "/reports/1")
+            remaining = copies[index + 1:]
+            self.assertEqual(details["duplicate_groups"], [remaining] if len(remaining) > 1 else [])
+        self.assertEqual(details["blockers"], [])
+        self.assertEqual(details["available_actions"], ["run_entity_extraction"])
+        status, _ = await self.json_request("POST", "/reports/1/run-entity-extraction")
+        self.assertEqual(status, 200)
+
+    async def test_duplicate_groups_use_bytes_not_names_roles_or_other_reports(self):
+        first_content = b"%PDF-1.4\nfirst\n%%EOF"
+        second_content = b"%PDF-1.4\nsecond\n%%EOF"
+        _, first = await self.upload(name="same.pdf", content=first_content)
+        _, second = await self.upload(name="same.pdf", content=second_content)
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["duplicate_groups"], [])
+        _, third = await self.upload(name="report.pdf", role="final_report", content=first_content)
+        _, fourth = await self.upload(name="copy.pdf", content=second_content)
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["duplicate_groups"], [[first["id"], third["id"]], [second["id"], fourth["id"]]])
+        self.assertEqual(len(details["blockers"]), 2)
+
+        await self.upload(report_id=2, content=first_content)
+        await self.upload(report_id=2, role="final_report", content=second_content)
+        _, other_report = await self.json_request("GET", "/reports/2")
+        self.assertEqual(other_report["duplicate_groups"], [])
+        self.assertEqual(other_report["blockers"], [])
+
+    async def test_duplicates_are_reported_before_ocr_finishes(self):
+        with patch.object(store, "simulate_ocr", new_callable=AsyncMock):
+            _, first = await self.upload(role="final_report", name="report.pdf", content=b"%PDF-1.4\nsame\n%%EOF")
+            _, second = await self.upload(name="copy.pdf", content=b"%PDF-1.4\nsame\n%%EOF")
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["duplicate_groups"], [[first["id"], second["id"]]])
+        self.assertTrue(all(item["ocr_status"] == "queued" for item in details["documents"]))
+        self.assertTrue(any("Одинаковые файлы" in blocker for blocker in details["blockers"]))
+        self.assertFalse(details["available_actions"])
 
     async def test_upload_validation(self):
         for name, content, expected in [("file.exe", b"x", 415), ("empty.pdf", b"", 422)]:

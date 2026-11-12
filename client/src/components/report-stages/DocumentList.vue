@@ -25,6 +25,9 @@ export default defineComponent({
   },
   computed: {
     ...mapState('report', ['advancing', 'deleting', 'uploads']),
+    duplicateIds(): Set<number> {
+      return new Set(this.report.duplicate_groups.flat())
+    },
   },
   methods: {
     ...mapActions('report', ['refresh', 'remove', 'dismissUpload']),
@@ -36,6 +39,13 @@ export default defineComponent({
 </script>
 
 <template>
+  <div v-if="report.blockers.length"
+       class="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+       role="status" aria-live="polite">
+    <ul class="list-disc space-y-1 pl-5">
+      <li v-for="blocker in report.blockers" :key="blocker">{{ blocker }}</li>
+    </ul>
+  </div>
   <section class="rounded-lg border border-slate-200 bg-white"
            aria-labelledby="documents-heading">
     <div class="flex flex-wrap items-center justify-between gap-3 p-4">
@@ -83,10 +93,14 @@ export default defineComponent({
           </p>
           <p v-if="document.error" class="mt-2 text-xs text-red-700" role="alert">{{ document.error }}</p>
         </div>
-        <span class="inline-flex h-7 items-center rounded px-3 text-xs leading-none"
-              :class="document.ocr_status === 'completed' ? 'bg-green-50 text-green-700' : document.ocr_status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'">{{
-            statusLabels[document.ocr_status]
-          }}</span>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="inline-flex h-7 items-center rounded px-3 text-xs leading-none"
+                :class="document.ocr_status === 'completed' ? 'bg-green-50 text-green-700' : document.ocr_status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'">{{
+              statusLabels[document.ocr_status]
+            }}</span>
+          <span v-if="duplicateIds.has(document.id)"
+                class="inline-flex h-7 items-center rounded bg-amber-100 px-3 text-xs leading-none text-amber-900">Дубликат</span>
+        </div>
         <div class="ml-auto flex items-center gap-2">
           <button v-if="document.ocr_status === 'completed'"
                   class="inline-flex h-7 cursor-pointer items-center rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"

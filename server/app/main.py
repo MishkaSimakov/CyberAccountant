@@ -91,5 +91,4 @@ client_dir = Path(__file__).resolve().parents[2] / "client" / "dist"
 
 # Before the first client build, the API can run alongside Vite independently.
 if client_dir.is_dir():
-    # app.mount("/", ClientStaticFiles(directory=client_dir, html=True), name="client")
-    app.mount("/", StaticFiles(directory=client_dir, html=True), name="client")
+    app.mount("/", ClientStaticFiles(directory=client_dir, html=True), name="client")
