@@ -11,6 +11,7 @@ FROM python:3.13-slim AS server-build
 WORKDIR /build
 COPY server/pyproject.toml ./
 COPY server/app/ ./app/
+COPY server/checkier/ ./checkier/
 RUN pip install --no-cache-dir --prefix=/install .
 
 FROM python:3.13-slim AS production

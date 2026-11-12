@@ -22,10 +22,30 @@ class Pipeline:
     """High-level orchestrator. Each stage method can be called individually
     (for notebook exploration); artifacts are cached under ``out_dir``."""
 
-    def __init__(self, cfg: PipelineConfig) -> None:
+    def __init__(
+            self,
+            cfg: PipelineConfig,
+            *,
+            mapping: dict | None = None,
+            tagged: dict[str, tuple[str, str]] | None = None,
+    ) -> None:
+        """Accept completed extraction artifacts to resume at registry building.
+
+        Supplied documents are saved in the usual stage layout so scope
+        detection can read them without ingesting or tagging again.
+        """
         self.cfg = cfg
-        self._mapping: dict | None = None
-        self._tagged: dict[str, tuple[str, str]] | None = None
+        self._mapping = mapping
+        self._tagged = tagged
+        if mapping is not None:
+            cfg.out_dir.mkdir(parents=True, exist_ok=True)
+            cfg.mapping_path.write_text(
+                json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        if tagged is not None:
+            cfg.tagged_dir.mkdir(parents=True, exist_ok=True)
+            for file_id, (_role, text) in tagged.items():
+                (cfg.tagged_dir / f"{file_id}.md").write_text(text, encoding="utf-8")
         self._registry: EntityRegistry | None = None
         self._replaced: dict[str, str] | None = None
         self._scope: dict | None = None
@@ -39,10 +59,10 @@ class Pipeline:
     def tag(self, on_progress=None, on_token=None) -> dict[str, tuple[str, str]]:
         mapping = self._mapping or self._load_mapping()
         # use cache if all non-dup files already tagged
-        if self._tagged and all(
-            (self.cfg.tagged_dir / f"{h8}.md").exists()
-            for h8 in mapping
-            if not mapping[h8].get("duplicate_of")
+        if self._tagged is not None and all(
+                (self.cfg.tagged_dir / f"{h8}.md").exists()
+                for h8 in mapping
+                if not mapping[h8].get("duplicate_of")
         ):
             return self._tagged
         self._tagged = run_tag(

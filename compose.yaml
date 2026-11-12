@@ -57,6 +57,13 @@ services:
     deploy:
       replicas: 1
 
+  entities_worker:
+    extends:
+      service: worker
+    command: [ "entities-worker" ]
+    deploy:
+      replicas: 5
+
   postgres:
     image: postgres:18-alpine
     environment:

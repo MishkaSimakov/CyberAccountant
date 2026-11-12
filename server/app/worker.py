@@ -3,12 +3,18 @@
 from rq import Worker
 
 from .ocr import check_ocr_languages
-from .queue import ocr_queue
+from .queue import entities_queue, ocr_queue
 
 
 def main() -> None:
     check_ocr_languages()
     queue = ocr_queue()
+    Worker([queue], connection=queue.connection).work()
+
+
+def entities_main() -> None:
+    """Process one extraction at a time; deployment runs five replicas."""
+    queue = entities_queue()
     Worker([queue], connection=queue.connection).work()
 
 

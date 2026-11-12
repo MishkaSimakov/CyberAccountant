@@ -45,6 +45,9 @@ export default defineComponent({
     },
   },
   watch: {
+    'document.extraction_status'(status: ReportDocument['extraction_status']) {
+      if (status === 'completed' && !this.dirty && !this.saving) void this.load()
+    },
     previewOnly(previewOnly: boolean) {
       if (previewOnly) this.preview = true
     },

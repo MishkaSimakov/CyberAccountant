@@ -51,17 +51,17 @@ Rules:
 
 
 def run_relations(
-    cfg: PipelineConfig,
-    replaced_docs: dict[str, str],
-    registry: EntityRegistry,
-    scope: dict,
+        cfg: PipelineConfig,
+        replaced_docs: dict[str, str],
+        registry: EntityRegistry,
+        scope: dict,
 ) -> list[dict]:
     """Ask the LLM for all relations; combine with deterministic scope relations."""
     in_scope = set(scope["in_scope"])
     documents = []
     for h8, text in sorted(replaced_docs.items()):
         if h8 in in_scope or any(
-            e.file == h8 and e.role == "card" for e in registry.entities
+                e.file == h8 and e.role == "card" for e in registry.entities
         ):
             documents.append(f"--- file {h8} ---\n{text}")
     reg_lines = []
@@ -83,6 +83,7 @@ def run_relations(
         schema_name="relations",
         timeout=cfg.request_timeout,
         max_retries=cfg.max_retries,
+        reasoning=cfg.reasoning,
     )
     if isinstance(relations, dict):
         relations = [relations]

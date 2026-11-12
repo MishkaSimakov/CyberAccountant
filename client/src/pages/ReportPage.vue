@@ -30,6 +30,9 @@ export default defineComponent({
     report(): ReportDetails | null {
       return this.$store.state.report.current
     },
+    selectedDocument(): ReportDocument | undefined {
+      return this.report?.documents.find(document => document.id === this.selected?.id)
+    },
     stageIndex(): number {
       return this.steps.findIndex(step => step.stage === this.report?.stage)
     },
@@ -106,7 +109,7 @@ export default defineComponent({
       </div>
     </template>
 
-    <MarkdownEditor v-if="selected" :report-id="reportId" :document="selected"
+    <MarkdownEditor v-if="selectedDocument" :report-id="reportId" :document="selectedDocument"
                     :readonly="advancing || report?.stage === 'verification'"
                     :entities="report?.stage !== 'documents'"
                     @close="selected = null" @saved="refresh"/>

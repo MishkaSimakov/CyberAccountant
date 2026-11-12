@@ -29,12 +29,18 @@ def report_documents(session: Session, report_id: int) -> list[File]:
     ))
 
 
-def document_response(file: File) -> Document:
+def document_response(file: File, *, extracting: bool = False) -> Document:
     status = ("running" if file.status == "ocr_running" else "completed" if file.markdown_path
     else "failed" if file.status == "failed" else "queued")
+    extraction_status = (
+        "completed" if file.entities_path else "running" if file.status == "entities_running"
+        else "failed" if file.status == "failed" and file.markdown_path
+        else "queued" if extracting and file.status == "ocr_completed" else "idle"
+    )
     return Document(
         id=file.file_id, name=file.name, size=file.size, content_type=file.content_type,
         role=file.role, content_sha256=file.hash, ocr_status=status,
+        extraction_status=extraction_status,
         markdown_revision=file.version if file.markdown_path else 0,
         user_edited=file.hand_edited, error=file.error,
     )
@@ -47,7 +53,7 @@ def duplicate_groups_for(items: list[Document]) -> list[list[int]]:
     return [group for group in groups.values() if len(group) > 1]
 
 
-def blockers_for(items: list[Document]) -> list[str]:
+def blockers_for(items: list[Document], *, extracting: bool = False) -> list[str]:
     blockers = []
     if not any(item.role == "final_report" for item in items):
         blockers.append("Загрузите итоговый отчёт.")
@@ -57,6 +63,10 @@ def blockers_for(items: list[Document]) -> list[str]:
         blockers.append("Дождитесь обработки всех документов.")
     if any(item.ocr_status == "failed" for item in items):
         blockers.append("Удалите документы с ошибками и загрузите их повторно.")
+    if extracting and any(item.extraction_status in {"queued", "running"} for item in items):
+        blockers.append("Дождитесь извлечения сущностей из всех документов.")
+    if extracting and any(item.extraction_status == "failed" for item in items):
+        blockers.append("Не удалось извлечь сущности из некоторых документов. Повторите извлечение.")
     names = {item.id: item.name for item in items}
     for group in duplicate_groups_for(items):
         names_text = ", ".join(f"«{names[file_id]}»" for file_id in group)
@@ -67,6 +77,12 @@ def blockers_for(items: list[Document]) -> list[str]:
 def sync_processing_status(session: Session, report: Report) -> None:
     session.flush()
     statuses = {file.status for file in report_documents(session, report.id)}
+    if report.stage == "entities":
+        report.processing_status = (
+            "running" if "entities_running" in statuses else "queued" if "ocr_completed" in statuses
+            else "failed" if "failed" in statuses else "completed" if statuses else "idle"
+        )
+        return
     report.processing_status = (
         "running" if "ocr_running" in statuses else "queued" if "queued" in statuses
         else "failed" if "failed" in statuses else "completed" if statuses else "idle"
@@ -91,13 +107,17 @@ def create_report(payload: ReportCreate) -> ReportResponse:
 def report_details(report_id: int) -> dict:
     with session_scope() as session:
         report = find_report(session, report_id)
-        items = [document_response(file) for file in report_documents(session, report_id)]
+        extracting = report.stage == "entities"
+        items = [document_response(file, extracting=extracting) for file in report_documents(session, report_id)]
+        blockers = blockers_for(items, extracting=extracting)
         return {
             **ReportResponse.model_validate(report, from_attributes=True).model_dump(),
             "documents": items,
             "duplicate_groups": duplicate_groups_for(items),
-            "progress": {"completed": sum(item.ocr_status == "completed" for item in items), "total": len(items)},
-            "blockers": blockers_for(items),
-            "available_actions": [],
-            "processing_mode": "ocr",
+            "progress": {"completed": sum(
+                (item.extraction_status if extracting else item.ocr_status) == "completed" for item in items
+            ), "total": len(items)},
+            "blockers": blockers,
+            "available_actions": ["run_entity_extraction"] if report.stage == "documents" and not blockers else [],
+            "processing_mode": "entities" if extracting else "ocr",
         }

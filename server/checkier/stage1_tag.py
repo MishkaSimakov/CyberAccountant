@@ -34,6 +34,7 @@ from checkier.config import PipelineConfig
 from checkier.llm import call_llm_json
 from checkier.schemas import TAGGING_SCHEMA
 
+
 # ---------------------------------------------------------------------------
 # Progress reporting (swap these callbacks for a frontend later)
 # ---------------------------------------------------------------------------
@@ -197,7 +198,7 @@ def _validate_segments(doc: str, segments: list) -> list[str]:
             k += 1
         problems.append(
             f"rebuilt doc diverges at char {k}: "
-            f"expected {doc[k:k+40]!r}, got {rebuilt[k:k+40]!r}"
+            f"expected {doc[k:k + 40]!r}, got {rebuilt[k:k + 40]!r}"
         )
     return problems
 
@@ -230,15 +231,29 @@ def _is_transient(exc: Exception) -> bool:
 
 
 def _tag_one(
-    cfg: PipelineConfig,
-    h8: str,
-    original_name: str,
-    on_token: Callable[[str], None] | None = None,
+        cfg: PipelineConfig,
+        h8: str,
+        original_name: str,
+        on_token: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
     """Tag one file. Returns (tagged_text, retries_used)."""
     src = cfg.files_dir / f"{h8}.md"
-    content = src.read_text(encoding="utf-8")
-    prompt = _build_prompt(original_name, content)
+    return tag_document(cfg, original_name, src.read_text(encoding="utf-8"), on_token)
+
+
+def tag_document(
+        cfg: PipelineConfig,
+        filename: str,
+        markdown: str,
+        on_token: Callable[[str], None] | None = None,
+) -> tuple[str, int]:
+    """Extract entries from one document without filesystem access.
+
+    Return (tagged_markdown, retries_used), or raise when extraction fails.
+    The caller owns persistence and scheduling.
+    """
+    content = markdown
+    prompt = _build_prompt(filename, content)
     last_err: Exception | None = None
     for attempt in range(cfg.max_retries + 1):
         try:
@@ -262,24 +277,24 @@ def _tag_one(
                 continue
             if attempt < cfg.max_retries:
                 prompt = (
-                    _build_prompt(original_name, content)
-                    + "\n\nYour previous answer was wrong. Common mistake: repeating the "
-                    "document text instead of outputting the JSON segment array. "
-                    "You MUST output ONLY a JSON array of objects like "
-                    '[{"content":"...","wrap":"...","type":"..."}]. No prose, no document.\n'
-                    "Validation error from previous attempt:\n"
-                    + str(last_err)[:1500]
+                        _build_prompt(filename, content)
+                        + "\n\nYour previous answer was wrong. Common mistake: repeating the "
+                          "document text instead of outputting the JSON segment array. "
+                          "You MUST output ONLY a JSON array of objects like "
+                          '[{"content":"...","wrap":"...","type":"..."}]. No prose, no document.\n'
+                          "Validation error from previous attempt:\n"
+                        + str(last_err)[:1500]
                 )
             else:
                 break
-    raise RuntimeError(f"tagging failed for {h8}: {last_err}")
+    raise RuntimeError(f"tagging failed for {filename}: {last_err}")
 
 
 def run_tag(
-    cfg: PipelineConfig,
-    mapping: dict,
-    on_progress: TagCallback | None = None,
-    on_token: Callable[[str, str], None] | None = None,
+        cfg: PipelineConfig,
+        mapping: dict,
+        on_progress: TagCallback | None = None,
+        on_token: Callable[[str, str], None] | None = None,
 ) -> dict[str, tuple[str, str]]:
     """Tag all non-duplicate files. Returns {h8: (role, tagged_text)}.
 
@@ -300,6 +315,7 @@ def run_tag(
         def _tok(tok: str, _h8: str = h8) -> None:
             if on_token:
                 on_token(_h8, tok)
+
         tagged, retries = _tag_one(cfg, h8, name, on_token=_tok)
         return h8, role, tagged, retries, name
 

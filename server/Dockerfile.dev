@@ -11,6 +11,7 @@ RUN apt-get update \
 WORKDIR /app/server
 COPY pyproject.toml ./
 COPY app/ ./app/
+COPY checkier/ ./checkier/
 RUN pip install --no-cache-dir '.[dev]'
 
 WORKDIR /app

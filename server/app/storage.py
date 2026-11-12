@@ -63,3 +63,11 @@ def save_ocr(report_id: int, file_id: int, version: int, output: Path) -> str:
     relative = Path(str(report_id)) / str(file_id) / "versions" / str(version) / "ocr"
     shutil.copytree(output.parent, artifact_path(str(relative)), dirs_exist_ok=True)
     return (relative / output.name).as_posix()
+
+
+def save_entities(report_id: int, file_id: int, version: int, markdown: str) -> str:
+    relative = Path(str(report_id)) / str(file_id) / "versions" / str(version) / "entities" / "document.md"
+    destination = artifact_path(str(relative))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(markdown, encoding="utf-8")
+    return relative.as_posix()

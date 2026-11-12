@@ -3,6 +3,8 @@
 !pyproject.toml
 !app/
 !app/**
+!checkier/
+!checkier/**
 !Dockerfile.dev
 **/__pycache__/
 **/*.py[cod]

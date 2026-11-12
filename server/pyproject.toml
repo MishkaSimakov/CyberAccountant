@@ -19,6 +19,10 @@ dependencies = [
     "Pillow>=11.0,<13",
     "opencv-python-headless>=4.10,<5",
     "numpy>=2.0,<3",
+    "requests>=2.32",
+    "sympy>=1.13",
+    "jsonschema>=4.23",
+    "z3-solver>=4.12",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +32,7 @@ dev = ["pytest>=8,<10", "openpyxl>=3.1,<4"]
 document-ocr = "app.ocr:main"
 database-init = "app.database:initialize_database"
 ocr-worker = "app.worker:main"
+entities-worker = "app.worker:entities_main"
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "checkier*"]

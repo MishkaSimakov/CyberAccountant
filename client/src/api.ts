@@ -42,7 +42,7 @@ export interface ReportDocument {
     content_type: string
     role: DocumentRole
     ocr_status: 'queued' | 'running' | 'completed' | 'failed'
-    extraction_status: 'idle' | 'completed'
+    extraction_status: 'idle' | 'queued' | 'running' | 'completed' | 'failed'
     markdown_revision: number
     user_edited: boolean
     error: string | null
@@ -54,7 +54,7 @@ export interface ReportDetails extends Report {
     progress: { completed: number; total: number }
     blockers: string[]
     available_actions: string[]
-    processing_mode: 'ocr'
+    processing_mode: 'ocr' | 'entities'
 }
 
 export interface MarkdownRevision {

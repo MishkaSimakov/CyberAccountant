@@ -5,6 +5,8 @@
 !server/
 !server/app/
 !server/app/**
+!server/checkier/
+!server/checkier/**
 !server/pyproject.toml
 !server/Dockerfile
 client/node_modules/

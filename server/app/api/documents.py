@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 
 from ..schemas.documents import Document, MarkdownEdit, MarkdownRevision
 from ..services import documents as service
+from ..services.entities import run_entity_extraction as start_entity_extraction
 from ..services.reports import report_details
 from ..storage import artifact_path
 
@@ -52,5 +53,5 @@ def edit_markdown(report_id: int, document_id: int, payload: MarkdownEdit):
 
 @router.post("/reports/{report_id}/run-entity-extraction")
 def run_entity_extraction(report_id: int):
-    report_details(report_id)
-    raise HTTPException(501, "Извлечение сущностей пока не подключено.")
+    start_entity_extraction(report_id)
+    return report_details(report_id)

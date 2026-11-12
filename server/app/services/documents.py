@@ -82,8 +82,8 @@ def upload_document(report_id: int, filename: str, stream: BinaryIO, role: str) 
 
 def document_details(report_id: int, file_id: int) -> Document:
     with session_scope() as session:
-        find_report(session, report_id)
-        return document_response(find_document(session, report_id, file_id))
+        report = find_report(session, report_id)
+        return document_response(find_document(session, report_id, file_id), extracting=report.stage == "entities")
 
 
 def original_document(report_id: int, file_id: int) -> File:
@@ -98,7 +98,8 @@ def document_markdown(report_id: int, file_id: int) -> MarkdownRevision:
         file = find_document(session, report_id, file_id)
         if not file.markdown_path:
             raise ServiceError(409, "Распознавание документа ещё не завершено.")
-        return MarkdownRevision(content=storage.artifact_path(file.markdown_path).read_text(encoding="utf-8"),
+        return MarkdownRevision(content=storage.artifact_path(file.entities_path or file.markdown_path)
+                                .read_text(encoding="utf-8"),
                                 revision=file.version)
 
 
