@@ -25,6 +25,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=server-build /install/ /usr/local/
 COPY --from=client-build /app/client/dist/ ./client/dist/
+RUN mkdir -p /app/storage && chown 10001:10001 /app/storage
 USER 10001:10001
 EXPOSE 8000
 

@@ -1,6 +1,6 @@
 """File revisions and paths to their preserved artifacts."""
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, String, UniqueConstraint, text
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Sequence, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..database import Base
@@ -29,7 +29,7 @@ class File(Timestamps, Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    file_id: Mapped[int]
+    file_id: Mapped[int] = mapped_column(Sequence("logical_file_id_seq", metadata=Base.metadata))
     report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"))
     version: Mapped[int] = mapped_column(server_default=text("1"))
     name: Mapped[str]

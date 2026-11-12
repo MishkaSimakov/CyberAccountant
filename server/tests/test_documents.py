@@ -1,49 +1,32 @@
-"""Exercise the upload-stage HTTP contract without external services or test dependencies."""
+"""Persisted upload API and sequential Redis/RQ processing."""
 
 import asyncio
 import json
-import unittest
-from unittest.mock import AsyncMock, patch
+import os
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from io import BytesIO
+from uuid import uuid4
 
-from server.app import documents as store
-from server.app import entities
-from server.app import requirements as verification
-from server.app.main import Report, app, report_store
+import pymupdf as fitz
+import pytest
+from redis import Redis
+from rq import Queue, SimpleWorker
+from rq.job import Job
+from sqlalchemy import select
+
+from app import database, queue, storage
+from app.jobs import ocr
+from app.main import app
+from app.models import File, Report
+from app.ocr import ConversionError, ParsedDocument
+from app.services import documents, reports
 
 
-OCR_MARKDOWN = """## Ведомость
+def request(method, path, payload=None, *, body=None, content_type="application/json"):
+    body = body if body is not None else json.dumps(payload).encode() if payload is not None else b""
 
-РАСЧЕТНАЯ ВЕДОМОСТЬ ПО ОПЛАТЕ ТРУДА
-
-Документ: <entity type="id" value="ВЕД-ЗП-2026-02" unit="string" id="143">ВЕД-ЗП-2026-02</entity>
-
-Проект: <entity type="id" value="24/03/15-01" unit="string" id="144">24/03/15-01</entity> | Период: <entity type="date" value="2026-02" unit="date" id="145">Февраль 2026</entity>
-
-| Код статьи | Вид начисления | Сумма, руб. | Основание |
-| --- | --- | --- | --- |
-| <entity type="id" value="0201" unit="string" id="146">0201</entity> | Основная заработная плата | <entity type="number" value="1015500.00" unit="rubles" id="147">1 015 500,00</entity> | Табель и расчет начислений |
-| <entity type="id" value="0202" unit="string" id="148">0202</entity> | Дополнительная заработная плата и резерв отпусков | <entity type="number" value="101500.00" unit="rubles" id="149">101 500,00</entity> | Доплаты и компенсационные начисления |
-|  | ИТОГО | <entity type="number" value="1117000.00" unit="rubles" id="150">1 117 000,00</entity> |  |
-"""
-
-class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        report_store[:] = [Report(id=1, name="Test report"), Report(id=2, name="Other report")]
-        store.documents.clear()
-        store.originals.clear()
-        store.revisions.clear()
-        store.next_document_id = 1
-        entities.next_entity_id = 1
-        verification.requirements.clear()
-        self.sleep_patch = patch.object(verification.asyncio, "sleep", new_callable=AsyncMock)
-        self.sleep_patch.start()
-        self.addCleanup(self.sleep_patch.stop)
-        self.real_extract_markdown = store.extract_markdown
-        self.ocr_patch = patch.object(store, "extract_markdown", side_effect=lambda name, data: entities.assign_entity_ids(OCR_MARKDOWN))
-        self.ocr_mock = self.ocr_patch.start()
-        self.addCleanup(self.ocr_patch.stop)
-
-    async def request(self, method, path, body=b"", content_type="application/json"):
+    async def run():
         messages = []
 
         async def receive():
@@ -52,533 +35,203 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         async def send(message):
             messages.append(message)
 
-        await app(
-            {
-                "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
-                "method": method, "path": f"/api/v1{path}", "raw_path": f"/api/v1{path}".encode(),
-                "query_string": b"", "root_path": "", "scheme": "http",
-                "headers": [(b"content-type", content_type.encode()), (b"content-length", str(len(body)).encode())],
-                "client": ("127.0.0.1", 1234), "server": ("test", 80),
-            },
-            receive,
-            send,
-        )
-        response = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
-        return messages[0]["status"], response
+        await app({
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1", "method": method, "path": "/api/v1" + path,
+            "query_string": b"", "root_path": "", "scheme": "http",
+            "headers": [(b"content-type", content_type.encode()), (b"content-length", str(len(body)).encode())],
+            "client": ("127.0.0.1", 1234), "server": ("test", 80),
+        }, receive, send)
+        content = b"".join(message.get("body", b"") for message in messages
+                           if message["type"] == "http.response.body")
+        return messages[0]["status"], content
 
-    async def json_request(self, method, path, payload=None):
-        status, body = await self.request(method, path, json.dumps(payload).encode() if payload is not None else b"")
-        return status, json.loads(body) if body else None
-
-    async def upload(self, role="supporting", name="invoice.pdf", content=None, report_id=1):
-        if content is None:
-            content = f"%PDF-1.4\n{role}:{name}\n%%EOF".encode()
-        body = (
-                   f'--boundary\r\nContent-Disposition: form-data; name="role"\r\n\r\n{role}\r\n'
-                   f'--boundary\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-                   'Content-Type: application/octet-stream\r\n\r\n'
-               ).encode() + content + b"\r\n--boundary--\r\n"
-        status, response = await self.request("POST", f"/reports/{report_id}/documents", body,
-                                              "multipart/form-data; boundary=boundary")
-        return status, json.loads(response)
-
-    async def test_upload_original_and_processing(self):
-        status, uploaded = await self.upload()
-        self.assertEqual(status, 201)
-        self.assertEqual(uploaded["ocr_status"], "queued")
-        status, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(status, 200)
-        self.assertEqual(details["documents"][0]["ocr_status"], "completed")
-        self.assertEqual(details["progress"], {"completed": 1, "total": 1})
-        status, original = await self.request("GET", f'/reports/1/documents/{uploaded["id"]}/original')
-        self.assertEqual(status, 200)
-        self.assertEqual(original, b"%PDF-1.4\nsupporting:invoice.pdf\n%%EOF")
-
-    async def test_duplicate_groups_block_until_extra_copies_deleted(self):
-        await self.upload(role="final_report", name="report.pdf")
-        content = b"%PDF-1.4\nduplicate invoice\n%%EOF"
-        copies = []
-        for name in ("invoice.pdf", "renamed.pdf", "third-copy.pdf"):
-            status, document = await self.upload(name=name, content=content)
-            self.assertEqual(status, 201)
-            copies.append(document["id"])
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["duplicate_groups"], [copies])
-        self.assertFalse(details["available_actions"])
-        self.assertTrue(all(item["ocr_status"] == "completed" for item in details["documents"]))
-        self.assertFalse(any("content_sha256" in item for item in details["documents"]))
-        self.assertEqual(len(details["blockers"]), 1)
-        for name in ("invoice.pdf", "renamed.pdf", "third-copy.pdf"):
-            self.assertIn(name, details["blockers"][0])
-        status, error = await self.json_request("POST", "/reports/1/run-entity-extraction")
-        self.assertEqual(status, 409)
-        self.assertEqual(error["detail"], details["blockers"][0])
-        self.assertEqual(report_store[0].stage, "documents")
-
-        # Either copy can be removed; groups always reflect the remaining files.
-        for index, document_id in enumerate(copies[:-1]):
-            status, _ = await self.request("DELETE", f"/reports/1/documents/{document_id}")
-            self.assertEqual(status, 204)
-            _, details = await self.json_request("GET", "/reports/1")
-            remaining = copies[index + 1:]
-            self.assertEqual(details["duplicate_groups"], [remaining] if len(remaining) > 1 else [])
-        self.assertEqual(details["blockers"], [])
-        self.assertEqual(details["available_actions"], ["run_entity_extraction"])
-        status, _ = await self.json_request("POST", "/reports/1/run-entity-extraction")
-        self.assertEqual(status, 200)
-
-    async def test_duplicate_groups_use_bytes_not_names_roles_or_other_reports(self):
-        first_content = b"%PDF-1.4\nfirst\n%%EOF"
-        second_content = b"%PDF-1.4\nsecond\n%%EOF"
-        _, first = await self.upload(name="same.pdf", content=first_content)
-        _, second = await self.upload(name="same.pdf", content=second_content)
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["duplicate_groups"], [])
-        _, third = await self.upload(name="report.pdf", role="final_report", content=first_content)
-        _, fourth = await self.upload(name="copy.pdf", content=second_content)
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["duplicate_groups"], [[first["id"], third["id"]], [second["id"], fourth["id"]]])
-        self.assertEqual(len(details["blockers"]), 2)
-
-        await self.upload(report_id=2, content=first_content)
-        await self.upload(report_id=2, role="final_report", content=second_content)
-        _, other_report = await self.json_request("GET", "/reports/2")
-        self.assertEqual(other_report["duplicate_groups"], [])
-        self.assertEqual(other_report["blockers"], [])
-
-    async def test_duplicates_are_reported_before_ocr_finishes(self):
-        with patch.object(store, "process_ocr", new_callable=AsyncMock):
-            _, first = await self.upload(role="final_report", name="report.pdf", content=b"%PDF-1.4\nsame\n%%EOF")
-            _, second = await self.upload(name="copy.pdf", content=b"%PDF-1.4\nsame\n%%EOF")
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["duplicate_groups"], [[first["id"], second["id"]]])
-        self.assertTrue(all(item["ocr_status"] == "queued" for item in details["documents"]))
-        self.assertTrue(any("Одинаковые файлы" in blocker for blocker in details["blockers"]))
-        self.assertFalse(details["available_actions"])
-
-    async def test_upload_validation(self):
-        for name, content, expected in [("file.exe", b"x", 415), ("empty.pdf", b"", 422)]:
-            status, _ = await self.upload(name=name, content=content)
-            self.assertEqual(status, expected)
-        with patch.object(store, "MAX_FILE_SIZE", 4):
-            status, _ = await self.upload(content=b"12345")
-            self.assertEqual(status, 413)
-        status, _ = await self.upload(role="unknown")
-        self.assertEqual(status, 422)
-        self.assertFalse(store.documents)
-
-    async def test_polling_exposes_queued_running_and_completed(self):
-        from fastapi import BackgroundTasks, UploadFile
-        from io import BytesIO
-
-        tasks = BackgroundTasks()
-        document = await store.upload_document(1, tasks, UploadFile(BytesIO(b"%PDF-1.4\n%%EOF"), filename="report.pdf"),
-                                               "final_report")
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["documents"][0]["ocr_status"], "queued")
-        self.assertFalse(details["available_actions"])
-        running = asyncio.Event()
-        release = asyncio.Event()
-
-        async def convert_in_background(function, *args):
-            running.set()
-            await release.wait()
-            return function(*args)
-
-        with patch.object(store, "run_in_threadpool", side_effect=convert_in_background):
-            processing = asyncio.create_task(tasks())
-            try:
-                await asyncio.wait_for(running.wait(), timeout=2)
-                _, details = await self.json_request("GET", "/reports/1")
-                self.assertEqual(details["documents"][0]["ocr_status"], "running")
-                self.assertEqual(details["progress"]["completed"], 0)
-                release.set()
-                await asyncio.wait_for(processing, timeout=2)
-                _, details = await self.json_request("GET", "/reports/1")
-                self.assertEqual(details["documents"][0]["ocr_status"], "completed")
-                self.assertIn(document.id, store.revisions)
-            finally:
-                release.set()
-                await processing
-
-    async def test_failed_document_blocks_until_deleted_and_reuploaded(self):
-        await self.upload(role="final_report", name="report.pdf")
-        _, failed = await self.upload(content=b"damaged")
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["processing_status"], "failed")
-        self.assertFalse(details["available_actions"])
-        self.assertTrue(details["documents"][1]["error"])
-        status, _ = await self.json_request("POST", "/reports/1/run-entity-extraction")
-        self.assertEqual(status, 409)
-        status, body = await self.request("DELETE", f'/reports/1/documents/{failed["id"]}')
-        self.assertEqual((status, body), (204, b""))
-        self.assertNotIn(failed["id"], store.originals)
-        self.assertNotIn(failed["id"], store.revisions)
-        await self.upload()
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["available_actions"], ["run_entity_extraction"])
-
-    async def test_ocr_failure_is_reported_without_saving_markdown(self):
-        self.ocr_mock.side_effect = RuntimeError("OCR unavailable")
-        _, uploaded = await self.upload()
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["documents"][0]["ocr_status"], "failed")
-        self.assertTrue(details["documents"][0]["error"])
-        self.assertNotIn(uploaded["id"], store.revisions)
-        status, _ = await self.json_request("GET", f'/reports/1/documents/{uploaded["id"]}/markdown')
-        self.assertEqual(status, 409)
-
-    async def test_deletion_while_ocr_runs_does_not_restore_markdown(self):
-        async def delete_during_conversion(function, *args):
-            await store.delete_document(1, 1)
-            return "Recognized text"
-
-        with patch.object(store, "run_in_threadpool", side_effect=delete_during_conversion):
-            await self.upload()
-        self.assertFalse(store.documents[1])
-        self.assertFalse(store.originals)
-        self.assertFalse(store.revisions)
-
-    async def test_real_pdf_upload_returns_recognized_markdown_and_preserves_preview(self):
-        import pymupdf as fitz
-
-        self.ocr_mock.side_effect = self.real_extract_markdown
-        with fitz.open() as pdf:
-            pdf.new_page().insert_text((50, 50), "Invoice total 12345.67")
-            data = pdf.tobytes()
-        _, uploaded = await self.upload(content=data)
-        status, markdown = await self.json_request("GET", f'/reports/1/documents/{uploaded["id"]}/markdown')
-        self.assertEqual(status, 200)
-        self.assertIn("Invoice total 12345.67", markdown["content"])
-        self.assertNotIn("ВЕД-ЗП", markdown["content"])
-        status, original = await self.request("GET", f'/reports/1/documents/{uploaded["id"]}/original')
-        self.assertEqual((status, original), (200, data))
-
-    async def test_markdown_revisions_conflicts_and_empty_edits(self):
-        _, uploaded = await self.upload()
-        path = f'/reports/1/documents/{uploaded["id"]}/markdown'
-        status, markdown = await self.json_request("GET", path)
-        self.assertEqual(status, 200)
-        self.assertEqual(markdown["revision"], 1)
-        status, saved = await self.json_request("POST", path, {"content": "# Исправленный текст", "base_revision": 1})
-        self.assertEqual((status, saved["revision"]), (200, 2))
-        status, _ = await self.json_request("POST", path, {"content": "Stale edit", "base_revision": 1})
-        self.assertEqual(status, 409)
-        status, _ = await self.json_request("POST", path, {"content": "   ", "base_revision": 2})
-        self.assertEqual(status, 422)
-        self.assertEqual(len(store.revisions[uploaded["id"]]), 2)
-        self.assertTrue(store.documents[1][uploaded["id"]].user_edited)
-
-    async def test_final_report_is_required_and_unique(self):
-        await self.upload()
-        status, _ = await self.json_request("POST", "/reports/1/run-entity-extraction")
-        self.assertEqual(status, 409)
-        await self.upload(role="final_report", name="report.pdf")
-        status, _ = await self.upload(role="final_report", name="second.pdf")
-        self.assertEqual(status, 409)
-
-    async def test_transition_and_stage_permissions(self):
-        await self.upload(role="final_report")
-        _, uploaded = await self.upload()
-        status, report = await self.json_request("POST", "/reports/1/run-entity-extraction")
-        self.assertEqual((status, report["stage"]), (200, "entities"))
-        self.assertEqual(report["available_actions"], ["run_verification"])
-        self.assertTrue(all(item["extraction_status"] == "completed" for item in report["documents"]))
-        status, _ = await self.upload()
-        self.assertEqual(status, 409)
-        status, _ = await self.json_request("DELETE", f'/reports/1/documents/{uploaded["id"]}')
-        self.assertEqual(status, 409)
-        status, _ = await self.json_request("POST", f'/reports/1/documents/{uploaded["id"]}/markdown',
-                                            {"content": "edit", "base_revision": 1})
-        self.assertEqual(status, 200)
-        status, _ = await self.json_request("GET", f'/reports/1/documents/{uploaded["id"]}/markdown')
-        self.assertEqual(status, 200)
-
-    async def test_documents_cannot_be_accessed_from_another_report(self):
-        _, uploaded = await self.upload()
-        for suffix in ("", "/original", "/markdown"):
-            status, _ = await self.request("GET", f'/reports/2/documents/{uploaded["id"]}{suffix}')
-            self.assertEqual(status, 404)
-        status, _ = await self.json_request("GET", "/reports/999")
-        self.assertEqual(status, 404)
-
-    async def test_entity_creation_editing_and_server_ids(self):
-        import re
-
-        _, uploaded = await self.upload()
-        path = f'/reports/1/documents/{uploaded["id"]}/markdown'
-        _, original = await self.json_request("GET", path)
-        initial_id = re.search(r'id="(\d+)"', original["content"])[1]
-        content = original["content"].replace('value="ВЕД-ЗП-2026-02"',
-                                              'value="corrected &amp; quoted &quot;value&quot;"', 1)
-        content += '\n<entity type="number" value="12.50" unit="euros">12,50 €</entity>'
-        status, saved = await self.json_request("POST", path, {"content": content, "base_revision": 1})
-        self.assertEqual(status, 200)
-        self.assertIn(f'id="{initial_id}"', saved["content"])
-        self.assertIn('value="corrected &amp; quoted &quot;value&quot;"', saved["content"])
-        ids = re.findall(r'\bid="(\d+)"', saved["content"])
-        self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(len(ids), 9)
-        self.assertTrue(store.documents[1][uploaded["id"]].user_edited)
-        self.assertEqual(len(store.revisions[uploaded["id"]]), 2)
-        status, _ = await self.json_request("POST", path, {"content": content, "base_revision": 1})
-        self.assertEqual(status, 409)
-        # Re-saving existing markup preserves every assigned ID.
-        status, again = await self.json_request("POST", path, {"content": saved["content"], "base_revision": 2})
-        self.assertEqual(status, 200)
-        self.assertEqual(again["content"], saved["content"])
-
-    async def test_entity_validation_and_id_protection(self):
-        _, uploaded = await self.upload()
-        path = f'/reports/1/documents/{uploaded["id"]}/markdown'
-        _, original = await self.json_request("GET", path)
-        for markup in [
-            original["content"] + original["content"],
-            '<entity type="unknown" value="x" unit="string">x</entity>',
-            '<entity type="id" value="   " unit="string">x</entity>',
-            '<entity type="id" value="x" unit="kg">x</entity>',
-            '<entity type="number" value="1" unit="dollars">1</entity>',
-            '<entity type="number" value="NaN" unit="kg">1</entity>',
-            '<entity type="number" value="1,25" unit="kg">1</entity>',
-            '<entity type="date" value="2026-02-30" unit="date">date</entity>',
-            '<entity type="date" value="2026-13" unit="date">date</entity>',
-            '<entity type="id" value="x" unit="string" id="999999">x</entity>',
-            '<entity type="id" value="x" unit="string" extra="x">x</entity>',
-            '<entity type="id" value="x" unit="string">unclosed',
-            '<entity type="id" value="x" unit="string"><entity type="id" value="y" unit="string">y</entity></entity>',
-        ]:
-            with self.subTest(markup=markup):
-                status, _ = await self.json_request("POST", path, {"content": markup, "base_revision": 1})
-                self.assertEqual(status, 422)
-                self.assertEqual(len(store.revisions[uploaded["id"]]), 1)
-
-    async def test_entity_ids_unique_across_documents_and_types(self):
-        import re
-
-        _, first = await self.upload(role="final_report")
-        _, second = await self.upload()
-        path = f'/reports/1/documents/{second["id"]}/markdown'
-        _, a = await self.json_request("GET", f'/reports/1/documents/{first["id"]}/markdown')
-        _, b = await self.json_request("GET", path)
-        self.assertTrue(
-            set(re.findall(r'\bid="(\d+)"', a["content"])).isdisjoint(re.findall(r'\bid="(\d+)"', b["content"])))
-        await self.json_request("POST", "/reports/1/run-entity-extraction")
-        content = '\n'.join([
-            '<entity type="id" value="code" unit="string">code</entity>',
-            '<entity type="date" value="2026-02" unit="date">Февраль</entity>',
-            '<entity type="date" value="2024-02-29" unit="date">29 февраля</entity>',
-            '<entity type="number" value="-12.5" unit="kg">-12,5</entity>',
-        ])
-        status, saved = await self.json_request("POST", path, {"content": content, "base_revision": 1})
-        self.assertEqual(status, 200)
-        self.assertEqual(len(re.findall(r'\bid="(\d+)"', saved["content"])), 4)
-        report_store[0].stage = "verification"
-        status, _ = await self.json_request("POST", path, {"content": content, "base_revision": 2})
-        self.assertEqual(status, 409)
-
-    async def test_deletion_during_ocr_does_not_recreate_document(self):
-        from fastapi import BackgroundTasks, UploadFile
-        from io import BytesIO
-
-        tasks = BackgroundTasks()
-        document = await store.upload_document(1, tasks, UploadFile(BytesIO(b"%PDF-1.4\n%%EOF"), filename="report.pdf"),
-                                               "final_report")
-        await store.delete_document(1, document.id)
-        await tasks()
-        self.assertFalse(store.documents[1])
-        self.assertNotIn(document.id, store.revisions)
-
-    async def test_verification_permissions_and_boolean_results(self):
-        status, _ = await self.json_request("POST", "/reports/1/run-verification")
-        self.assertEqual(status, 409)
-        status, _ = await self.json_request("GET", "/reports/1/requirements")
-        self.assertEqual(status, 409)
-        await self.upload(role="final_report")
-        _, uploaded = await self.upload()
-        await self.json_request("POST", "/reports/1/run-entity-extraction")
-        store.documents[1][uploaded["id"]].extraction_status = "idle"
-        status, _ = await self.json_request("POST", "/reports/1/run-verification")
-        self.assertEqual(status, 409)
-        store.documents[1][uploaded["id"]].extraction_status = "completed"
-        status, started = await self.json_request("POST", "/reports/1/run-verification")
-        self.assertEqual(status, 200)
-        self.assertEqual((started["stage"], started["processing_status"]), ("verification", "queued"))
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["processing_status"], "completed")
-        self.assertFalse(details["available_actions"])
-        status, results = await self.json_request("GET", "/reports/1/requirements")
-        self.assertEqual(status, 200)
-        results = results["requirements"]
-        self.assertTrue(all(type(item["verdict"]) is bool for item in results))
-        self.assertEqual({item["verdict"] for item in results}, {True, False})
-        self.assertTrue(any(item["equation"] for item in results))
-        self.assertTrue(any(item["evidence"] for item in results))
-        status, _ = await self.json_request("GET", "/reports/2/requirements")
-        self.assertEqual(status, 409)
-        status, _ = await self.json_request("GET", "/reports/999/requirements")
-        self.assertEqual(status, 404)
-        with patch.object(verification, "simulate_verification", new_callable=AsyncMock) as job:
-            _, repeated = await self.json_request("POST", "/reports/1/run-verification")
-            self.assertEqual(repeated["processing_status"], "completed")
-            job.assert_not_called()
-        status, _ = await self.json_request(
-            "POST", f'/reports/1/documents/{uploaded["id"]}/markdown',
-            {"content": "edit", "base_revision": 1},
-        )
-        self.assertEqual(status, 409)
-
-    async def test_requirement_notes_and_silencing_preserve_verdict(self):
-        report_store[0].stage = "verification"
-        report_store[0].processing_status = "completed"
-        verification.requirements[1] = [verification.RequirementResponse(id=1, verdict=False, equation="#1 == #2")]
-        path = "/reports/1/requirements/1"
-        status, saved = await self.json_request("PATCH", path, {"notes": "Проверить расчёт #1"})
-        self.assertEqual(status, 200)
-        self.assertEqual(saved["notes"], "Проверить расчёт #1")
-        self.assertFalse(saved["silenced"])
-        status, saved = await self.json_request("PATCH", path, {"silenced": True})
-        self.assertEqual(status, 200)
-        self.assertTrue(saved["silenced"])
-        self.assertFalse(saved["verdict"])
-        self.assertEqual(saved["notes"], "Проверить расчёт #1")
-        _, results = await self.json_request("GET", "/reports/1/requirements")
-        self.assertEqual(results["requirements"][0], saved)
-        status, saved = await self.json_request("PATCH", path, {"silenced": False, "notes": ""})
-        self.assertEqual(status, 200)
-        self.assertFalse(saved["silenced"])
-        self.assertEqual(saved["notes"], "")
-        self.assertEqual(saved["equation"], "#1 == #2")
-
-    async def test_requirement_sources_match_current_report_documents(self):
-        import re
-
-        _, final_report = await self.upload(role="final_report")
-        _, supporting = await self.upload()
-        _, other = await self.upload(report_id=2)
-        # Change the markup before verification so the mapping must use the latest revision.
-        path = f'/reports/1/documents/{supporting["id"]}/markdown'
-        _, markdown = await self.json_request("GET", path)
-        matches = list(entities.ENTITY.finditer(markdown["content"]))
-        content = markdown["content"].replace(matches[0][0], "Removed entity", 1)
-        content += '\n<entity type="number" value="42" unit="rubles">42</entity>'
-        status, _ = await self.json_request("POST", path, {"content": content, "base_revision": 1})
-        self.assertEqual(status, 200)
-        await self.json_request("POST", "/reports/1/run-entity-extraction")
-        await self.json_request("POST", "/reports/1/run-verification")
-        status, results = await self.json_request("GET", "/reports/1/requirements")
-        self.assertEqual(status, 200)
-        expected = {}
-        for document in (final_report, supporting):
-            document_id = document["id"]
-            _, source = await self.json_request("GET", f'/reports/1/documents/{document_id}/markdown')
-            expected.update({entities.attributes_for(match)["id"]: document_id
-                             for match in entities.ENTITY.finditer(source["content"])})
-            status, original = await self.request("GET", f'/reports/1/documents/{document_id}/original')
-            self.assertEqual(status, 200)
-            self.assertEqual(original, store.originals[document_id])
-            status, _ = await self.json_request("POST", f'/reports/1/documents/{document_id}/markdown',
-                                                {"content": "edit", "base_revision": source["revision"]})
-            self.assertEqual(status, 409)
-        self.assertEqual(results["entity_documents"], expected)
-        self.assertNotIn(entities.attributes_for(matches[0])["id"], expected)
-        self.assertNotIn(other["id"], expected.values())
-        references = set()
-        for requirement in results["requirements"]:
-            references.update(re.findall(r"#(\d+)", (requirement["equation"] or "") + (requirement["evidence"] or "")))
-            references.update(str(entity_id) for entity_id in requirement["ids_related"])
-        self.assertTrue(references)
-        self.assertLessEqual(references, expected.keys())
-
-    async def test_verification_without_entities_returns_empty_sources(self):
-        for role in ("final_report", "supporting"):
-            _, uploaded = await self.upload(role=role)
-            status, _ = await self.json_request("POST", f'/reports/1/documents/{uploaded["id"]}/markdown',
-                                                {"content": "No entities", "base_revision": 1})
-            self.assertEqual(status, 200)
-        await self.json_request("POST", "/reports/1/run-entity-extraction")
-        await self.json_request("POST", "/reports/1/run-verification")
-        status, results = await self.json_request("GET", "/reports/1/requirements")
-        self.assertEqual(status, 200)
-        self.assertEqual(results, {"requirements": [], "entity_documents": {}})
-
-    async def test_requirement_updates_are_scoped_to_completed_reports(self):
-        verification.requirements[1] = [verification.RequirementResponse(id=1, verdict=False)]
-        status, _ = await self.json_request("PATCH", "/reports/1/requirements/1", {"notes": "edit"})
-        self.assertEqual(status, 409)
-        for report in report_store:
-            report.stage = "verification"
-            report.processing_status = "completed"
-        status, _ = await self.json_request("PATCH", "/reports/2/requirements/1", {"notes": "edit"})
-        self.assertEqual(status, 404)
-        status, _ = await self.json_request("PATCH", "/reports/999/requirements/1", {"notes": "edit"})
-        self.assertEqual(status, 404)
-        verification.requirements[2] = [verification.RequirementResponse(id=1, verdict=False)]
-        await self.json_request("PATCH", "/reports/2/requirements/1", {"notes": "Other report", "silenced": True})
-        self.assertEqual(verification.requirements[1][0].notes, "")
-        self.assertFalse(verification.requirements[1][0].silenced)
-
-    async def test_requirement_update_validation(self):
-        report_store[0].stage = "verification"
-        report_store[0].processing_status = "completed"
-        verification.requirements[1] = [verification.RequirementResponse(id=1, verdict=True)]
-        path = "/reports/1/requirements/1"
-        for payload in [{"notes": "x" * 10001}, {"notes": None}, {"silenced": None}, {"verdict": False}]:
-            status, _ = await self.json_request("PATCH", path, payload)
-            self.assertEqual(status, 422)
-        status, _ = await self.json_request("PATCH", path, {"notes": "must not be saved", "silenced": True})
-        self.assertEqual(status, 409)
-        self.assertEqual(verification.requirements[1][0].notes, "")
-        self.assertFalse(verification.requirements[1][0].silenced)
-        status, saved = await self.json_request("PATCH", path, {"notes": "Всё верно"})
-        self.assertEqual(status, 200)
-        self.assertEqual(saved["notes"], "Всё верно")
-        self.assertTrue(saved["verdict"])
-
-    async def test_verification_polling_and_duplicate_start(self):
-        await self.upload(role="final_report")
-        await self.upload()
-        await self.json_request("POST", "/reports/1/run-entity-extraction")
-        waiting = [asyncio.Event(), asyncio.Event()]
-        release = [asyncio.Event(), asyncio.Event()]
-
-        async def wait_for_test(delay):
-            index = 0 if delay == 1 else 1
-            waiting[index].set()
-            await release[index].wait()
-
-        with patch.object(verification.asyncio, "sleep", side_effect=wait_for_test):
-            task = asyncio.create_task(self.json_request("POST", "/reports/1/run-verification"))
-            try:
-                for index, expected in enumerate(["queued", "running"]):
-                    await asyncio.wait_for(waiting[index].wait(), timeout=2)
-                    _, details = await self.json_request("GET", "/reports/1")
-                    self.assertEqual(details["processing_status"], expected)
-                    status, _ = await self.json_request("GET", "/reports/1/requirements")
-                    self.assertEqual(status, 409)
-                    _, repeated = await self.json_request("POST", "/reports/1/run-verification")
-                    self.assertEqual(repeated["processing_status"], expected)
-                    release[index].set()
-                await asyncio.wait_for(task, timeout=2)
-                _, details = await self.json_request("GET", "/reports/1")
-                self.assertEqual(details["processing_status"], "completed")
-            finally:
-                for event in release:
-                    event.set()
-                await task
-
-    async def test_verification_failure_and_retry(self):
-        await self.upload(role="final_report")
-        await self.upload()
-        await self.json_request("POST", "/reports/1/run-entity-extraction")
-        with patch.object(verification.asyncio, "sleep", side_effect=RuntimeError("unavailable")):
-            await self.json_request("POST", "/reports/1/run-verification")
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["processing_status"], "failed")
-        self.assertEqual(details["available_actions"], ["run_verification"])
-        await self.json_request("POST", "/reports/1/run-verification")
-        _, details = await self.json_request("GET", "/reports/1")
-        self.assertEqual(details["processing_status"], "completed")
+    status, content = asyncio.run(run())
+    return status, json.loads(content) if content and not path.endswith("/original") else content
 
 
-if __name__ == "__main__":
-    unittest.main()
+def upload(report_id, name="invoice.pdf", role="supporting", content=b"%PDF-1.4\ninvoice\n%%EOF"):
+    body = (
+               f'--boundary\r\nContent-Disposition: form-data; name="role"\r\n\r\n{role}\r\n'
+               f'--boundary\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
+               'Content-Type: application/octet-stream\r\n\r\n'
+           ).encode() + content + b"\r\n--boundary--\r\n"
+    return request("POST", f"/reports/{report_id}/documents", body=body,
+                   content_type="multipart/form-data; boundary=boundary")
+
+
+@pytest.fixture
+def api(db, tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    pending = []
+
+    def enqueue(revision_id):
+        # A separate session must see the committed row and its saved original.
+        with database.session_scope() as session:
+            file = session.get(File, revision_id)
+            assert file is not None and file.status == "queued"
+            assert storage.artifact_path(file.path).is_file()
+        pending.append(revision_id)
+
+    monkeypatch.setattr(documents, "enqueue_ocr", enqueue)
+    status, report = request("POST", "/reports", {"name": "Upload test"})
+    assert status == 201
+    return report["id"], pending
+
+
+def test_report_and_uploads_survive_across_requests(api):
+    report_id, pending = api
+    with database.session_scope() as session:
+        assert session.get(Report, report_id).name == "Upload test"
+    assert request("GET", "/reports")[1][0]["id"] == report_id
+    status, main = upload(report_id, role="final_report")
+    assert status == 201
+    assert main["ocr_status"] == "queued"
+    assert upload(report_id, role="final_report")[0] == 409
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda i: upload(report_id, name=f"invoice-{i}.pdf",
+                                                 content=f"%PDF-1.4\n{i}\n%%EOF".encode()), range(25)))
+    assert all(status == 201 for status, _ in results)
+    assert len({item["id"] for _, item in results}) == 25
+    assert len(pending) == 26
+    with database.session_scope() as session:
+        files = list(session.scalars(select(File)))
+        assert len(files) == 26
+        assert all(file.status == "queued" and file.version == 1 for file in files)
+    details = request("GET", f"/reports/{report_id}")[1]
+    assert details["progress"] == {"completed": 0, "total": 26}
+    assert details["processing_status"] == "queued"
+    assert details["available_actions"] == []
+    assert request("GET", f'/reports/{report_id}/documents/{main["id"]}/original')[1].startswith(b"%PDF-")
+
+
+@pytest.mark.parametrize("name, content, role, expected", [
+    ("bad.txt", b"text", "supporting", 415),
+    ("empty.pdf", b"", "supporting", 422),
+    ("large.pdf", b"x" * (storage.MAX_FILE_SIZE + 1), "supporting", 413),
+    ("report.pdf", b"data", "unknown", 422),
+])
+def test_invalid_upload_does_not_create_record_or_job(api, name, content, role, expected):
+    report_id, pending = api
+    assert upload(report_id, name=name, content=content, role=role)[0] == expected
+    assert pending == []
+    assert request("GET", f"/reports/{report_id}")[1]["documents"] == []
+    assert not list(storage.storage_root().rglob("original*"))
+
+
+def test_documents_are_scoped_and_can_be_deleted_while_queued(api):
+    report_id, pending = api
+    _, other = request("POST", "/reports", {"name": "Other report"})
+    _, uploaded = upload(report_id, name="../../invoice.pdf")
+    assert uploaded["name"] == "invoice.pdf"
+    document_id = uploaded["id"]
+    for suffix in ("", "/original", "/markdown"):
+        assert request("GET", f'/reports/{other["id"]}/documents/{document_id}{suffix}')[0] == 404
+    assert request("GET", f"/reports/{report_id}/documents/{document_id}/markdown")[0] == 409
+    assert request("DELETE", f"/reports/{report_id}/documents/{document_id}")[0] == 204
+    ocr.process_ocr(pending[0])
+    assert request("GET", f"/reports/{report_id}")[1]["documents"] == []
+    assert not (storage.storage_root() / str(report_id) / str(document_id)).exists()
+
+
+def test_real_ocr_preserves_artifacts_and_updates_progress(api):
+    report_id, pending = api
+    with fitz.open() as pdf:
+        pdf.new_page().insert_text((50, 50), "Invoice total 12345.67")
+        original = pdf.tobytes()
+    _, uploaded = upload(report_id, content=original)
+    ocr.process_ocr(pending[0])
+    details = request("GET", f"/reports/{report_id}")[1]
+    assert details["documents"][0]["ocr_status"] == "completed"
+    assert details["progress"] == {"completed": 1, "total": 1}
+    assert details["processing_status"] == "completed"
+    assert "Invoice total 12345.67" in request("GET", f'/reports/{report_id}/documents/{uploaded["id"]}/markdown')[1][
+        "content"]
+    with database.session_scope() as session:
+        file = session.get(File, pending[0])
+        assert file.status == "ocr_completed"
+        markdown = storage.artifact_path(file.markdown_path)
+        data = json.loads(markdown.with_suffix(".boxes.json").read_text())
+        assert (markdown.parent / data["preview_pdf"]).is_file()
+        assert storage.artifact_path(file.path).read_bytes() == original
+    ocr.process_ocr(pending[0])  # Completed jobs do not run again.
+
+
+def test_ocr_failure_is_persisted(api, monkeypatch):
+    report_id, pending = api
+    upload(report_id)
+
+    def fail(_):
+        raise ConversionError("broken document")
+
+    monkeypatch.setattr(ocr, "parse_document", fail)
+    with pytest.raises(ConversionError):
+        ocr.process_ocr(pending[0])
+    details = request("GET", f"/reports/{report_id}")[1]
+    assert details["processing_status"] == "failed"
+    assert details["documents"][0]["ocr_status"] == "failed"
+    assert details["documents"][0]["error"]
+
+
+def test_queue_failure_keeps_original_and_marks_failed(api, monkeypatch):
+    report_id, _ = api
+
+    def fail(_):
+        raise ConnectionError("Redis unavailable")
+
+    monkeypatch.setattr(documents, "enqueue_ocr", fail)
+    assert upload(report_id)[0] == 503
+    details = request("GET", f"/reports/{report_id}")[1]
+    assert details["documents"][0]["ocr_status"] == "failed"
+    with database.session_scope() as session:
+        assert storage.artifact_path(session.scalar(select(File)).path).is_file()
+
+
+def test_real_rq_processes_bundle_in_fifo_order(api, monkeypatch, tmp_path):
+    url = os.environ.get("TEST_REDIS_URL")
+    if not url:
+        pytest.skip("Set TEST_REDIS_URL to run the Redis/RQ integration test.")
+    report_id, _ = api
+    connection = Redis.from_url(url)
+    test_queue = Queue("test-" + uuid4().hex, connection=connection)
+    monkeypatch.setattr(queue, "ocr_queue", lambda: test_queue)
+    monkeypatch.setattr(documents, "enqueue_ocr", queue.enqueue_ocr)
+    events = []
+
+    @contextmanager
+    def parse(source):
+        with database.session_scope() as session:
+            files = reports.report_documents(session, report_id)
+            assert sum(file.status == "ocr_running" for file in files) == 1
+            assert session.get(Report, report_id).processing_status == "running"
+        events.append(("start", source.parent.name))
+        output = tmp_path / source.parent.name
+        output.mkdir()
+        markdown = output / "document.md"
+        markdown.write_text("OCR text", encoding="utf-8")
+        pdf = output / "preview.pdf"
+        pdf.write_bytes(b"preview")
+        sidecar = output / "document.boxes.json"
+        sidecar.write_text("{}")
+        yield ParsedDocument(markdown=markdown, pdf=pdf, json=sidecar)
+        events.append(("end", source.parent.name))
+
+    monkeypatch.setattr(ocr, "parse_document", parse)
+    ids = []
+    job_ids = []
+    try:
+        for i in range(8):
+            status, uploaded = upload(report_id, name=f"file-{i}.pdf",
+                                      role="final_report" if i == 0 else "supporting")
+            assert status == 201
+            ids.append(str(uploaded["id"]))
+        job_ids = test_queue.job_ids
+        assert len(job_ids) == 8
+        SimpleWorker([test_queue], connection=connection).work(burst=True, logging_level="WARNING")
+        assert events == [(event, file_id) for file_id in ids for event in ("start", "end")]
+        assert request("GET", f"/reports/{report_id}")[1]["progress"] == {"completed": 8, "total": 8}
+    finally:
+        for job_id in job_ids:
+            Job.fetch(job_id, connection=connection).delete()
+        test_queue.delete(delete_jobs=True)
+        connection.close()

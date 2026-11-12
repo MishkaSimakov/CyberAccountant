@@ -10,6 +10,8 @@ dependencies = [
     "SQLAlchemy>=2.0,<3",
     "psycopg[binary]>=3.2,<4",
     "python-dotenv>=1.0,<2",
+    "redis>=5,<7",
+    "rq>=2.6,<3",
     "fastapi==0.162.4",
     "uvicorn[standard]==0.54.0",
     "python-multipart==0.0.33",
@@ -25,6 +27,7 @@ dev = ["pytest>=8,<10", "openpyxl>=3.1,<4"]
 [project.scripts]
 document-ocr = "app.ocr:main"
 database-init = "app.database:initialize_database"
+ocr-worker = "app.worker:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]

@@ -1,19 +1,20 @@
 """REST API and production client hosting."""
 
 import os
-from datetime import date
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 from starlette.types import Scope
 
-from .documents import router as document_router
+from .api.documents import router as document_router
 from .ocr import check_ocr_languages
-from .requirements import router as requirements_router
-from .schemas.reports import Report, ReportCreate
+from .api.requirements import router as requirements_router
+from .api.reports import router as reports_router
+from .services import ServiceError
 
 
 @asynccontextmanager
@@ -25,17 +26,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Cyber Accountant API", lifespan=lifespan)
 api = APIRouter(prefix="/api/v1")
 
-# Temporary in-memory storage until the processing pipeline and database are added.
-report_store = [
-    Report(
-        id=1,
-        name="01_Карточка_учета_фактических_затрат_этап_3",
-        contract_number="24/03/15-01",
-        period_start=date(2026, 1, 1),
-        period_end=date(2026, 5, 31),
-        target_row="3 этап, 2026 г.",
-    ),
-]
+
+@app.exception_handler(ServiceError)
+async def service_error_handler(request, error: ServiceError):
+    return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
 
 
 @api.get("/health")
@@ -43,18 +37,7 @@ async def health():
     return {"status": "ok"}
 
 
-@api.get("/reports", response_model=list[Report])
-async def reports():
-    return report_store
-
-
-@api.post("/reports", response_model=Report, status_code=201)
-async def create_report(payload: ReportCreate):
-    report = Report(id=max((item.id for item in report_store), default=0) + 1, **payload.model_dump())
-    report_store.insert(0, report)
-    return report
-
-
+api.include_router(reports_router)
 api.include_router(document_router)
 api.include_router(requirements_router)
 app.include_router(api)

@@ -54,7 +54,7 @@ export interface ReportDetails extends Report {
     progress: { completed: number; total: number }
     blockers: string[]
     available_actions: string[]
-    processing_mode: 'stub'
+    processing_mode: 'ocr'
 }
 
 export interface MarkdownRevision {

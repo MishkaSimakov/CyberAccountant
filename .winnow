@@ -22,3 +22,6 @@ __pycache__/
 
 # Vite production output
 /client/dist/
+
+# OCR output can be regenerated from the preserved originals.
+/storage/*/*/versions/*/ocr/

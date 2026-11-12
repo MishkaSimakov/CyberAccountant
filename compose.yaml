@@ -12,6 +12,9 @@ services:
       OFFICE_SANDBOX_URL: http://office_sandbox:8001
       DATABASE_URL: postgresql+psycopg://cyberaccountant:cyberaccountant@postgres:5432/cyberaccountant
       REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /app/storage
+    volumes:
+      - document_data:/app/storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -28,6 +31,31 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+
+  worker:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    init: true
+    command: [ "ocr-worker" ]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      OFFICE_SANDBOX_URL: http://office_sandbox:8001
+      DATABASE_URL: postgresql+psycopg://cyberaccountant:cyberaccountant@postgres:5432/cyberaccountant
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_ROOT: /app/storage
+    volumes:
+      - document_data:/app/storage
+    depends_on:
+      server:
+        condition: service_healthy
+    networks:
+      - default
+      - office
+    deploy:
+      replicas: 1
 
   postgres:
     image: postgres:18-alpine
@@ -90,3 +118,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  document_data:

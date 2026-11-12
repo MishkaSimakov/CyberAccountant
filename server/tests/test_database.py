@@ -1,35 +1,13 @@
 """PostgreSQL integration checks, isolated in a temporary schema."""
 
-import os
 from datetime import date
-from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete, func, select, text
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from app import database
 from app.models import EntityFile, File, Report, Requirement
-
-
-@pytest.fixture
-def db(monkeypatch):
-    url = os.environ.get("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("Set TEST_DATABASE_URL to run PostgreSQL integration tests.")
-    engine = create_engine(url)
-    schema = "test_" + uuid4().hex
-    with engine.begin() as connection:
-        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
-    scoped_engine = engine.execution_options(schema_translate_map={None: schema})
-    monkeypatch.setattr(database, "get_engine", lambda: scoped_engine)
-    try:
-        database.initialize_database()
-        yield
-    finally:
-        with engine.begin() as connection:
-            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-        engine.dispose()
 
 
 def test_initialization_preserves_data_and_round_trips_models(db):
@@ -61,6 +39,21 @@ def test_initialization_preserves_data_and_round_trips_models(db):
 
     with database.session_scope() as session:
         assert session.scalar(select(Requirement)).json_data["verdict"] is False
+
+
+def test_initialization_adds_upload_sequence_to_existing_tables(db):
+    sequence = File.__table__.c.file_id.default
+    sequence.drop(database.get_engine())
+    database.initialize_database()
+    with database.session_scope() as session:
+        report = Report(name="Upload sequence")
+        session.add(report)
+        session.flush()
+        file = File(report_id=report.id, name="file.pdf", path="original.pdf", hash="a" * 64,
+                    role="supporting", size=1, content_type="application/pdf")
+        session.add(file)
+        session.flush()
+        assert file.file_id > 0
 
 
 def test_transaction_rolls_back_on_error(db):

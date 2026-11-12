@@ -14,6 +14,16 @@ services:
     volumes:
       - .:/app
 
+  worker:
+    extends:
+      file: compose.yaml
+      service: worker
+    build:
+      context: ./server
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/app
+
   postgres:
     extends:
       file: compose.yaml
@@ -54,3 +64,4 @@ volumes:
   postgres_data:
   redis_data:
   client_node_modules:
+  document_data:

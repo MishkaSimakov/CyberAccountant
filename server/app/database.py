@@ -37,6 +37,8 @@ def initialize_database() -> None:
     from . import models
 
     Base.metadata.create_all(get_engine())
+    # create_all skips column sequences when their table already exists.
+    models.File.__table__.c.file_id.default.create(get_engine(), checkfirst=True)
 
 
 @contextmanager
