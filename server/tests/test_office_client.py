@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
-from server.app import office_client as client
+from server.app.ocr import office_client as client
 
 
 def make_archive(entries):

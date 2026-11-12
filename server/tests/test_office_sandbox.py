@@ -5,7 +5,7 @@ import os
 import zipfile
 
 import pytest
-from server.app import ocr as document_ocr
+from server.app.ocr import converter as document_ocr
 
 
 @pytest.mark.skipif(os.environ.get('OCR_SANDBOX_TESTS') != '1',

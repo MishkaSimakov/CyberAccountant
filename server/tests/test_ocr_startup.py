@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from server.app import main, ocr
+from server.app import main
+from server.app.ocr import converter as ocr
 
 
 @pytest.mark.parametrize("languages, missing", [

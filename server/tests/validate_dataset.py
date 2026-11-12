@@ -2,7 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
-from server.app.ocr import convert, parser
+from server.app.ocr.converter import convert, parser
 
 ROOT = Path(__file__).resolve().parents[2]
 

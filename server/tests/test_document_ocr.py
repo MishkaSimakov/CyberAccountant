@@ -6,7 +6,7 @@ import pymupdf as fitz
 import pytest
 from PIL import Image, ImageDraw, ImageFont
 
-from server.app.ocr import (ConversionError, MarkdownWriter, Word, convert,
+from server.app.ocr.converter import (ConversionError, MarkdownWriter, Word, convert,
                             find_tesseract, highlight, parser, characters_for_span,
                             prepare_cell_image, recover_open_cells, table_grid)
 

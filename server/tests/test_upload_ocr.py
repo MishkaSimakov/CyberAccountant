@@ -5,7 +5,8 @@ from unittest.mock import patch
 import pymupdf as fitz
 import pytest
 
-from server.app import documents, ocr
+from server.app import documents
+from server.app.ocr import converter as ocr
 from server.app.ocr import ConversionError
 
 
