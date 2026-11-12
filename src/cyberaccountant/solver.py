@@ -178,6 +178,14 @@ def to_linear(node: Node, env: dict) -> Linear:
 # ---------------------------------------------------------------------------
 
 
+def _to_decimal(value: Any) -> Decimal | None:
+    """Best-effort Decimal conversion; None if the value isn't numeric."""
+    try:
+        return Decimal(str(value))
+    except Exception:  # noqa: BLE001 - Decimal raises InvalidOperation on bad input
+        return None
+
+
 class Solver:
     def __init__(
         self,
@@ -197,9 +205,12 @@ class Solver:
                 continue
             if e.role in ("data", "request"):
                 if e.type == "date":
-                    self.values[e.key] = Decimal(int(e.value))
+                    dec = _to_decimal(e.value)
+                    self.values[e.key] = dec if dec is not None else str(e.value)
                 elif e.type in ("amount", "number", "pct", "ratio"):
-                    self.values[e.key] = Decimal(str(e.value))
+                    dec = _to_decimal(e.value)
+                    # non-numeric "number" values (e.g. "3/1") stay strings
+                    self.values[e.key] = dec if dec is not None else str(e.value)
                 else:
                     self.values[e.key] = str(e.value)
         # card entities are variables (even though we know their stated value)
@@ -207,9 +218,11 @@ class Solver:
         for e in registry.entities:
             if e.role == "card":
                 if e.type == "date" and e.value is not None:
-                    self.stated[e.key] = Decimal(int(e.value))
+                    dec = _to_decimal(e.value)
+                    self.stated[e.key] = dec if dec is not None else str(e.value)
                 elif e.type in ("amount", "number", "pct", "ratio") and e.value is not None:
-                    self.stated[e.key] = Decimal(str(e.value))
+                    dec = _to_decimal(e.value)
+                    self.stated[e.key] = dec if dec is not None else str(e.value)
                 else:
                     self.stated[e.key] = e.value
         # bounds for inequality propagation

@@ -112,3 +112,16 @@ def test_dangling_files():
     _, _, _, dangling = solve_system(rels, reg)
     assert "orphan" in dangling
     assert "f1" not in dangling
+
+
+def test_non_numeric_number_value_does_not_crash():
+    """'number' entities with unparsable raw values (e.g. '3/1') must not
+    blow up Decimal conversion in Solver.__init__ — they stay strings."""
+    reg = EntityRegistry(0)
+    e = reg.add(type_="number", raw="3/1", unit="", norm="1",
+                file="f1", role="data", span=(0, 0))
+    # registry kept the raw string as value since "3/1" isn't a plain number
+    assert e.value == "3/1"
+    rels = [{"equation": f'{e.key} == "3/1"'}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "true"
