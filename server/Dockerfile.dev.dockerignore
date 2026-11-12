@@ -1,0 +1,8 @@
+# Only application sources and the dependency manifest are needed in the image.
+**
+!pyproject.toml
+!app/
+!app/**
+!Dockerfile.dev
+**/__pycache__/
+**/*.py[cod]

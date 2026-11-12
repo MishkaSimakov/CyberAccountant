@@ -1,5 +1,6 @@
 """REST API and production client hosting."""
 
+import os
 from datetime import date
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -69,8 +70,7 @@ class ClientStaticFiles(StaticFiles):
             return await super().get_response("index.html", scope)
 
 
-# The project layout is identical on the host and in Docker.
-client_dir = Path(__file__).resolve().parents[2] / "client" / "dist"
+client_dir = Path(os.environ.get("CLIENT_DIST_DIR", Path(__file__).resolve().parents[2] / "client" / "dist"))
 
 # Before the first client build, the API can run alongside Vite independently.
 if client_dir.is_dir():

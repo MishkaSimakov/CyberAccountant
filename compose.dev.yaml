@@ -1,0 +1,31 @@
+name: cyberaccountant-dev
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile.dev
+    init: true
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - .:/app
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile.dev
+    init: true
+    ports:
+      - "5173:5173"
+    environment:
+      API_PROXY_TARGET: http://server:8000
+      VITE_USE_POLLING: "true"
+    volumes:
+      - .:/app
+      - client_node_modules:/app/client/node_modules
+    depends_on:
+      - server
+
+volumes:
+  client_node_modules:

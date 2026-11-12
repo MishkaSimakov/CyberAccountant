@@ -4,69 +4,43 @@
 - [DESIGN.md](docs/DESIGN.md) - описание дизайна системы.
 - [OCR.md](docs/OCR.md) - локальная конвертация документов в Markdown и координаты символов.
 
-## Local development start
+## Development
+
+Only Docker Compose is required on the host. From the project root:
 
 ```sh
-# From the project root on Linux/WSL; requires Python 3.13+, Node.js 24+, PostgreSQL and Docker.
-# Install OCR system dependencies (Debian/Ubuntu).
-sudo apt install tesseract-ocr tesseract-ocr-rus fonts-dejavu-core
-
-# Create the server environment.
-python3 -m venv server/.venv
-
-# Install server and development dependencies.
-server/.venv/bin/python -m pip install -e './server[dev]'
-
-# Create .env once, or add DATABASE_URL from .env.example to an existing .env.
+# Optional: create .env for model API credentials, or keep your existing file.
 cp -n .env.example .env
 
-# Install frontend dependencies.
-npm --prefix client ci
+# Start the API, Vite, PostgreSQL, Redis and the Office sandbox.
+docker compose -f compose.yaml -f compose.dev.yaml up --build
+
+# Stop the development containers.
+docker compose -f compose.yaml -f compose.dev.yaml down
 ```
 
-Start your locally installed PostgreSQL before initializing the database or running the API:
+Open http://localhost:5173 for the frontend; the API is available at http://localhost:8000.
+`compose.dev.yaml` overrides the server configuration and adds Vite. PostgreSQL, Redis and the Office sandbox
+are inherited from `compose.yaml`, so always pass both files for development.
+
+Both development containers bind-mount the workdir at `/app`. Python changes restart Uvicorn;
+frontend changes use Vite hot reload. Polling is enabled for Docker Desktop/WSL bind mounts.
+Vite proxies `/api` to the `server` container. Python dependencies are installed in the image;
+frontend dependencies live in a separate `client_node_modules` Docker volume.
+
+After changing Python dependencies, rebuild with the startup command above. After changing
+`client/package.json` or its lockfile, refresh the frontend dependency volume:
 
 ```sh
-# Linux/WSL (systemd).
-sudo systemctl start postgresql
-
-# macOS with Homebrew: find your installed PostgreSQL service and start it.
-brew services list
-brew services start postgresql@14 # Replace with your installed formula, e.g. postgresql@18.
+docker compose -f compose.yaml -f compose.dev.yaml run --rm --no-deps client npm ci
 ```
 
-Create the application role and database once. Connect as your local PostgreSQL administrator
-(on Linux this is commonly `sudo -u postgres psql`; on Homebrew, `psql postgres`):
+`.env` is passed to the API if present. Compose overrides `DATABASE_URL`, `REDIS_URL` and `OFFICE_SANDBOX_URL`
+to use its own services, so local PostgreSQL is not needed. Tables are initialized automatically
+from the models before the API starts. The development project uses its own database volume.
+Stop one mode before starting the other because both publish API port 8000.
 
-```sql
-CREATE ROLE cyberaccountant WITH LOGIN PASSWORD 'cyberaccountant';
-CREATE DATABASE cyberaccountant OWNER cyberaccountant;
-```
-
-The development connection in `.env.example` is:
-
-```dotenv
-DATABASE_URL=postgresql+psycopg://cyberaccountant:cyberaccountant@127.0.0.1:5432/cyberaccountant
-```
-
-Adjust the credentials, host or port in `.env` for your installation. Create the tables, then start the services:
-
-```sh
-# From the project root; safe to run again against an initialized database.
-server/.venv/bin/database-init
-
-# Terminal 1: build and start the Office development container on localhost:8001.
-docker build -t cyberaccountant-office ./office_sandbox
-docker run --rm --init --name office-dev \
-  -p 127.0.0.1:8001:8001 \
-  cyberaccountant-office
-
-# Terminal 2: start the API at http://localhost:8000 with automatic reload.
-OFFICE_SANDBOX_URL=http://127.0.0.1:8001 server/.venv/bin/python -m uvicorn app.main:app --app-dir server --reload --env-file .env
-
-# Terminal 3: start the frontend and open the URL printed by Vite.
-npm --prefix client run dev
-```
+## Database
 
 The database layer uses SQLAlchemy and Psycopg 3. Its four tables follow `docs/DESIGN.md`.
 `database-init` calls `Base.metadata.create_all()`: it creates missing tables but does not alter existing
@@ -77,17 +51,33 @@ dependency in synchronous FastAPI handlers. Transactions commit on success and r
 keep OCR and LLM requests outside them. API routes currently still use the in-memory demonstration stores;
 adding this database layer does not migrate those routes or their existing data.
 
-Database integration tests use `TEST_DATABASE_URL` and create/drop only a temporary schema:
+With the development stack running, execute database integration tests inside the API container.
+They create/drop only a temporary schema:
 
 ```sh
-TEST_DATABASE_URL=postgresql+psycopg://cyberaccountant:cyberaccountant@127.0.0.1:5432/cyberaccountant \
-  server/.venv/bin/python -m pytest server/tests/test_database.py
+docker compose -f compose.yaml -f compose.dev.yaml exec server \
+  sh -c 'TEST_DATABASE_URL="$DATABASE_URL" python -m pytest server/tests/test_database.py'
 ```
 
-## Docker start
+## Redis
+
+Both environments include Redis for RQ. The API receives `REDIS_URL=redis://redis:6379/0`;
+workers on the same Compose network should use that URL too. Redis is available inside Docker
+without publishing port 6379 to the host. Append-only persistence stores queue data in the
+`redis_data` volume, which survives container replacement and `docker compose down`.
+The API waits for Redis to become healthy before starting.
+
+Check the development Redis service:
 
 ```sh
-# From the project root: build and start the API, Office sandbox and PostgreSQL.
+docker compose -f compose.yaml -f compose.dev.yaml exec redis redis-cli ping
+# PONG
+```
+
+## Docker production
+
+```sh
+# From the project root: build and start the API, Office sandbox, PostgreSQL and Redis.
 # The application is available at http://localhost:8000.
 docker compose up --build
 
@@ -96,6 +86,8 @@ docker compose down
 ```
 
 Compose waits for PostgreSQL to become healthy, then the server runs `database-init` before starting the API.
+The production image contains the installed API, runtime dependencies and built frontend assets;
+it has no source bind mounts, Node.js, development dependencies or Python package build output.
 The container connects to PostgreSQL using the internal service name `postgres`; it does not use the local
 database or publish port 5432, so both can run together. Database data is stored in the named
 `postgres_data` volume and survives `docker compose down`. The Compose credentials are for local development.
