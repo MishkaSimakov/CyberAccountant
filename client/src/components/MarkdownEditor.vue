@@ -16,6 +16,7 @@ export default defineComponent({
     document: {type: Object as PropType<ReportDocument>, required: true},
     readonly: {type: Boolean, required: true},
     entities: Boolean,
+    selectedEntityId: Number,
   },
   emits: ['close', 'saved'],
   data() {
@@ -143,6 +144,7 @@ export default defineComponent({
           <button class="cursor-pointer text-blue-700 hover:underline" @click="load">Повторить загрузку текста</button>
         </div>
         <MarkdownViewer v-else-if="preview" :content="content" :entities="entities" :readonly="readonly || saving"
+                        :selected-entity-id="selectedEntityId"
                         @update:content="saveEntity"/>
         <textarea v-else id="markdown-content" v-model="content"
                   class="block min-h-0 w-full flex-1 resize-none overflow-auto overscroll-contain p-4 font-mono text-sm leading-relaxed focus:outline-blue-500"

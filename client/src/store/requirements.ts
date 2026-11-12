@@ -3,7 +3,7 @@ import {
     getReport,
     getRequirements,
     updateRequirement,
-    type Report,
+    type ReportDetails,
     type Requirement,
     type RequirementUpdate
 } from '../api'
@@ -12,8 +12,9 @@ import type {RootState} from './index'
 export interface RequirementsState {
     id: number | null
     session: number
-    report: Report | null
+    report: ReportDetails | null
     items: Requirement[] | null
+    entityDocuments: Record<number, number>
     loading: boolean
     error: string
     saving: number[]
@@ -22,7 +23,7 @@ export interface RequirementsState {
 
 const initialState = (): RequirementsState => ({
     id: null, session: 0, report: null, items: null, loading: false, error: '',
-    saving: [], saveErrors: {},
+    saving: [], saveErrors: {}, entityDocuments: {},
 })
 
 export const requirements: Module<RequirementsState, RootState> = {
@@ -54,8 +55,10 @@ export const requirements: Module<RequirementsState, RootState> = {
                 if (state.session !== session) return
                 commit('patch', {report})
                 if (report.stage !== 'verification' || report.processing_status !== 'completed') return
-                const items = await getRequirements(id)
-                if (state.session === session) commit('patch', {items})
+                const result = await getRequirements(id)
+                if (state.session === session) commit('patch', {
+                    items: result.requirements, entityDocuments: result.entity_documents,
+                })
             } catch (cause) {
                 if (state.session === session) commit('patch', {
                     error: cause instanceof Error ? cause.message : 'Не удалось загрузить результаты проверки.',

@@ -15,7 +15,9 @@ export default defineComponent({
   components: {FontAwesomeIcon, RequirementText},
   props: {
     requirements: {type: Array as PropType<Requirement[]>, required: true},
+    entityDocuments: {type: Object as PropType<Record<number, number>>, required: true},
   },
+  emits: {select: (id: number) => Number.isInteger(id)},
   data() {
     return {
       filter: 'all' as 'all' | 'failed' | 'passed' | 'silenced',
@@ -89,6 +91,7 @@ export default defineComponent({
               <span class="text-sm tabular-nums text-slate-400"><span
                   class="sr-only">Требование </span>{{ requirement.id }}</span>
               <RequirementText :text="requirement.equation || requirement.evidence || 'Условие не указано'"
+                               :entity-documents="entityDocuments" @select="$emit('select', $event)"
                                class="min-w-0 whitespace-pre-wrap break-words text-sm leading-7"
                                :class="[requirement.equation ? 'font-mono' : '', requirement.silenced ? 'text-slate-500' : 'text-slate-800']"/>
               <span class="inline-flex h-7 w-10 items-center justify-center rounded border"
@@ -111,11 +114,13 @@ export default defineComponent({
               </div>
               <p v-if="requirement.equation && requirement.evidence"
                  class="mt-3 whitespace-pre-wrap break-words text-sm leading-7">
-                <RequirementText :text="requirement.evidence"/>
+                <RequirementText :text="requirement.evidence" :entity-documents="entityDocuments"
+                                 @select="$emit('select', $event)"/>
               </p>
               <div v-if="requirement.ids_related.length" class="mt-4 flex flex-wrap items-center gap-2 text-xs">
                 <span class="text-slate-500">Связанные сущности:</span>
-                <RequirementText v-for="id in requirement.ids_related" :key="id" :text="`#${id}`" class="font-mono"/>
+                <RequirementText v-for="id in requirement.ids_related" :key="id" :text="`#${id}`" class="font-mono"
+                                 :entity-documents="entityDocuments" @select="$emit('select', $event)"/>
               </div>
               <form class="mt-4"
                     @submit.prevent="update({id: requirement.id, changes: {notes: notes[requirement.id]}})">

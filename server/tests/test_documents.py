@@ -290,6 +290,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(details["available_actions"])
         status, results = await self.json_request("GET", "/reports/1/requirements")
         self.assertEqual(status, 200)
+        results = results["requirements"]
         self.assertTrue(all(type(item["verdict"]) is bool for item in results))
         self.assertEqual({item["verdict"] for item in results}, {True, False})
         self.assertTrue(any(item["equation"] for item in results))
@@ -323,12 +324,64 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(saved["verdict"])
         self.assertEqual(saved["notes"], "Проверить расчёт #1")
         _, results = await self.json_request("GET", "/reports/1/requirements")
-        self.assertEqual(results[0], saved)
+        self.assertEqual(results["requirements"][0], saved)
         status, saved = await self.json_request("PATCH", path, {"silenced": False, "notes": ""})
         self.assertEqual(status, 200)
         self.assertFalse(saved["silenced"])
         self.assertEqual(saved["notes"], "")
         self.assertEqual(saved["equation"], "#1 == #2")
+
+    async def test_requirement_sources_match_current_report_documents(self):
+        import re
+
+        _, final_report = await self.upload(role="final_report")
+        _, supporting = await self.upload()
+        _, other = await self.upload(report_id=2)
+        # Change the markup before verification so the mapping must use the latest revision.
+        path = f'/reports/1/documents/{supporting["id"]}/markdown'
+        _, markdown = await self.json_request("GET", path)
+        matches = list(entities.ENTITY.finditer(markdown["content"]))
+        content = markdown["content"].replace(matches[0][0], "Removed entity", 1)
+        content += '\n<entity type="number" value="42" unit="rubles">42</entity>'
+        status, _ = await self.json_request("POST", path, {"content": content, "base_revision": 1})
+        self.assertEqual(status, 200)
+        await self.json_request("POST", "/reports/1/run-entity-extraction")
+        await self.json_request("POST", "/reports/1/run-verification")
+        status, results = await self.json_request("GET", "/reports/1/requirements")
+        self.assertEqual(status, 200)
+        expected = {}
+        for document in (final_report, supporting):
+            document_id = document["id"]
+            _, source = await self.json_request("GET", f'/reports/1/documents/{document_id}/markdown')
+            expected.update({entities.attributes_for(match)["id"]: document_id
+                             for match in entities.ENTITY.finditer(source["content"])})
+            status, original = await self.request("GET", f'/reports/1/documents/{document_id}/original')
+            self.assertEqual(status, 200)
+            self.assertEqual(original, store.originals[document_id])
+            status, _ = await self.json_request("POST", f'/reports/1/documents/{document_id}/markdown',
+                                                {"content": "edit", "base_revision": source["revision"]})
+            self.assertEqual(status, 409)
+        self.assertEqual(results["entity_documents"], expected)
+        self.assertNotIn(entities.attributes_for(matches[0])["id"], expected)
+        self.assertNotIn(other["id"], expected.values())
+        references = set()
+        for requirement in results["requirements"]:
+            references.update(re.findall(r"#(\d+)", (requirement["equation"] or "") + (requirement["evidence"] or "")))
+            references.update(str(entity_id) for entity_id in requirement["ids_related"])
+        self.assertTrue(references)
+        self.assertLessEqual(references, expected.keys())
+
+    async def test_verification_without_entities_returns_empty_sources(self):
+        for role in ("final_report", "supporting"):
+            _, uploaded = await self.upload(role=role)
+            status, _ = await self.json_request("POST", f'/reports/1/documents/{uploaded["id"]}/markdown',
+                                                {"content": "No entities", "base_revision": 1})
+            self.assertEqual(status, 200)
+        await self.json_request("POST", "/reports/1/run-entity-extraction")
+        await self.json_request("POST", "/reports/1/run-verification")
+        status, results = await self.json_request("GET", "/reports/1/requirements")
+        self.assertEqual(status, 200)
+        self.assertEqual(results, {"requirements": [], "entity_documents": {}})
 
     async def test_requirement_updates_are_scoped_to_completed_reports(self):
         verification.requirements[1] = [verification.Requirement(id=1, verdict=False)]

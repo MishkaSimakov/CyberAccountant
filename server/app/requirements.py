@@ -1,11 +1,13 @@
 """Demonstration requirements while the verification pipeline is being built."""
 
 import asyncio
+import json
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from .documents import blockers_for, documents, find_report, report_details
+from .documents import blockers_for, documents, find_report, report_details, revisions
+from .entities import ENTITY, attributes_for
 
 router = APIRouter()
 
@@ -27,7 +29,21 @@ class RequirementUpdate(BaseModel):
     silenced: bool = False
 
 
+class RequirementsResult(BaseModel):
+    requirements: list[Requirement]
+    entity_documents: dict[int, int]
+
+
 requirements: dict[int, list[Requirement]] = {}
+
+
+def report_entities(report_id: int):
+    return [
+        (document_id, attributes_for(match))
+        for document_id in documents.get(report_id, {})
+        for match in ENTITY.finditer(revisions[document_id][-1].content)
+        if attributes_for(match).get("id")
+    ]
 
 
 async def simulate_verification(report_id: int):
@@ -36,19 +52,28 @@ async def simulate_verification(report_id: int):
         await asyncio.sleep(1)
         report.processing_status = "running"
         await asyncio.sleep(5)
-        # Fixtures from docs/DESIGN.md, not conclusions about uploaded documents.
-        requirements[report_id] = [
-            Requirement(id=1, equation="#123 * 2 == #321", verdict=True),
-            Requirement(id=2, equation='#999 == "ВЕД-ЗП-2026-02"', verdict=True),
-            Requirement(id=3, equation="01.01.2026 < #777 && #777 < 31.05.2026", verdict=False),
-            Requirement(id=4, equation="#1 + #2 == #3", verdict=False),
-            Requirement(
-                id=5,
-                evidence="Число #541 выглядит очень странно: зарплата больше чем 1e9.",
-                ids_related=[541, 9654],
-                verdict=False,
-            ),
-        ]
+        # Demonstration verdicts, using IDs from the report's actual markup.
+        fields = [attributes for _, attributes in report_entities(report_id)]
+        numbers = [int(item["id"]) for item in fields if item["type"] == "number"]
+        identifiers = [item for item in fields if item["type"] == "id"]
+        dates = [int(item["id"]) for item in fields if item["type"] == "date"]
+        items = []
+        if numbers:
+            a, b, c = (numbers[index % len(numbers)] for index in range(3))
+            items.extend([
+                Requirement(id=1, equation=f"#{a} * 2 == #{b}", verdict=True),
+                Requirement(id=4, equation=f"#{a} + #{b} == #{c}", verdict=False),
+                Requirement(id=5, evidence=f"Число #{a} требует дополнительной проверки.",
+                            ids_related=[a, c], verdict=False),
+            ])
+        if identifiers:
+            item = identifiers[0]
+            items.append(Requirement(id=2, equation=f'#{item["id"]} == {json.dumps(item["value"], ensure_ascii=False)}',
+                                     verdict=True))
+        if dates:
+            items.append(Requirement(id=3, equation=f"01.01.2026 < #{dates[0]} && #{dates[0]} < 31.05.2026",
+                                     verdict=False))
+        requirements[report_id] = sorted(items, key=lambda item: item.id)
         report.processing_status = "completed"
     except Exception:
         report.processing_status = "failed"
@@ -72,17 +97,21 @@ async def run_verification(report_id: int, background_tasks: BackgroundTasks):
     return await report_details(report_id)
 
 
-@router.get("/reports/{report_id}/requirements", response_model=list[Requirement])
+@router.get("/reports/{report_id}/requirements", response_model=RequirementsResult)
 async def report_requirements(report_id: int):
     report = find_report(report_id)
     if report.stage != "verification" or report.processing_status != "completed":
         raise HTTPException(409, "Проверка требований ещё не завершена.")
-    return requirements.get(report_id, [])
+    return RequirementsResult(
+        requirements=requirements.get(report_id, []),
+        entity_documents={int(attributes["id"]): document_id
+                          for document_id, attributes in report_entities(report_id)},
+    )
 
 
 @router.patch("/reports/{report_id}/requirements/{requirement_id}", response_model=Requirement)
 async def update_requirement(report_id: int, requirement_id: int, payload: RequirementUpdate):
-    items = await report_requirements(report_id)
+    items = (await report_requirements(report_id)).requirements
     requirement = next((item for item in items if item.id == requirement_id), None)
     if requirement is None:
         raise HTTPException(404, "Требование не найдено.")

@@ -34,6 +34,7 @@ export default defineComponent({
     content: {type: String, required: true},
     readonly: {type: Boolean, default: true},
     entities: Boolean,
+    selectedEntityId: Number,
   },
   emits: {'update:content': (_content: string) => true},
   data() {
@@ -78,6 +79,7 @@ export default defineComponent({
       const content = this.content
       const showEntities = this.entities
       const popupId = this.popupId
+      const selectedEntityId = this.selectedEntityId
 
       const entities: Entity[] = []
       const segments: TextSegment[] = []
@@ -104,7 +106,8 @@ export default defineComponent({
           attributes: token.attributes,
           range: ranges.get(token) ?? uniqueRange
         }) - 1
-        return `<button type="button" class="entity-highlight" data-entity-index="${index}" aria-haspopup="dialog" aria-controls="${escapeHtml(popupId)}" aria-expanded="false" title="Атрибуты сущности">${escapeHtml(token.text)}</button>`
+        const selected = selectedEntityId !== undefined && token.attributes.id === String(selectedEntityId)
+        return `<button type="button" class="entity-highlight${selected ? ' entity-selected' : ''}" data-entity-index="${index}" aria-haspopup="dialog" aria-controls="${escapeHtml(popupId)}" aria-expanded="false" title="Атрибуты сущности">${escapeHtml(token.text)}</button>`
       }
 
       const parser = new Marked({
@@ -149,6 +152,9 @@ export default defineComponent({
     },
   },
   watch: {
+    'rendered.html'() {
+      void this.revealSelectedEntity()
+    },
     draftType() {
       if (!this.units.includes(this.draftUnit)) this.draftUnit = this.units[0]!
     },
@@ -165,6 +171,7 @@ export default defineComponent({
     },
   },
   mounted() {
+    void this.revealSelectedEntity()
     window.addEventListener('resize', this.onResize)
     document.addEventListener('selectionchange', this.captureSelection)
     document.addEventListener('pointerup', this.finishSelection)
@@ -178,6 +185,14 @@ export default defineComponent({
     clearTimeout(this.selectionTimer)
   },
   methods: {
+    async revealSelectedEntity() {
+      if (this.selectedEntityId === undefined) return
+      await this.$nextTick()
+      const viewer = this.$refs.viewer as HTMLDivElement | undefined
+      const entity = viewer?.querySelector<HTMLButtonElement>('.entity-selected')
+      entity?.scrollIntoView({block: 'center'})
+      entity?.focus({preventScroll: true})
+    },
     onResize() {
       this.dismiss()
     },
@@ -514,6 +529,12 @@ export default defineComponent({
 
 .markdown-viewer :deep(.entity-highlight:focus-visible) {
   outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.markdown-viewer :deep(.entity-highlight.entity-selected) {
+  background: #fdba74;
+  outline: 2px solid #ea580c;
   outline-offset: 2px;
 }
 </style>

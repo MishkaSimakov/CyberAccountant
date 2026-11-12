@@ -3,29 +3,36 @@ import {defineComponent} from 'vue'
 import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
-import type {Report, Requirement} from '../api'
+import type {Report, ReportDetails, ReportDocument, Requirement} from '../api'
 import ReportHeader from '../components/ReportHeader.vue'
 import RequirementsResults from '../components/RequirementsResults.vue'
+import MarkdownEditor from '../components/MarkdownEditor.vue'
 
 export default defineComponent({
-  components: {FontAwesomeIcon, ReportHeader, RequirementsResults},
+  components: {FontAwesomeIcon, ReportHeader, RequirementsResults, MarkdownEditor},
   props: {reportId: {type: Number, required: true}},
   data() {
-    return {faSpinner}
+    return {faSpinner, selectedEntityId: undefined as number | undefined}
   },
   computed: {
-    ...mapState('requirements', ['loading', 'error']),
-    report(): Report | null {
+    ...mapState('requirements', ['loading', 'error', 'entityDocuments']),
+    report(): ReportDetails | null {
       return this.$store.state.requirements.report
     },
     requirements(): Requirement[] | null {
       return this.$store.state.requirements.items
+    },
+    selectedDocument(): ReportDocument | undefined {
+      if (this.selectedEntityId === undefined) return
+      const documentId = this.$store.state.requirements.entityDocuments[this.selectedEntityId]
+      return this.report?.documents.find(document => document.id === documentId)
     },
   },
   watch: {
     reportId: {
       immediate: true,
       handler(id: number) {
+        this.selectedEntityId = undefined
         void this.start(id)
       },
     },
@@ -56,6 +63,9 @@ export default defineComponent({
       <p role="alert">{{ error }}</p>
       <button class="mt-4 cursor-pointer text-blue-700 hover:underline" @click="load">Повторить загрузку</button>
     </div>
-    <RequirementsResults v-else-if="requirements !== null" :key="reportId" :requirements="requirements"/>
+    <RequirementsResults v-else-if="requirements !== null" :key="reportId" :requirements="requirements"
+                         :entity-documents="entityDocuments" @select="selectedEntityId = $event"/>
+    <MarkdownEditor v-if="selectedDocument" :report-id="reportId" :document="selectedDocument"
+                    readonly entities :selected-entity-id="selectedEntityId" @close="selectedEntityId = undefined"/>
   </main>
 </template>

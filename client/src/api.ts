@@ -102,8 +102,13 @@ export interface Requirement {
 export const runVerification = (reportId: number) =>
     request<ReportDetails>(`/reports/${reportId}/run-verification`, {method: 'POST'})
 
+export interface RequirementsResult {
+    requirements: Requirement[]
+    entity_documents: Record<number, number>
+}
+
 export const getRequirements = (reportId: number) =>
-    request<Requirement[]>(`/reports/${reportId}/requirements`)
+    request<RequirementsResult>(`/reports/${reportId}/requirements`)
 
 export type RequirementUpdate = Partial<Pick<Requirement, 'notes' | 'silenced'>>
 
