@@ -560,6 +560,17 @@ def convert(source: Path, output: Path, args) -> dict:
             if 'spreadsheet_layout' not in report:
                 raise ConversionError('Office image lacks cell geometry; rebuild it with sandbox-build.')
             spreadsheet = SpreadsheetLayout(temporary/'recalculated.xlsx', report['spreadsheet_layout'])
+        docling = None
+        if args.backend == 'docling' and not spreadsheet:
+            from docling_layout import DoclingLayout
+            executable = find_tesseract(args.tesseract) if args.ocr != 'never' else None
+            try:
+                docling = DoclingLayout(preview, args, image_pixels=renderer == 'image_pixels',
+                                       executable=executable,
+                                       environment=tesseract_env(executable, args.tessdata) if executable else None)
+            except Exception as exc:
+                raise ConversionError('Docling conversion failed. Install requirements.txt and run '
+                                      'document_ocr.py models-download first. Details: '+str(exc)) from exc
         if renderer in ('libreoffice_docker', 'text_render'):
             warnings.append('Coordinates refer to the fixed preview.pdf rendering; office/text files have no intrinsic page geometry.')
         if source.suffix.lower() == '.xlsx':
@@ -655,6 +666,8 @@ def convert(source: Path, output: Path, args) -> dict:
                 unmapped_start = writer.unmapped_character_count
                 if spreadsheet:
                     table_count = spreadsheet.write_page(writer, page, number)
+                elif docling:
+                    table_count = docling.write_page(writer, page, number, words)
                 else:
                     write_page(writer, words, tables, number, size)
                     table_count = sum(bool(table_grid(t, words)) for t in tables)
@@ -703,7 +716,7 @@ def convert(source: Path, output: Path, args) -> dict:
                                       'bbox_format': '[x0,y0,x1,y1]',
                                       'space': 'visible_rotated_page',
                                       'normalized_range': [0, 1]},
-                'renderer': renderer,
+                'renderer': renderer, 'layout_backend': 'docling' if spreadsheet or docling else 'classic',
                 'office_processing': None if office_report is None else {
                     'engine': office_report['engine'], 'recalculated': office_report['recalculated'],
                     'formula_count': office_report.get('formula_count', 0),
@@ -770,6 +783,11 @@ def parser():
     p.add_argument('output', type=Path)
     p.add_argument('--boxes', help='JSON sidecar path; default OUTPUT.boxes.json')
     p.add_argument('--ocr', choices=['auto', 'always', 'never'], default='auto')
+    p.add_argument('--backend', choices=['classic', 'docling'], default='classic',
+                   help='Layout backend; Docling PDF/OCR is opt-in pending quality checks. XLSX always uses Docling')
+    p.add_argument('--models', type=Path, default=Path.home()/'.cache/docling/models',
+                   help='Local Docling model directory (download models before conversion)')
+    p.add_argument('--docling-table-model', choices=['v1', 'v1-fast', 'v2'], default='v2')
     p.add_argument('--lang', default='rus+eng')
     p.add_argument('--dpi', type=int, default=300)
     p.add_argument('--psm', choices=['auto', '3', '4', '6', '7', '11', '12', '13'], default='auto',
@@ -790,7 +808,14 @@ def parser():
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
-        if argv and argv[0] == 'sandbox-build':
+        if argv and argv[0] == 'models-download':
+            p = argparse.ArgumentParser(description='Download local Docling layout/table models; no documents are used.')
+            p.add_argument('--models', type=Path, default=Path.home()/'.cache/docling/models')
+            p.add_argument('--table-model', choices=['v1', 'v2', 'both'], default='v2')
+            args = p.parse_args(argv[1:])
+            from docling_layout import download_models
+            print(download_models(args.models, args.table_model))
+        elif argv and argv[0] == 'sandbox-build':
             p = argparse.ArgumentParser(description='Build the local office sandbox image (no documents are used).')
             p.add_argument('--sandbox-image', default=DEFAULT_IMAGE)
             p.add_argument('--docker')

@@ -102,6 +102,18 @@ Docker socket и переменные окружения хоста контей
 
 ## Запуск
 
+Для PDF, изображений и PDF-превью DOCX добавлен полный локальный пайплайн Docling:
+
+```powershell
+.venv\Scripts\python.exe document_ocr.py models-download
+.venv\Scripts\python.exe document_ocr.py "input.pdf" "output/docling.md" --backend docling
+```
+
+Это отдельный режим для сравнения. По умолчанию остаётся `--backend classic`:
+сложная карточка затрат пока не проходит проверки структуры таблицы в Docling.
+XLSX в обоих режимах использует Docling напрямую по структуре книги.
+Подробные результаты — в [OCR_BACKENDS.md](OCR_BACKENDS.md).
+
 ```powershell
 python document_ocr.py "данные/01_Карточка_учета_фактических_затрат_этап_3.pdf" "output/kfz.md"
 python document_ocr.py "данные/11_Справка_ИТ_03-26.docx" "output/it.md"
@@ -317,6 +329,10 @@ python tests/validate_dataset.py
 а проверки логики и существующие тесты PDF/OCR выполняются. На Linux переменная
 задаётся как `OCR_SANDBOX_TESTS=1 python -m pytest tests -q`.
 
+Для проверок нового PDF/OCR-бэкенда с заранее установленными моделями дополнительно
+задайте `OCR_DOCLING_TESTS=1`. Они проверяют отсутствие сетевых подключений при
+конвертации, повторяющиеся суммы, PNG, DOCX и символьную подсветку.
+
 В настроенном окружении проверяются тесты, включая реальный контейнерный
 пересчёт XLSX. Повторная проверка набора успешно обработала 27 из 27 файлов;
 Office-документы обработаны через Docker. Результаты находятся в `output/all/`,
@@ -334,6 +350,7 @@ Office-документы обработаны через Docker. Результ
 - [Docker: параметры изоляции контейнера](https://docs.docker.com/reference/cli/docker/container/run/)
 
 Docling используется для структуры XLSX без нейросетевых моделей и сетевых API.
-Для PDF, сканов и DOCX сохраняется проверенный путь PyMuPDF/Tesseract, поскольку
-кроме Markdown требуется реальная символьная геометрия. Сравнение готовых решений
-и результаты пробных запусков — в [OCR_BACKENDS.md](OCR_BACKENDS.md).
+В режиме `--backend docling` он также определяет структуру PDF, сканов и PDF-превью
+DOCX локальными моделями. PyMuPDF/Tesseract сохраняются для реальных символьных
+координат; боксы слов не делятся на буквы. Проверенный `classic` доступен для
+случаев, где модели таблиц дают ошибки. Результаты — в [OCR_BACKENDS.md](OCR_BACKENDS.md).

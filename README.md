@@ -24,6 +24,18 @@ For XLSX, Docling reads worksheet structure from the recalculated workbook;
 tables are not reconstructed from PDF borders. Calc supplies displayed values and
 cell positions, and PyMuPDF supplies the actual character boxes in the PDF preview.
 
+The full local Docling PDF/OCR pipeline is also available for PDF, images and
+Office PDF previews. Download its models once, then select it explicitly:
+
+```sh
+python document_ocr.py models-download
+python document_ocr.py input.pdf output/docling.md --backend docling
+```
+
+The existing `classic` backend remains the default: the complex scanned report
+did not pass the Docling table checks. XLSX always uses its native Docling backend.
+See [the comparison and commands](docs/OCR_BACKENDS.md).
+
 For DOCX/XLSX, start a local Linux Docker engine and build the office image first:
 
 ```sh
