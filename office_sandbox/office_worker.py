@@ -120,6 +120,40 @@ def property_value(uno, name, value):
     return prop
 
 
+def spreadsheet_layout(document):
+    """Calc supplies display strings and physical cell geometry, not guessed borders."""
+    sheets, total = [], 0
+    factor = 72 / 2540  # UNO uses hundredths of a millimetre; PDF uses points.
+    for index in range(document.Sheets.Count):
+        sheet = document.Sheets.getByIndex(index)
+        areas = sheet.queryContentCells(23).getRangeAddresses()
+        total += sum((a.EndRow-a.StartRow+1)*(a.EndColumn-a.StartColumn+1) for a in areas)
+        if total > 100000:
+            raise DocumentRejected('Spreadsheet layout exceeds 100000 content cells.')
+        content = [(row, col, sheet.getCellByPosition(col, row)) for a in areas
+                   for row in range(a.StartRow, a.EndRow+1)
+                   for col in range(a.StartColumn, a.EndColumn+1)]
+        for _, _, cell in content:
+            cell.IsTextWrapped = True
+        cursor = sheet.createCursor()
+        cursor.gotoEndOfUsedArea(True)
+        if cursor.RangeAddress.EndRow > 100000:
+            raise DocumentRejected('Spreadsheet layout exceeds the supported row limit.')
+        cursor.Rows.OptimalHeight = True
+        first = sheet.getCellByPosition(min((c for _, c, _ in content), default=0),
+                                       min((r for r, _, _ in content), default=0)).Position
+        cells = []
+        for row, col, cell in content:
+            merged = sheet.createCursorByRange(cell)
+            merged.collapseToMergedArea()
+            position, size = merged.Position, merged.Size
+            x, y = position.X-first.X, position.Y-first.Y
+            cells.append({'row': row, 'col': col, 'text': cell.String,
+                          'rect': [x*factor, y*factor, (x+size.Width)*factor, (y+size.Height)*factor]})
+        sheets.append({'name': sheet.Name, 'page': index+1, 'cells': cells})
+    return sheets
+
+
 def process_document(source, work):
     policy = inspect_package(source)
     # Import only inside the container; unit tests for policy need no UNO runtime.
@@ -178,6 +212,7 @@ def process_document(source, work):
             report.update(recalculated=True, formula_results=results,
                           recalculated_formula_count=len(results),
                           calculation_mode='explicit_full_rebuild_then_frozen')
+            report['spreadsheet_layout'] = spreadsheet_layout(document)
             recalculated = work/'recalculated.xlsx'
             document.storeAsURL(recalculated.as_uri(),
                                 (pv('FilterName', 'Calc MS Excel 2007 XML'), pv('Overwrite', True)))

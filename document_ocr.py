@@ -478,7 +478,8 @@ class MarkdownWriter:
                 'bbox_normalized': [x0/page_size[0], y0/page_size[1],
                                     x1/page_size[0], y1/page_size[1]],
             })
-        self.unmapped_character_count += len(word.text) - len(mapped)
+        self.unmapped_character_count += sum(not char.isspace() and i not in mapped
+                                            for i, char in enumerate(word.text))
 
     def text(self):
         return ''.join(self.parts)
@@ -549,6 +550,16 @@ def convert(source: Path, output: Path, args) -> dict:
         temporary = Path(temporary)
         preview = temporary / 'preview.pdf'
         renderer, image_info = prepare_pdf(source, preview, args)
+        spreadsheet = None
+        if source.suffix.lower() == '.xlsx':
+            try:
+                from spreadsheet_layout import SpreadsheetLayout
+            except ImportError as exc:
+                raise ConversionError('XLSX structure requires Docling. Install requirements.txt in your Python environment.') from exc
+            report = json.loads((temporary/'office-report.json').read_text(encoding='utf-8'))
+            if 'spreadsheet_layout' not in report:
+                raise ConversionError('Office image lacks cell geometry; rebuild it with sandbox-build.')
+            spreadsheet = SpreadsheetLayout(temporary/'recalculated.xlsx', report['spreadsheet_layout'])
         if renderer in ('libreoffice_docker', 'text_render'):
             warnings.append('Coordinates refer to the fixed preview.pdf rendering; office/text files have no intrinsic page geometry.')
         if source.suffix.lower() == '.xlsx':
@@ -557,6 +568,8 @@ def convert(source: Path, output: Path, args) -> dict:
         with fitz.open(preview) as doc:
             if doc.needs_pass:
                 raise ConversionError('Encrypted PDF: decrypt it locally before conversion.')
+            if spreadsheet and len(doc) != len(spreadsheet.sheets):
+                raise ConversionError('Spreadsheet sheets and PDF pages do not match; refusing ambiguous coordinates.')
             for index, page in enumerate(doc):
                 number = index + 1
                 original_rotation = page.rotation
@@ -569,8 +582,8 @@ def convert(source: Path, output: Path, args) -> dict:
                 pix = page.get_pixmap(dpi=render_dpi, alpha=False, colorspace=fitz.csRGB)
                 image = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
                 sx, sy = image.width/size[0], image.height/size[1]
-                tables, clean = raster_tables(image, sx, sy) if args.tables else ([], image)
-                use_ocr = args.ocr == 'always' or (args.ocr == 'auto' and not native)
+                tables, clean = raster_tables(image, sx, sy) if args.tables and not spreadsheet else ([], image)
+                use_ocr = not spreadsheet and (args.ocr == 'always' or (args.ocr == 'auto' and not native))
                 if use_ocr:
                     print(f'Page {number}/{len(doc)}: OCR', file=sys.stderr)
                     words = ocr_with_tables(image, clean, tables, size, args, temporary)
@@ -580,7 +593,7 @@ def convert(source: Path, output: Path, args) -> dict:
                         word.bbox = list(fitz.Rect(word.bbox) * page.rotation_matrix)
                         for character in word.characters:
                             character['bbox'] = list(fitz.Rect(character['bbox']) * page.rotation_matrix)
-                    if args.tables and not original_rotation:
+                    if args.tables and not original_rotation and not spreadsheet:
                         try:
                             vector = page.find_tables()
                             detected = [{'bbox': list(t.bbox), 'cells': [list(c) for c in t.cells if c],
@@ -640,7 +653,11 @@ def convert(source: Path, output: Path, args) -> dict:
                                     'character bounds are clipped. Extracted text may include cropped characters.')
                 character_start = len(writer.characters)
                 unmapped_start = writer.unmapped_character_count
-                write_page(writer, words, tables, number, size)
+                if spreadsheet:
+                    table_count = spreadsheet.write_page(writer, page, number)
+                else:
+                    write_page(writer, words, tables, number, size)
+                    table_count = sum(bool(table_grid(t, words)) for t in tables)
                 unmapped = writer.unmapped_character_count - unmapped_start
                 if unmapped:
                     warnings.append(f'Page {number}: {unmapped} source-text characters have no aligned visible glyph box; '
@@ -659,7 +676,7 @@ def convert(source: Path, output: Path, args) -> dict:
                         'word_count': len(words), 'ocr': any(w.method == 'tesseract' for w in words),
                         'character_count': len(writer.characters) - character_start,
                         'unmapped_character_count': unmapped,
-                        'table_count': sum(bool(table_grid(t, words)) for t in tables),
+                        'table_count': table_count,
                         }
                 if image_info:
                     info.update(image_info[index])
@@ -668,7 +685,11 @@ def convert(source: Path, output: Path, args) -> dict:
         office_report = None
         if (temporary/'office-report.json').is_file():
             office_report = json.loads((temporary/'office-report.json').read_text(encoding='utf-8'))
-            shutil.copyfile(temporary/'office-report.json', assets/'office-report.json')
+            # Cell rectangles are transient alignment data. Persist only the
+            # requested normalized character geometry, not duplicate cell boxes.
+            office_report.pop('spreadsheet_layout', None)
+            (assets/'office-report.json').write_text(
+                json.dumps(office_report, ensure_ascii=False, indent=2), encoding='utf-8')
         if (temporary/'recalculated.xlsx').is_file():
             shutil.copyfile(temporary/'recalculated.xlsx', assets/'recalculated.xlsx')
     markdown = writer.text()

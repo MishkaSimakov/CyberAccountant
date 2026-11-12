@@ -20,6 +20,10 @@ python -m pip install -r requirements.txt
 python document_ocr.py input.pdf output/result.md
 ```
 
+For XLSX, Docling reads worksheet structure from the recalculated workbook;
+tables are not reconstructed from PDF borders. Calc supplies displayed values and
+cell positions, and PyMuPDF supplies the actual character boxes in the PDF preview.
+
 For DOCX/XLSX, start a local Linux Docker engine and build the office image first:
 
 ```sh
