@@ -4,37 +4,15 @@ import asyncio
 import json
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
 
 from .documents import blockers_for, documents, find_report, report_details, revisions
 from .entities import ENTITY, attributes_for
+from .schemas.requirements import RequirementResponse, RequirementsResult, RequirementUpdate
 
 router = APIRouter()
 
 
-class Requirement(BaseModel):
-    id: int
-    verdict: bool
-    equation: str | None = None
-    evidence: str | None = None
-    ids_related: list[int] = []
-    notes: str = ""
-    silenced: bool = False
-
-
-class RequirementUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    notes: str = Field(default="", max_length=10000)
-    silenced: bool = False
-
-
-class RequirementsResult(BaseModel):
-    requirements: list[Requirement]
-    entity_documents: dict[int, int]
-
-
-requirements: dict[int, list[Requirement]] = {}
+requirements: dict[int, list[RequirementResponse]] = {}
 
 
 def report_entities(report_id: int):
@@ -61,17 +39,17 @@ async def simulate_verification(report_id: int):
         if numbers:
             a, b, c = (numbers[index % len(numbers)] for index in range(3))
             items.extend([
-                Requirement(id=1, equation=f"#{a} * 2 == #{b}", verdict=True),
-                Requirement(id=4, equation=f"#{a} + #{b} == #{c}", verdict=False),
-                Requirement(id=5, evidence=f"Число #{a} требует дополнительной проверки.",
+                RequirementResponse(id=1, equation=f"#{a} * 2 == #{b}", verdict=True),
+                RequirementResponse(id=4, equation=f"#{a} + #{b} == #{c}", verdict=False),
+                RequirementResponse(id=5, evidence=f"Число #{a} требует дополнительной проверки.",
                             ids_related=[a, c], verdict=False),
             ])
         if identifiers:
             item = identifiers[0]
-            items.append(Requirement(id=2, equation=f'#{item["id"]} == {json.dumps(item["value"], ensure_ascii=False)}',
+            items.append(RequirementResponse(id=2, equation=f'#{item["id"]} == {json.dumps(item["value"], ensure_ascii=False)}',
                                      verdict=True))
         if dates:
-            items.append(Requirement(id=3, equation=f"01.01.2026 < #{dates[0]} && #{dates[0]} < 31.05.2026",
+            items.append(RequirementResponse(id=3, equation=f"01.01.2026 < #{dates[0]} && #{dates[0]} < 31.05.2026",
                                      verdict=False))
         requirements[report_id] = sorted(items, key=lambda item: item.id)
         report.processing_status = "completed"
@@ -109,7 +87,7 @@ async def report_requirements(report_id: int):
     )
 
 
-@router.patch("/reports/{report_id}/requirements/{requirement_id}", response_model=Requirement)
+@router.patch("/reports/{report_id}/requirements/{requirement_id}", response_model=RequirementResponse)
 async def update_requirement(report_id: int, requirement_id: int, payload: RequirementUpdate):
     items = (await report_requirements(report_id)).requirements
     requirement = next((item for item in items if item.id == requirement_id), None)

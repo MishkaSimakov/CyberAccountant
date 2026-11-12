@@ -9,9 +9,9 @@ from zipfile import BadZipFile, ZipFile
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
 
 from .entities import assign_entity_ids, prepare_entities
+from .schemas.documents import Document, MarkdownEdit, MarkdownRevision
 
 router = APIRouter()
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -37,30 +37,6 @@ MOCK_PAYROLL_MARKDOWN = """## Ведомость
 | <entity type="id" value="0202" unit="string" id="148">0202</entity> | Дополнительная заработная плата и резерв отпусков | <entity type="number" value="101500.00" unit="rubles" id="149">101 500,00</entity> | Доплаты и компенсационные начисления |
 |  | ИТОГО | <entity type="number" value="1117000.00" unit="rubles" id="150">1 117 000,00</entity> |  |
 """
-
-
-class Document(BaseModel):
-    id: int
-    name: str
-    size: int
-    content_type: str
-    role: Literal["final_report", "supporting"]
-    content_sha256: str = Field(exclude=True)
-    ocr_status: Literal["queued", "running", "completed", "failed"] = "queued"
-    extraction_status: Literal["idle", "completed"] = "idle"
-    markdown_revision: int = 0
-    user_edited: bool = False
-    error: str | None = None
-
-
-class MarkdownRevision(BaseModel):
-    content: str = Field(max_length=1_000_000)
-    revision: int
-
-
-class MarkdownEdit(BaseModel):
-    content: str = Field(min_length=1, max_length=1_000_000)
-    base_revision: int = Field(ge=1)
 
 
 documents: dict[int, dict[int, Document]] = {}

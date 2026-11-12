@@ -376,7 +376,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_requirement_notes_and_silencing_preserve_verdict(self):
         report_store[0].stage = "verification"
         report_store[0].processing_status = "completed"
-        verification.requirements[1] = [verification.Requirement(id=1, verdict=False, equation="#1 == #2")]
+        verification.requirements[1] = [verification.RequirementResponse(id=1, verdict=False, equation="#1 == #2")]
         path = "/reports/1/requirements/1"
         status, saved = await self.json_request("PATCH", path, {"notes": "Проверить расчёт #1"})
         self.assertEqual(status, 200)
@@ -448,7 +448,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results, {"requirements": [], "entity_documents": {}})
 
     async def test_requirement_updates_are_scoped_to_completed_reports(self):
-        verification.requirements[1] = [verification.Requirement(id=1, verdict=False)]
+        verification.requirements[1] = [verification.RequirementResponse(id=1, verdict=False)]
         status, _ = await self.json_request("PATCH", "/reports/1/requirements/1", {"notes": "edit"})
         self.assertEqual(status, 409)
         for report in report_store:
@@ -458,7 +458,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 404)
         status, _ = await self.json_request("PATCH", "/reports/999/requirements/1", {"notes": "edit"})
         self.assertEqual(status, 404)
-        verification.requirements[2] = [verification.Requirement(id=1, verdict=False)]
+        verification.requirements[2] = [verification.RequirementResponse(id=1, verdict=False)]
         await self.json_request("PATCH", "/reports/2/requirements/1", {"notes": "Other report", "silenced": True})
         self.assertEqual(verification.requirements[1][0].notes, "")
         self.assertFalse(verification.requirements[1][0].silenced)
@@ -466,7 +466,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_requirement_update_validation(self):
         report_store[0].stage = "verification"
         report_store[0].processing_status = "completed"
-        verification.requirements[1] = [verification.Requirement(id=1, verdict=True)]
+        verification.requirements[1] = [verification.RequirementResponse(id=1, verdict=True)]
         path = "/reports/1/requirements/1"
         for payload in [{"notes": "x" * 10001}, {"notes": None}, {"silenced": None}, {"verdict": False}]:
             status, _ = await self.json_request("PATCH", path, payload)
