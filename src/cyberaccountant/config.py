@@ -28,6 +28,9 @@ class PipelineConfig:
     max_retries: int = 2
     request_timeout: float = 300.0
     tag_workers: int = 8
+    # LLM reasoning control: "disabled" (fast, no thinking tokens), "enabled",
+    # or "exclude" (reason but strip from output). See OpenRouter reasoning docs.
+    reasoning: str = "disabled"
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:

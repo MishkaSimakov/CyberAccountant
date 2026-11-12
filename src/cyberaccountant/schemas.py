@@ -1,23 +1,34 @@
 """JSON schemas for LLM structured outputs (stages 1 and 5)."""
 
-# Stage 1: entity tagging. The model returns the full document text with
-# <ent ...> tags wrapped around every entity. Using a schema with a single
-# "document" string field keeps output JSON-valid even though the payload is
-# markdown.
-TAGGING_SCHEMA = {
+# Stage 1: entity tagging. The model returns a JSON array of segments that
+# rebuild the document exactly; wrap entries carry the entity text and type.
+_SEGMENT_ITEM = {
     "type": "object",
     "properties": {
-        "document": {
+        "content": {"type": "string"},
+        "wrap": {"type": "string"},
+        "type": {
             "type": "string",
-            "description": (
-                "Full document text with entities wrapped in "
-                '<ent t="..." u="..." n="...">raw text</ent> tags. '
-                "No other changes to the text."
-            ),
-        }
+            "enum": [
+                "amount", "date", "docid", "contract",
+                "number", "pct", "ratio", "EOF",
+            ],
+        },
+        "unit": {"type": "string"},
+        "norm": {"type": "string"},
     },
-    "required": ["document"],
+    "required": ["content", "wrap", "type"],
     "additionalProperties": False,
+}
+
+TAGGING_SCHEMA = {
+    "type": "array",
+    "description": (
+        "Alternating segments that rebuild the document. Each entry is "
+        '{"content": "text before", "wrap": "ENTITY TEXT", "type": "TYPE"} '
+        'with optional "unit"/"norm"; the last entry has "type": "EOF", "wrap": "".'
+    ),
+    "items": _SEGMENT_ITEM,
 }
 
 TAG_TYPES = ("amount", "date", "docid", "contract", "number", "pct", "ratio")

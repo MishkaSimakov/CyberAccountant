@@ -35,7 +35,7 @@ class Pipeline:
         self._mapping = run_ingest(self.cfg)
         return self._mapping
 
-    def tag(self) -> dict[str, tuple[str, str]]:
+    def tag(self, on_progress=None) -> dict[str, tuple[str, str]]:
         mapping = self._mapping or self._load_mapping()
         # use cache if all non-dup files already tagged
         if self._tagged and all(
@@ -44,7 +44,7 @@ class Pipeline:
             if not mapping[h8].get("duplicate_of")
         ):
             return self._tagged
-        self._tagged = run_tag(self.cfg, mapping)
+        self._tagged = run_tag(self.cfg, mapping, on_progress=on_progress)
         return self._tagged
 
     def registry(self) -> EntityRegistry:
