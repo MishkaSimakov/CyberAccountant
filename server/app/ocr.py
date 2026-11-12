@@ -8,7 +8,9 @@ from __future__ import annotations
 import argparse
 import bisect
 import csv
+from collections.abc import Iterator
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 import hashlib
@@ -31,6 +33,33 @@ from .office_client import SandboxError, render as render_in_sandbox
 
 class ConversionError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ParsedDocument:
+    markdown: Path
+    pdf: Path
+    json: Path
+
+
+@contextmanager
+def parse_document(original: Path) -> Iterator[ParsedDocument]:
+    """Parse one file; returned paths exist only inside the caller's with block.
+
+    Raises ConversionError with a description if conversion fails.
+    """
+    original = Path(original)
+    with tempfile.TemporaryDirectory(prefix="parsed-document-") as temporary:
+        output = Path(temporary) / "document.md"
+        try:
+            args = parser().parse_args([str(original), str(output)])
+            manifest = convert(original, output, args)
+        except ConversionError:
+            raise
+        except Exception as exc:
+            raise ConversionError(f"Cannot parse {original.name}: {exc}") from exc
+        yield ParsedDocument(markdown=output, pdf=output.parent / manifest["preview_pdf"],
+                             json=output.with_suffix(".boxes.json"))
 
 
 @dataclass
@@ -68,6 +97,17 @@ def tesseract_env(tessdata: str | None) -> dict:
     if tessdata:
         env['TESSDATA_PREFIX'] = str(Path(tessdata).resolve())
     return env
+
+
+def check_ocr_languages() -> None:
+    """Fail startup when Tesseract cannot provide Russian and English OCR."""
+    result = run([find_tesseract(), '--list-langs'], timeout=10, env=tesseract_env(None))
+    available = set(result.stdout.decode('utf-8', errors='replace').splitlines())
+    missing = {'rus', 'eng'} - available
+    if missing:
+        raise ConversionError(
+            f"Missing required Tesseract languages: {', '.join(sorted(missing))}. "
+            "Install the rus and eng language data, then verify with 'tesseract --list-langs'.")
 
 
 def render_office(source: Path, destination: Path, args):

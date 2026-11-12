@@ -1,19 +1,23 @@
-"""In-memory document API with simulated asynchronous OCR, pending the real pipeline."""
+"""In-memory document API with asynchronous OCR."""
 
-import asyncio
+import logging
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 from zipfile import BadZipFile, ZipFile
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 
-from .entities import assign_entity_ids, prepare_entities
+from .entities import prepare_entities
+from .ocr import parse_document
 from .schemas.documents import Document, MarkdownEdit, MarkdownRevision
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 MAX_FILE_SIZE = 20 * 1024 * 1024
 FILE_TYPES = {
     ".pdf": "application/pdf",
@@ -23,21 +27,6 @@ FILE_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
-MOCK_PAYROLL_MARKDOWN = """## Ведомость
-
-РАСЧЕТНАЯ ВЕДОМОСТЬ ПО ОПЛАТЕ ТРУДА
-
-Документ: <entity type="id" value="ВЕД-ЗП-2026-02" unit="string" id="143">ВЕД-ЗП-2026-02</entity>
-
-Проект: <entity type="id" value="24/03/15-01" unit="string" id="144">24/03/15-01</entity> | Период: <entity type="date" value="2026-02" unit="date" id="145">Февраль 2026</entity>
-
-| Код статьи | Вид начисления | Сумма, руб. | Основание |
-| --- | --- | --- | --- |
-| <entity type="id" value="0201" unit="string" id="146">0201</entity> | Основная заработная плата | <entity type="number" value="1015500.00" unit="rubles" id="147">1 015 500,00</entity> | Табель и расчет начислений |
-| <entity type="id" value="0202" unit="string" id="148">0202</entity> | Дополнительная заработная плата и резерв отпусков | <entity type="number" value="101500.00" unit="rubles" id="149">101 500,00</entity> | Доплаты и компенсационные начисления |
-|  | ИТОГО | <entity type="number" value="1117000.00" unit="rubles" id="150">1 117 000,00</entity> |  |
-"""
-
 
 documents: dict[int, dict[int, Document]] = {}
 originals: dict[int, bytes] = {}
@@ -122,27 +111,36 @@ def valid_content(name: str, data: bytes) -> bool:
         return False
 
 
-async def simulate_ocr(report_id: int, document_id: int):
-    await asyncio.sleep(1)
+def extract_markdown(name: str, data: bytes) -> str:
+    """Run the existing converter and discard every artifact except Markdown."""
+    with TemporaryDirectory(prefix="document-upload-") as temporary:
+        source = Path(temporary) / ("input" + Path(name).suffix.lower())
+        source.write_bytes(data)
+        with parse_document(source) as parsed:
+            return parsed.markdown.read_text(encoding="utf-8")
+
+
+async def process_ocr(report_id: int, document_id: int):
     document = documents.get(report_id, {}).get(document_id)
     if document is None:
         return
     document.ocr_status = "running"
-    await asyncio.sleep(2)
-    if document_id not in documents.get(report_id, {}):
-        return
     data = originals[document_id]
-    if not valid_content(document.name, data):
+    try:
+        if not valid_content(document.name, data):
+            raise ValueError("Файл повреждён или его содержимое не соответствует расширению.")
+        content = await run_in_threadpool(extract_markdown, document.name, data)
+        revision = MarkdownRevision(content=content, revision=1)
+    except Exception:
+        logger.exception("OCR failed for document %s", document_id)
+        if documents.get(report_id, {}).get(document_id) is not document:
+            return
         document.ocr_status = "failed"
-        document.error = "Файл повреждён или его содержимое не соответствует расширению. Удалите его и загрузите исправленный файл."
+        document.error = "Не удалось распознать документ. Удалите его и загрузите исправленный файл."
     else:
-        content = (
-                f"# {document.name}\n\n"
-                "> Демонстрационный результат: OCR пока работает как заглушка. "
-                "Ниже приведён пример текста с сущностями. Текст документа не распознан.\n\n"
-                + assign_entity_ids(MOCK_PAYROLL_MARKDOWN)
-        )
-        revisions[document_id] = [MarkdownRevision(content=content, revision=1)]
+        if documents.get(report_id, {}).get(document_id) is not document:
+            return
+        revisions[document_id] = [revision]
         document.markdown_revision = 1
         document.ocr_status = "completed"
     sync_processing_status(report_id)
@@ -201,7 +199,7 @@ async def upload_document(
     report_documents[document.id] = document
     originals[document.id] = data
     sync_processing_status(report_id)
-    background_tasks.add_task(simulate_ocr, report_id, document.id)
+    background_tasks.add_task(process_ocr, report_id, document.id)
     return document
 
 
@@ -268,7 +266,7 @@ async def run_entity_extraction(report_id: int):
     blockers = blockers_for(list(documents.get(report_id, {}).values()))
     if blockers:
         raise HTTPException(409, " ".join(blockers))
-    # OCR fixtures already contain entity markup; extraction is immediate in stub mode.
+    # Entity extraction remains a placeholder until its pipeline is connected.
     for item in documents.get(report_id, {}).values():
         item.extraction_status = "completed"
     report.stage = "entities"

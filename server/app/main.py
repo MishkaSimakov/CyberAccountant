@@ -1,6 +1,7 @@
 """REST API and production client hosting."""
 
 from datetime import date
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
@@ -9,12 +10,19 @@ from starlette.exceptions import HTTPException
 from starlette.types import Scope
 
 from .documents import router as document_router
+from .ocr import check_ocr_languages
 from .requirements import router as requirements_router
 from .schemas.reports import Report, ReportCreate
 
-app = FastAPI(title="Cyber Accountant API")
-api = APIRouter(prefix="/api/v1")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    check_ocr_languages()
+    yield
+
+
+app = FastAPI(title="Cyber Accountant API", lifespan=lifespan)
+api = APIRouter(prefix="/api/v1")
 
 # Temporary in-memory storage until the processing pipeline and database are added.
 report_store = [
