@@ -344,7 +344,9 @@ class Solver:
             l = self.to_z3(node.left)
             r = self.to_z3(node.right)
             for side, sub in ((l, node.left), (r, node.right)):
-                if not isinstance(side, bool) and side.sort().kind() != z3.Z3_BOOL_SORT:
+                if isinstance(side, bool):
+                    continue
+                if isinstance(side, _StrVal) or side.sort().kind() != z3.Z3_BOOL_SORT:
                     raise FormulaError(
                         f"non-boolean operand to '{op}': {self._describe(sub)}"
                     )
@@ -364,6 +366,30 @@ class Solver:
                 )
             eq = l.value == r.value
             return eq if op == "==" else not eq
+        # folded booleans (string comparisons, nested logic) — only legal
+        # in ==/!= against another boolean (Python bool or z3 BoolRef);
+        # anything else is a type clash
+        if isinstance(l, bool) or isinstance(r, bool):
+            if op not in ("==", "!="):
+                raise FormulaError(
+                    f"type clash in '{op}': boolean vs non-boolean"
+                    f" ({self._describe(node.left)} vs {self._describe(node.right)})"
+                )
+
+            def _as_bool(x):
+                if isinstance(x, bool):
+                    return z3.BoolVal(x)
+                if isinstance(x, z3.ExprRef) and x.sort().kind() == z3.Z3_BOOL_SORT:
+                    return x
+                return None
+
+            lb, rb = _as_bool(l), _as_bool(r)
+            if lb is None or rb is None:
+                raise FormulaError(
+                    f"type clash in '{op}': boolean vs non-boolean"
+                    f" ({self._describe(node.left)} vs {self._describe(node.right)})"
+                )
+            return lb == rb if op == "==" else lb != rb
         lk = l.sort().kind()
         rk = r.sort().kind()
         if op in ("==", "!="):

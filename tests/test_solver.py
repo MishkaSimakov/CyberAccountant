@@ -227,3 +227,28 @@ def test_non_target_card_cells_become_constants():
     vy = by_mn[ents["card-y"].mnemonic]
     assert vy.status == "constant"  # trusted, not verified
     assert vy.target is False
+
+
+def test_boolean_subexpression_compared_to_boolean():
+    """('A' == 'A') == (5 > 3): folded bool operands of an outer == must not
+    crash on .sort() — the LLM does write such relations."""
+    reg = EntityRegistry(0)
+    reg.add(type_="amount", raw="5", unit="RUB", norm="1", file="f1",
+            role="data", span=(0, 0))
+    rels = [{'equation': '("A" == "A") == (5 > 3)'}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "true"
+
+    rels2 = [{'equation': '("A" == "B") == (5 > 3)'}]
+    relations2, _, _, _ = solve_system(rels2, reg)
+    assert relations2[0].status == "false"
+
+
+def test_boolean_vs_number_is_type_clash_not_crash():
+    reg = EntityRegistry(0)
+    reg.add(type_="amount", raw="5", unit="RUB", norm="1", file="f1",
+            role="data", span=(0, 0))
+    rels = [{'equation': '("A" == "A") == 5'}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "error"
+    assert "type clash" in relations[0].error
