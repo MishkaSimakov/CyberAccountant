@@ -101,7 +101,8 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
             assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == TAGGED
 
 
-def test_extraction_failure_can_be_retried_without_repeating_successes(ready, monkeypatch):
+@pytest.mark.parametrize("per_document", [False, True])
+def test_extraction_failure_can_be_retried_without_repeating_successes(ready, monkeypatch, per_document):
     report_id, revisions, pending = ready
     path = f"/reports/{report_id}"
     request("POST", path + "/run-entity-extraction")
@@ -119,7 +120,8 @@ def test_extraction_failure_can_be_retried_without_repeating_successes(ready, mo
     assert response["documents"][1]["ocr_status"] == "completed"
     assert response["documents"][1]["extraction_status"] == "failed"
     assert response["documents"][1]["error"]
-    assert request("POST", path + "/run-entity-extraction")[0] == 200
+    retry_path = path + (f'/documents/{response["documents"][1]["id"]}' if per_document else "")
+    assert request("POST", retry_path + "/run-entity-extraction")[0] == 200
     assert pending == revisions + [revisions[1]]
     monkeypatch.setattr(job, "tag_document", original)
     job.process_entities(revisions[1])
@@ -127,6 +129,50 @@ def test_extraction_failure_can_be_retried_without_repeating_successes(ready, mo
     monkeypatch.setattr(job, "tag_document", fail)
     job.process_entities(revisions[0])  # Completed jobs are harmless if delivered twice.
     job.process_entities(999999)
+
+
+def test_document_retry_leaves_other_failed_documents_untouched(ready):
+    report_id, revisions, pending = ready
+    path = f"/reports/{report_id}"
+    request("POST", path + "/run-entity-extraction")
+    with database.session_scope() as session:
+        for revision_id in revisions:
+            file = session.get(File, revision_id)
+            file.status = "failed"
+            file.error = "Extraction failed"
+        reports.sync_processing_status(session, session.get(Report, report_id))
+        document_id = session.get(File, revisions[0]).file_id
+
+    retry_path = path + f"/documents/{document_id}/run-entity-extraction"
+    status, response = request("POST", retry_path)
+    assert status == 200
+    assert pending == revisions + [revisions[0]]
+    assert response["documents"][0]["extraction_status"] == "queued"
+    assert response["documents"][0]["error"] is None
+    assert response["documents"][1]["extraction_status"] == "failed"
+    assert response["documents"][1]["error"] == "Extraction failed"
+    assert request("POST", retry_path)[0] == 200
+    assert pending == revisions + [revisions[0]]
+    job.process_entities(revisions[0])
+    assert request("POST", retry_path)[0] == 200
+    assert pending == revisions + [revisions[0]]
+    assert request("GET", path)[1]["documents"][0]["extraction_status"] == "completed"
+
+
+def test_document_retry_requires_entities_stage_and_report_ownership(ready):
+    report_id, revisions, pending = ready
+    path = f"/reports/{report_id}"
+    with database.session_scope() as session:
+        document_id = session.get(File, revisions[0]).file_id
+    assert request("POST", path + f"/documents/{document_id}/run-entity-extraction")[0] == 409
+    assert pending == []
+    request("POST", path + "/run-entity-extraction")
+    assert request("POST", path + "/documents/999999/run-entity-extraction")[0] == 404
+    _, other = request("POST", "/reports", {"name": "Other report"})
+    with database.session_scope() as session:
+        session.get(Report, other["id"]).stage = "entities"
+    assert request("POST", f'/reports/{other["id"]}/documents/{document_id}/run-entity-extraction')[0] == 404
+    assert pending == revisions
 
 
 def test_date_normalization_finishes_before_extraction_is_completed(ready, monkeypatch):

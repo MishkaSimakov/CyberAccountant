@@ -8,6 +8,7 @@
 !server/checkier/
 !server/checkier/**
 !server/pyproject.toml
+!server/workers.conf
 !server/Dockerfile
 client/node_modules/
 client/dist/

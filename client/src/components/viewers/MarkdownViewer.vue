@@ -370,7 +370,7 @@ export default defineComponent({
           </template>
         </dl>
         <form v-else class="space-y-3" @submit.prevent="apply">
-          <label class="block">Тип (t)
+          <label class="block">Тип
             <span class="relative mt-1 block">
             <select v-model="draftType"
                     class="w-full cursor-pointer appearance-none rounded-lg border border-slate-300 bg-slate-50 py-2.5 pl-3 pr-10 text-sm text-slate-800 shadow-sm transition-colors hover:border-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
@@ -388,17 +388,17 @@ export default defineComponent({
               </svg>
             </span>
           </label>
-          <label class="block">Нормализованное значение (value)
+          <label class="block">Нормализованное значение
             <input ref="valueInput" v-model="draftValue" :aria-invalid="!!valueError"
                    :aria-describedby="`${popupId}-error`"
                    :inputmode="['amount', 'number', 'pct', 'ratio'].includes(draftType) ? 'decimal' : 'text'"
                    class="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm shadow-sm transition-colors hover:border-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"/>
           </label>
-          <label class="block">Единица (u)
+          <label class="block">Единица
             <input v-model="draftUnit" placeholder="RUB, RUB_K, USD, EUR, person_month…"
                    class="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm focus:outline-blue-500"/>
           </label>
-          <label class="block">Множитель (n)
+          <label class="block">Множитель
             <input v-model="draftNorm" required inputmode="decimal" :aria-invalid="!!valueError"
                    :aria-describedby="`${popupId}-error`"
                    class="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm focus:outline-blue-500"/>

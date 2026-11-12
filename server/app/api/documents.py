@@ -54,3 +54,9 @@ def edit_markdown(report_id: int, document_id: int, payload: MarkdownEdit):
 def run_entity_extraction(report_id: int):
     start_entity_extraction(report_id)
     return report_details(report_id)
+
+
+@router.post("/reports/{report_id}/documents/{document_id}/run-entity-extraction")
+def retry_document_extraction(report_id: int, document_id: int):
+    start_entity_extraction(report_id, document_id)
+    return report_details(report_id)

@@ -90,6 +90,9 @@ export const saveMarkdown = (reportId: number, documentId: number, content: stri
 export const runEntityExtraction = (reportId: number) =>
     request<ReportDetails>(`/reports/${reportId}/run-entity-extraction`, {method: 'POST'})
 
+export const retryDocumentExtraction = (reportId: number, documentId: number) =>
+    request<ReportDetails>(`/reports/${reportId}/documents/${documentId}/run-entity-extraction`, {method: 'POST'})
+
 export interface Requirement {
     id: number
     verdict: boolean

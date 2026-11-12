@@ -32,13 +32,13 @@ export default defineComponent({
     }
   },
   computed: {
-    ...mapState('report', ['advancing', 'deleting', 'uploads']),
+    ...mapState('report', ['advancing', 'deleting', 'retrying', 'uploads']),
     duplicateIds(): Set<number> {
       return new Set(this.report.duplicate_groups.flat())
     },
   },
   methods: {
-    ...mapActions('report', ['refresh', 'remove', 'dismissUpload']),
+    ...mapActions('report', ['refresh', 'remove', 'dismissUpload', 'retryExtraction']),
     processingStatus(document: ReportDocument) {
       return this.report.stage === 'entities' ? document.extraction_status : document.ocr_status
     },
@@ -66,7 +66,7 @@ export default defineComponent({
     <div class="flex flex-wrap items-center justify-between gap-3 p-4">
       <h2 id="documents-heading" class="font-semibold">Документы <span
           class="ml-2 text-slate-500">{{ report.documents.length + uploads.length }}</span></h2>
-      <div class="flex items-center gap-4">
+      <div class="flex flex-wrap items-center gap-4">
             <span class="text-xs text-slate-500" aria-live="polite">Обработано {{
                 report.progress.completed
               }} из {{ report.progress.total }}</span>
@@ -117,6 +117,15 @@ export default defineComponent({
                 class="inline-flex h-7 items-center rounded bg-amber-100 px-3 text-xs leading-none text-amber-900">Дубликат</span>
         </div>
         <div class="ml-auto flex items-center gap-2">
+          <button
+              v-if="report.stage === 'entities' && (document.extraction_status === 'failed' || retrying.includes(document.id))"
+              class="inline-flex h-7 cursor-pointer items-center gap-2 rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+              :aria-label="`Повторить извлечение из ${document.name}`"
+              :disabled="advancing || retrying.includes(document.id)" @click="retryExtraction(document.id)">
+            <FontAwesomeIcon :icon="retrying.includes(document.id) ? faSpinner : faRotateRight" class="size-3"
+                             :class="{'animate-spin': retrying.includes(document.id)}" aria-hidden="true"/>
+            {{ retrying.includes(document.id) ? 'Повторяем…' : 'Повторить извлечение' }}
+          </button>
           <button v-if="processingStatus(document) === 'completed'"
                   class="inline-flex h-7 cursor-pointer items-center rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                   :disabled="deleting.includes(document.id) || advancing" @click="$emit('select', document)">Просмотреть

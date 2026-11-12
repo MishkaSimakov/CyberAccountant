@@ -5,10 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/server
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus fonts-dejavu-core supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app/server
+COPY workers.conf /etc/supervisor/workers.conf
 COPY pyproject.toml ./
 COPY app/ ./app/
 COPY checkier/ ./checkier/

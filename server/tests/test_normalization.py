@@ -1,6 +1,7 @@
 """Review markup carries normalized values that survive registry rebuilding."""
 
 from datetime import date
+import json
 
 import pytest
 
@@ -68,3 +69,26 @@ def test_unresolved_date_is_explicit(tmp_path, monkeypatch):
     assert normalize_document(cfg, '<ent t="date">неизвестно</ent>') == (
         '<ent t="date" value="">неизвестно</ent>'
     )
+
+
+def test_null_date_normalization_preserves_other_entities(tmp_path, monkeypatch):
+    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path)
+    calls = []
+
+    def response(*args, **kwargs):
+        calls.append(args)
+        return json.dumps([
+            {"raw": "Январь", "normalized": None},
+            {"raw": "Январь 2026", "normalized": "01.01.2026"},
+        ])
+
+    monkeypatch.setattr("checkier.llm.call_llm", response)
+    tagged = ('Период: <ent t="date">Январь</ent>\n'
+              '<ent t="date">Январь 2026</ent>\n'
+              'Итого: <ent t="amount">100,00</ent>')
+    result = normalize_document(cfg, tagged)
+    assert result == ('Период: <ent t="date" value="">Январь</ent>\n'
+                      '<ent t="date" value="2026-01-01">Январь 2026</ent>\n'
+                      'Итого: <ent t="amount" value="100.00">100,00</ent>')
+    assert len(calls) == 1
+    assert ENT_RE.sub(lambda match: match.group(2), result) == ENT_RE.sub(lambda match: match.group(2), tagged)

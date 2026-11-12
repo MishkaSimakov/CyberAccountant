@@ -1,6 +1,7 @@
 # Only application sources and the dependency manifest are needed in the image.
 **
 !pyproject.toml
+!workers.conf
 !app/
 !app/**
 !checkier/

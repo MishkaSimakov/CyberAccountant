@@ -6,15 +6,21 @@ from ..database import session_scope
 from ..models import File
 from ..queue import enqueue_entities
 from . import ServiceError
+from .documents import find_document
 from .reports import blockers_for, document_response, find_report, report_documents, sync_processing_status
 
 logger = logging.getLogger(__name__)
 
 
-def run_entity_extraction(report_id: int) -> None:
+def run_entity_extraction(report_id: int, document_id: int | None = None) -> None:
     with session_scope() as session:
         report = find_report(session, report_id, lock=True)
-        files = report_documents(session, report_id)
+        if document_id is not None:
+            if report.stage != "entities":
+                raise ServiceError(409, "Повторное извлечение доступно только на этапе разметки сущностей.")
+            files = [find_document(session, report_id, document_id)]
+        else:
+            files = report_documents(session, report_id)
         if report.stage == "documents":
             blockers = blockers_for([document_response(file) for file in files])
             if blockers:

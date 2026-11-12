@@ -37,7 +37,8 @@ services:
       context: .
       dockerfile: server/Dockerfile
     init: true
-    command: [ "ocr-worker" ]
+    command: [ "supervisord", "-c", "/etc/supervisor/workers.conf" ]
+    stop_grace_period: 45s
     env_file:
       - path: .env
         required: false
@@ -54,16 +55,6 @@ services:
     networks:
       - default
       - office
-    deploy:
-      replicas: 1
-
-  entities_worker:
-    extends:
-      service: worker
-    command: [ "entities-worker" ]
-    deploy:
-      replicas: 5
-
   postgres:
     image: postgres:18-alpine
     environment:

@@ -13,7 +13,7 @@ def main() -> None:
 
 
 def entities_main() -> None:
-    """Process one extraction at a time; deployment runs five replicas."""
+    """Process one extraction at a time; Supervisor runs five processes."""
     queue = entities_queue()
     Worker([queue], connection=queue.connection).work()
 

@@ -34,7 +34,7 @@ TAGGING_SCHEMA = {
 TAG_TYPES = ("amount", "date", "docid", "contract", "number", "pct", "ratio")
 
 # Stage 2b: date normalization. One entry per unparsed period expression;
-# "normalized" is always DD.MM.YYYY (first day of the period).
+# "normalized" is DD.MM.YYYY (first day of the period), or null if unresolved.
 DATE_NORM_SCHEMA = {
     "type": "array",
     "items": {
@@ -42,8 +42,8 @@ DATE_NORM_SCHEMA = {
         "properties": {
             "raw": {"type": "string"},
             "normalized": {
-                "type": "string",
-                "description": "DD.MM.YYYY — first day of the period",
+                "type": ["string", "null"],
+                "description": "DD.MM.YYYY — first day of the period; null if the date cannot be determined",
             },
         },
         "required": ["raw", "normalized"],

@@ -24,16 +24,6 @@ services:
     volumes:
       - .:/app
 
-  entities_worker:
-    extends:
-      file: compose.yaml
-      service: entities_worker
-    build:
-      context: ./server
-      dockerfile: Dockerfile.dev
-    volumes:
-      - .:/app
-
   postgres:
     extends:
       file: compose.yaml

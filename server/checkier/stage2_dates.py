@@ -29,7 +29,8 @@ Rules:
 - "N квартал YYYY" -> first day of the quarter ("2 квартал 2026" -> "01.04.2026")
 - "YYYY год" / just "YYYY" -> "01.01.YYYY"
 - A full date passes through unchanged.
-- normalized is always in DD.MM.YYYY format.
+- normalized is in DD.MM.YYYY format, or null if the date cannot be determined.
+- If an expression lacks a year or is ambiguous, return null. Do not invent missing date parts.
 
 Return a JSON array with ONE entry per input raw string:
 
@@ -44,9 +45,9 @@ def _build_prompt(raws: list[str]) -> str:
 
 
 def run_date_normalization(
-    cfg: PipelineConfig,
-    registry: EntityRegistry,
-    on_token: Callable[[str], None] | None = None,
+        cfg: PipelineConfig,
+        registry: EntityRegistry,
+        on_token: Callable[[str], None] | None = None,
 ) -> list[Entity]:
     """Normalize date entities whose raw text the deterministic parser could
     not handle. Mutates the registry (sets ``value`` + ``normalized_from``);

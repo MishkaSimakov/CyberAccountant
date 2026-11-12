@@ -22,10 +22,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus fonts-dejavu-core supervisor \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=server-build /install/ /usr/local/
 COPY --from=client-build /app/client/dist/ ./client/dist/
+COPY server/workers.conf /etc/supervisor/workers.conf
 RUN mkdir -p /app/storage && chown 10001:10001 /app/storage
 USER 10001:10001
 EXPOSE 8000
