@@ -16,5 +16,9 @@ __pycache__/
 .tox/
 *.egg-info/
 
+# Python package build output
+/server/build/
+/office_sandbox/build/
+
 # Vite production output
 /client/dist/

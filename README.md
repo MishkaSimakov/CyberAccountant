@@ -4,72 +4,38 @@
 - [DESIGN.md](docs/DESIGN.md) - описание дизайна системы.
 - [OCR.md](docs/OCR.md) - локальная конвертация документов в Markdown и координаты символов.
 
-## Document OCR CLI
-
-The standalone `document_ocr.py` CLI supports PDF, scans/images, DOCX, XLSX,
-TXT and Markdown. It writes Markdown, a JSON character index with normalized
-bounding boxes, and PDF/PNG previews. Office conversion and formula recalculation
-run in a restricted local Linux Docker container. PDF extraction and OCR run locally.
-
-Install Python dependencies and Tesseract 5 with the `rus` and `eng` language data:
+## Local development start
 
 ```sh
-python -m pip install -r requirements.txt
-# Debian/Ubuntu: sudo apt install tesseract-ocr tesseract-ocr-rus fonts-dejavu-core
-# Windows: python setup_ocr_windows.py
-python document_ocr.py input.pdf output/result.md
-```
+# From the project root on Linux/WSL; requires Python 3.13+, Node.js 24+ and Docker Compose.
+# Install OCR system dependencies (Debian/Ubuntu).
+sudo apt install tesseract-ocr tesseract-ocr-rus fonts-dejavu-core
 
-For DOCX/XLSX, start a local Linux Docker engine and build the office image first:
-
-```sh
-python document_ocr.py sandbox-build
-python document_ocr.py input.xlsx output/workbook.md
-```
-
-This CLI is independent of the server's simulated OCR pipeline. See
-[docs/OCR.md](docs/OCR.md) for the JSON schema, highlighting, and sandbox details.
-
-## Run with Docker
-
-Requires Docker with its daemon running. Build and start from the project root:
-
-```sh
-docker build -t cyber-accountant .
-docker run --rm --name cyber-accountant -p 8000:8000 cyber-accountant
-```
-
-Open <http://localhost:8000>. The starter page checks the server connection.
-The REST API health check is at <http://localhost:8000/api/health>, and interactive
-API documentation is at <http://localhost:8000/docs>.
-
-## Local development
-
-Requires Python 3.13+ and Node.js 24 LTS with npm. Run these commands from the
-project root in two separate terminals.
-
-Server:
-
-```sh
+# Create the server environment.
 python3 -m venv server/.venv
-source server/.venv/bin/activate
-python -m pip install -r server/requirements.txt
-uvicorn app.main:app --app-dir server --reload
+
+# Install server and development dependencies.
+server/.venv/bin/python -m pip install -e './server[dev]'
+
+# Install frontend dependencies.
+npm --prefix client ci
+
+# Terminal 1: start the Office sandbox, available only on localhost:8001.
+docker compose run --build --rm -p 127.0.0.1:8001:8001 office_sandbox
+
+# Terminal 2: start the API at http://localhost:8000 with automatic reload.
+OFFICE_SANDBOX_URL=http://127.0.0.1:8001 server/.venv/bin/python -m uvicorn server.app.main:app --reload
+
+# Terminal 3: start the frontend and open the URL printed by Vite.
+npm --prefix client run dev
 ```
 
-Client:
+## Docker start
 
 ```sh
-cd client
-npm ci
-npm run dev
-```
+# From the project root: build and start both services at http://localhost:8000.
+docker compose up --build
 
-Open the URL printed by Vite. Vite proxies `/api` requests to the server at `127.0.0.1:8000`.
-
-To type-check and build the client:
-
-```sh
-cd client
-npm run build
+# In another terminal: stop the services and remove their containers.
+docker compose down
 ```

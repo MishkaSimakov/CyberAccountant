@@ -6,9 +6,9 @@ import pymupdf as fitz
 import pytest
 from PIL import Image, ImageDraw, ImageFont
 
-from document_ocr import (ConversionError, MarkdownWriter, Word, convert,
-                          find_tesseract, highlight, parser, characters_for_span,
-                          prepare_cell_image, recover_open_cells, table_grid)
+from server.app.ocr import (ConversionError, MarkdownWriter, Word, convert,
+                            find_tesseract, highlight, parser, characters_for_span,
+                            prepare_cell_image, recover_open_cells, table_grid)
 
 
 def perform(source, output, *options):
@@ -43,15 +43,15 @@ def test_repeated_numbers_escaping_and_unicode_offsets():
     writer = MarkdownWriter()
     writer.write('Привет 😀\n')
     for text in ['100,00', '100,00', 'a|b', '*c*', '\\', '😀']:
-        chars = [{'text': c, 'bbox': [10+i*5, 20, 15+i*5, 30]} for i, c in enumerate(text)]
+        chars = [{'text': c, 'bbox': [10 + i * 5, 20, 15 + i * 5, 30]} for i, c in enumerate(text)]
         writer.word(Word(text, [10, 20, 60, 30], (0, 0), 'pdf_text', characters=chars), 1, [100, 100])
         writer.write(' ')
     md = writer.text()
     for char in writer.characters:
         a, b = char['markdown_span']
         assert md[a:b] in (char['text'], '\\' + char['text'])
-    start = md.index('100,00', md.index('100,00')+1)
-    selected = characters_for_span({'characters': writer.characters}, start, start+6)
+    start = md.index('100,00', md.index('100,00') + 1)
+    selected = characters_for_span({'characters': writer.characters}, start, start + 6)
     assert selected == [char['id'] for char in writer.characters[6:12]]
 
 
@@ -95,8 +95,8 @@ def test_native_rotated_cropped_pdf_and_highlight(tmp_path, rotation):
         page = doc[0]
         annotation = next(page.annots())
         display_rect = annotation.rect * page.rotation_matrix
-        assert abs(display_rect.x0-char['bbox_normalized'][0]*page.rect.width) < 3
-        assert abs(display_rect.y0-char['bbox_normalized'][1]*page.rect.height) < 3
+        assert abs(display_rect.x0 - char['bbox_normalized'][0] * page.rect.width) < 3
+        assert abs(display_rect.y0 - char['bbox_normalized'][1] * page.rect.height) < 3
         assert len(list(page.annots())) == 1
 
 
@@ -107,16 +107,16 @@ def test_highlight_span_rejects_modified_markdown(tmp_path):
     data = perform(source, output, '--ocr', 'never')
     check_mapping(data, output.read_text(encoding='utf-8'))
     span = selected_text(data, output.read_text(encoding='utf-8'), '12345.67')[0]['markdown_span']
-    highlight(output.with_suffix('.boxes.json'), [], tmp_path/'marked.pdf', span)
+    highlight(output.with_suffix('.boxes.json'), [], tmp_path / 'marked.pdf', span)
     output.write_text('edited', encoding='utf-8')
     with pytest.raises(ConversionError, match='edited'):
-        highlight(output.with_suffix('.boxes.json'), [], tmp_path/'invalid.pdf', span)
+        highlight(output.with_suffix('.boxes.json'), [], tmp_path / 'invalid.pdf', span)
 
 
 def test_amount_across_words_and_single_digit_highlight(tmp_path):
-    source = tmp_path/'amount.txt'
+    source = tmp_path / 'amount.txt'
     source.write_text('650 000,00 and 650 000,00', encoding='utf-8')
-    output = tmp_path/'amount.md'
+    output = tmp_path / 'amount.md'
     data = perform(source, output, '--ocr', 'never')
     markdown = output.read_text(encoding='utf-8')
     check_mapping(data, markdown)
@@ -124,10 +124,10 @@ def test_amount_across_words_and_single_digit_highlight(tmp_path):
     chars = selected_text(data, markdown, '650 000,00')
     assert ''.join(c['text'] for c in chars) == '650000,00'
     assert len(chars) == 9
-    digit = characters_for_span(data, start+4, start+5)
+    digit = characters_for_span(data, start + 4, start + 5)
     assert digit == [chars[3]['id']]
-    result = tmp_path/'marked.pdf'
-    highlight(output.with_suffix('.boxes.json'), [], result, [start+4, start+5])
+    result = tmp_path / 'marked.pdf'
+    highlight(output.with_suffix('.boxes.json'), [], result, [start + 4, start + 5])
     with fitz.open(result) as doc:
         assert len(list(doc[0].annots())) == 1
 
@@ -185,21 +185,21 @@ def test_cell_cleanup_preserves_decimal_point_and_minus():
     draw = ImageDraw.Draw(image)
     draw.rectangle((40, 10, 47, 23), fill='black')  # full-height glyph
     draw.rectangle((22, 16, 29, 17), fill='black')  # real minus sign
-    draw.point((50, 23), fill='black')             # nearby decimal point
-    draw.point((4, 4), fill='black')              # distant scan speck
+    draw.point((50, 23), fill='black')  # nearby decimal point
+    draw.point((4, 4), fill='black')  # distant scan speck
     clean, scale = prepare_cell_image(image)
     assert scale > 1
-    assert clean.crop((3*scale, 3*scale, 6*scale, 6*scale)).getextrema()[0][0] == 255
-    assert clean.crop((22*scale, 16*scale, 30*scale, 18*scale)).getextrema()[0][0] < 100
-    assert clean.crop((49*scale, 22*scale, 52*scale, 25*scale)).getextrema()[0][0] < 100
+    assert clean.crop((3 * scale, 3 * scale, 6 * scale, 6 * scale)).getextrema()[0][0] == 255
+    assert clean.crop((22 * scale, 16 * scale, 30 * scale, 18 * scale)).getextrema()[0][0] < 100
+    assert clean.crop((49 * scale, 22 * scale, 52 * scale, 25 * scale)).getextrema()[0][0] < 100
 
 
 def test_real_scanned_report_decimal_headers_and_symbol_geometry(tmp_path):
     require_tesseract()
-    source = Path(__file__).resolve().parents[1]/'данные/01_Карточка_учета_фактических_затрат_этап_3.pdf'
+    source = Path(__file__).resolve().parents[2] / 'данные/01_Карточка_учета_фактических_затрат_этап_3.pdf'
     if not source.is_file():
         pytest.skip('Real report fixture is not available')
-    output = tmp_path/'report.md'
+    output = tmp_path / 'report.md'
     data = perform(source, output)
     markdown = output.read_text(encoding='utf-8')
     check_mapping(data, markdown)
@@ -222,15 +222,14 @@ def test_real_scanned_report_decimal_headers_and_symbol_geometry(tmp_path):
     page = data['pages'][0]
     for char in chars:
         x0, y0, x1, y1 = char['bbox_normalized']
-        assert 1818 <= x0*page['image_width'] < x1*page['image_width'] <= 1991
-        assert 861 <= y0*page['image_height'] < y1*page['image_height'] <= 887
+        assert 1818 <= x0 * page['image_width'] < x1 * page['image_width'] <= 1991
+        assert 861 <= y0 * page['image_height'] < y1 * page['image_height'] <= 887
 
 
 def test_image_ocr_numeric_word_and_digit_boxes(tmp_path):
     require_tesseract()
-    font = next((Path(p) for p in ['C:/Windows/Fonts/arial.ttf',
-                                  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'] if Path(p).is_file()), None)
-    if font is None:
+    font = Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+    if not font.is_file():
         pytest.skip('Test font missing')
     image = Image.new('RGB', (950, 160), 'white')
     ImageDraw.Draw(image).text((25, 35), 'Amount 12345.67', font=ImageFont.truetype(str(font), 52), fill='black')
@@ -243,12 +242,12 @@ def test_image_ocr_numeric_word_and_digit_boxes(tmp_path):
     assert ''.join(c['text'] for c in chars) == '12345.67'
     assert len(chars) == 8
     assert data['pages'][0]['width'] == 950
-    assert chars[0]['bbox_normalized'][0]*950 > 150
+    assert chars[0]['bbox_normalized'][0] * 950 > 150
 
 
 def test_mixed_pdf_keeps_native_and_image_text(tmp_path):
     require_tesseract()
-    font = Path('C:/Windows/Fonts/arial.ttf')
+    font = Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
     if not font.is_file():
         pytest.skip('Test font missing')
     import io

@@ -2,11 +2,9 @@
 import hashlib
 import json
 from pathlib import Path
-import sys
+from server.app.ocr import convert, parser
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from document_ocr import convert, parser
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def main():
@@ -54,7 +52,7 @@ def main():
         except Exception as exc:
             summary.append({'file': source.name, 'ok': False, 'error': str(exc)})
             print('FAILED', source.name, str(exc), flush=True)
-    (ROOT/'output/validation.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    (ROOT / 'output/validation.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
     passed = sum(item['ok'] for item in summary)
     print(f'{passed}/{len(summary)} passed')
     return int(passed != len(summary))

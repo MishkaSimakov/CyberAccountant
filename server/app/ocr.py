@@ -1,7 +1,7 @@
 """Local document -> Markdown, normalized character geometry, and PDF preview.
 
-Usage: python document_ocr.py INPUT OUTPUT.md
-No network requests are performed. See README.md for the coordinate contract.
+Usage: python -m server.app.ocr INPUT OUTPUT.md
+Office documents are sent to the Office service on the local Compose network.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps, ImageSequence
 import pymupdf as fitz
-from office_sandbox import DEFAULT_IMAGE, SandboxError, build_image, render as render_in_sandbox
+from .office_client import SandboxError, render as render_in_sandbox
 
 
 class ConversionError(RuntimeError):
@@ -56,35 +56,23 @@ def run(command: list[str], *, timeout: int = 180, env=None):
 
 
 def find_tesseract(explicit: str | None = None) -> str:
-    candidates = [explicit, os.environ.get('TESSERACT_CMD'), shutil.which('tesseract'),
-                  str(Path(__file__).parent / '.tools/ocr/Library/bin/tesseract.exe'),
-                  'C:/Program Files/Tesseract-OCR/tesseract.exe']
+    candidates = [explicit, os.environ.get('TESSERACT_CMD'), shutil.which('tesseract')]
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return str(Path(candidate).resolve())
     raise ConversionError('Tesseract not found. Install it with rus+eng data, or pass --tesseract PATH.')
 
 
-def tesseract_env(executable: str, tessdata: str | None) -> dict:
+def tesseract_env(tessdata: str | None) -> dict:
     env = os.environ.copy()
-    # Conda DLL dependencies are next to the executable; no shell activation needed.
-    env['PATH'] = str(Path(executable).parent) + os.pathsep + env.get('PATH', '')
     if tessdata:
         env['TESSDATA_PREFIX'] = str(Path(tessdata).resolve())
-    elif 'TESSDATA_PREFIX' not in env:
-        for candidate in [Path(executable).parent / '../../share/tessdata',
-                          Path(executable).parent / '../share/tessdata',
-                          Path(executable).parent / 'tessdata']:
-            if candidate.is_dir():
-                env['TESSDATA_PREFIX'] = str(candidate.resolve())
-                break
     return env
 
 
 def render_office(source: Path, destination: Path, args):
     try:
-        report = render_in_sandbox(source, destination, image=args.sandbox_image,
-                                   docker=args.docker, timeout=args.timeout)
+        report = render_in_sandbox(source, destination, url=args.office_url, timeout=args.timeout)
     except SandboxError as exc:
         raise ConversionError(str(exc)) from exc
     destination.with_name('office-report.json').write_text(
@@ -93,9 +81,7 @@ def render_office(source: Path, destination: Path, args):
 
 
 def font_path(explicit: str | None) -> Path:
-    for candidate in [explicit, 'C:/Windows/Fonts/arial.ttf',
-                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-                      '/System/Library/Fonts/Supplemental/Arial.ttf']:
+    for candidate in [explicit, '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']:
         if candidate and Path(candidate).is_file():
             return Path(candidate)
     raise ConversionError('A Unicode font is needed for TXT/MD rendering; pass --font PATH.ttf.')
@@ -188,7 +174,7 @@ def raster_tables(image: Image.Image, scale_x: float, scale_y: float):
     """Detect ruled tables, including merged cells, without guessing word geometry."""
     gray = np.asarray(image.convert('L'))
     binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                  cv2.THRESH_BINARY_INV, 31, 15)
+                                   cv2.THRESH_BINARY_INV, 31, 15)
     horizontal = cv2.morphologyEx(binary, cv2.MORPH_OPEN,
                                   cv2.getStructuringElement(cv2.MORPH_RECT, (max(30, gray.shape[1] // 35), 1)))
     vertical = cv2.morphologyEx(binary, cv2.MORPH_OPEN,
@@ -201,18 +187,18 @@ def raster_tables(image: Image.Image, scale_x: float, scale_y: float):
         x, y, width, height = cv2.boundingRect(contour)
         if width < gray.shape[1] * .18 or height < 45:
             continue
-        region = joined[y:y+height, x:x+width]
+        region = joined[y:y + height, x:x + width]
         contours, _ = cv2.findContours(region, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         cells = []
         for inner in contours:
             cx, cy, cw, ch = cv2.boundingRect(inner)
             if cw > 12 and ch > 10 and cw * ch < width * height * .9:
                 # Hole contours follow the INSIDE edges of the physical cell.
-                cells.append([(x+cx)/scale_x, (y+cy)/scale_y,
-                              (x+cx+cw)/scale_x, (y+cy+ch)/scale_y])
+                cells.append([(x + cx) / scale_x, (y + cy) / scale_y,
+                              (x + cx + cw) / scale_x, (y + cy + ch) / scale_y])
         if len(cells) < 4:
             continue
-        table = {'bbox': [x/scale_x, y/scale_y, (x+width)/scale_x, (y+height)/scale_y],
+        table = {'bbox': [x / scale_x, y / scale_y, (x + width) / scale_x, (y + height) / scale_y],
                  'cells': cells, 'method': 'raster_lines'}
         recover_open_cells(table, horizontal, vertical, scale_x, scale_y)
         tables.append(table)
@@ -221,7 +207,7 @@ def raster_tables(image: Image.Image, scale_x: float, scale_y: float):
     table_mask = np.zeros_like(mask)
     for table in tables:
         b = table['bbox']
-        x0, y0, x1, y1 = round(b[0]*scale_x), round(b[1]*scale_y), round(b[2]*scale_x), round(b[3]*scale_y)
+        x0, y0, x1, y1 = round(b[0] * scale_x), round(b[1] * scale_y), round(b[2] * scale_x), round(b[3] * scale_y)
         table_mask[y0:y1, x0:x1] = mask[y0:y1, x0:x1]
     clean[cv2.dilate(table_mask, np.ones((2, 2), np.uint8)) > 0] = 255
     return tables, Image.fromarray(clean)
@@ -236,7 +222,7 @@ def ocr_words(image: Image.Image, page_size, args, temporary: Path, psm=None) ->
     run([executable, str(image_file), str(base), '-l', args.lang, '--psm', str(mode),
          '--dpi', str(args.dpi), '-c', 'tessedit_create_tsv=1',
          '-c', 'tessedit_create_boxfile=1'],
-        timeout=args.timeout, env=tesseract_env(executable, args.tessdata))
+        timeout=args.timeout, env=tesseract_env(args.tessdata))
     sx, sy = page_size[0] / image.width, page_size[1] / image.height
     words = []
     with base.with_suffix('.tsv').open(encoding='utf-8-sig', newline='') as handle:
@@ -244,7 +230,7 @@ def ocr_words(image: Image.Image, page_size, args, temporary: Path, psm=None) ->
             if row['level'] != '5' or not row['text'].strip():
                 continue
             x, y, width, height = (int(row[k]) for k in ['left', 'top', 'width', 'height'])
-            words.append(Word(row['text'].strip(), [x*sx, y*sy, (x+width)*sx, (y+height)*sy],
+            words.append(Word(row['text'].strip(), [x * sx, y * sy, (x + width) * sx, (y + height) * sy],
                               tuple(int(row[k]) for k in ['block_num', 'par_num', 'line_num']),
                               'tesseract', float(row['conf']) / 100))
     # makebox returns symbol coordinates with a BOTTOM-left origin.
@@ -255,8 +241,8 @@ def ocr_words(image: Image.Image, page_size, args, temporary: Path, psm=None) ->
             if len(parts) != 6 or not parts[0].strip():
                 continue
             char, left, bottom, right, top, _ = parts
-            rect = [int(left)*sx, (image.height-int(top))*sy,
-                    int(right)*sx, (image.height-int(bottom))*sy]
+            rect = [int(left) * sx, (image.height - int(top)) * sy,
+                    int(right) * sx, (image.height - int(bottom)) * sy]
             x, y = centre(rect)
             for word in words:
                 if contains(word.bbox, x, y, .2):
@@ -280,21 +266,21 @@ def recover_open_cells(table, horizontal, vertical, sx, sy):
     cells = table['cells']
     xs = merge_positions([c[i] for c in cells for i in (0, 2)] + [table['bbox'][0], table['bbox'][2]])
     ys = merge_positions([c[i] for c in cells for i in (1, 3)] + [table['bbox'][1], table['bbox'][3]])
-    missing = {(r, c) for r in range(len(ys)-1) for c in range(len(xs)-1)
-               if not any(contains(cell, (xs[c]+xs[c+1])/2, (ys[r]+ys[r+1])/2, 1)
+    missing = {(r, c) for r in range(len(ys) - 1) for c in range(len(xs) - 1)
+               if not any(contains(cell, (xs[c] + xs[c + 1]) / 2, (ys[r] + ys[r + 1]) / 2, 1)
                           for cell in cells)}
 
     def separated(a, b):
         r, c = a
         rr, cc = b
         if r != rr:
-            y = round(ys[max(r, rr)]*sy)
-            x0, x1 = round(xs[c]*sx)+3, round(xs[c+1]*sx)-3
-            strip = horizontal[max(0, y-2):y+3, max(0, x0):x1]
+            y = round(ys[max(r, rr)] * sy)
+            x0, x1 = round(xs[c] * sx) + 3, round(xs[c + 1] * sx) - 3
+            strip = horizontal[max(0, y - 2):y + 3, max(0, x0):x1]
             return strip.size > 0 and np.mean(np.any(strip > 0, axis=0)) > .5
-        x = round(xs[max(c, cc)]*sx)
-        y0, y1 = round(ys[r]*sy)+3, round(ys[r+1]*sy)-3
-        strip = vertical[max(0, y0):y1, max(0, x-2):x+3]
+        x = round(xs[max(c, cc)] * sx)
+        y0, y1 = round(ys[r] * sy) + 3, round(ys[r + 1] * sy) - 3
+        strip = vertical[max(0, y0):y1, max(0, x - 2):x + 3]
         return strip.size > 0 and np.mean(np.any(strip > 0, axis=1)) > .5
 
     while missing:
@@ -303,19 +289,19 @@ def recover_open_cells(table, horizontal, vertical, sx, sy):
         component, queue = {seed}, [seed]
         while queue:
             r, c = queue.pop()
-            for neighbor in [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]:
+            for neighbor in [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]:
                 if neighbor in missing and not separated((r, c), neighbor):
                     missing.remove(neighbor)
                     component.add(neighbor)
                     queue.append(neighbor)
         rows, cols = [r for r, _ in component], [c for _, c in component]
         r0, r1, c0, c1 = min(rows), max(rows), min(cols), max(cols)
-        if len(component) == (r1-r0+1)*(c1-c0+1):
-            cells.append([xs[c0], ys[r0], xs[c1+1], ys[r1+1]])
+        if len(component) == (r1 - r0 + 1) * (c1 - c0 + 1):
+            cells.append([xs[c0], ys[r0], xs[c1 + 1], ys[r1 + 1]])
         else:
             # A damaged nonrectangular region is ambiguous; do not merge it
             # into an invented rectangle covering neighboring real cells.
-            cells.extend([xs[c], ys[r], xs[c+1], ys[r+1]] for r, c in sorted(component))
+            cells.extend([xs[c], ys[r], xs[c + 1], ys[r + 1]] for r, c in sorted(component))
 
 
 def prepare_cell_image(image):
@@ -335,18 +321,18 @@ def prepare_cell_image(image):
             continue
         # A comma/decimal point stays: it is near a full-height glyph. Only
         # tiny, distant specks are removed; real minus signs are larger.
-        distance = min(max(g[0]-(x+w), x-(g[0]+g[2]), g[1]-(y+h), y-(g[1]+g[3]), 0)
+        distance = min(max(g[0] - (x + w), x - (g[0] + g[2]), g[1] - (y + h), y - (g[1] + g[3]), 0)
                        for g in glyphs)
-        if distance > max(6, height*.75):
+        if distance > max(6, height * .75):
             ink[labels == label] = 0
     # Keep original antialiasing around glyphs. Hard binarization changes small
     # serif digits and loses decimal commas; only whiten unsupported background.
     support = cv2.dilate(ink, np.ones((3, 3), dtype=np.uint8))
     cleaned[support == 0] = 255
-    scale = min(3, max(1, int(np.ceil(24/height))))
+    scale = min(3, max(1, int(np.ceil(24 / height))))
     result = Image.fromarray(cleaned)
     if scale > 1:
-        result = result.resize((result.width*scale, result.height*scale), Image.Resampling.LANCZOS)
+        result = result.resize((result.width * scale, result.height * scale), Image.Resampling.LANCZOS)
     return result, scale
 
 
@@ -356,7 +342,7 @@ def table_grid(table, words):
     ys = merge_positions([c[i] for c in cells for i in (1, 3)] + [table['bbox'][1], table['bbox'][3]])
     if len(xs) < 3 or len(ys) < 3:
         return None
-    grid = [[[] for _ in range(len(xs)-1)] for _ in range(len(ys)-1)]
+    grid = [[[] for _ in range(len(xs) - 1)] for _ in range(len(ys) - 1)]
     assigned = set()
     for index, word in enumerate(words):
         x, y = centre(word.bbox)
@@ -364,12 +350,12 @@ def table_grid(table, words):
             continue
         matching = [cell for cell in cells if contains(cell, x, y, .8)]
         if matching:
-            cell = min(matching, key=lambda c: (c[2]-c[0])*(c[3]-c[1]))
-            col = min(range(len(xs)-1), key=lambda i: abs(xs[i]-cell[0]))
-            row = min(range(len(ys)-1), key=lambda i: abs(ys[i]-cell[1]))
+            cell = min(matching, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]))
+            col = min(range(len(xs) - 1), key=lambda i: abs(xs[i] - cell[0]))
+            row = min(range(len(ys) - 1), key=lambda i: abs(ys[i] - cell[1]))
         else:
-            col = max(0, min(len(xs)-2, bisect.bisect_right(xs, x)-1))
-            row = max(0, min(len(ys)-2, bisect.bisect_right(ys, y)-1))
+            col = max(0, min(len(xs) - 2, bisect.bisect_right(xs, x) - 1))
+            row = max(0, min(len(ys) - 2, bisect.bisect_right(ys, y) - 1))
         grid[row][col].append(index)
         assigned.add(index)
     if not assigned:
@@ -396,7 +382,7 @@ def ocr_with_tables(image, clean, tables, page_size, args, temporary):
             words.append(word)
     if not tables or not args.cell_ocr:
         return words
-    sx, sy = image.width/page_size[0], image.height/page_size[1]
+    sx, sy = image.width / page_size[0], image.height / page_size[1]
     for table_index, table in enumerate(tables):
         if table['method'] != 'raster_lines':
             continue
@@ -405,8 +391,8 @@ def ocr_with_tables(image, clean, tables, page_size, args, temporary):
         for cell_index, cell in enumerate(cells):
             # Exclude structural borders. Add a white margin so Tesseract does
             # not mistake a tight crop for a clipped word.
-            left, top = max(0, round(cell[0]*sx)+2), max(0, round(cell[1]*sy)+2)
-            right, bottom = min(image.width, round(cell[2]*sx)-2), min(image.height, round(cell[3]*sy)-2)
+            left, top = max(0, round(cell[0] * sx) + 2), max(0, round(cell[1] * sy) + 2)
+            right, bottom = min(image.width, round(cell[2] * sx) - 2), min(image.height, round(cell[3] * sy) - 2)
             if right <= left or bottom <= top:
                 continue
             crop = clean.crop((left, top, right, bottom))
@@ -415,15 +401,15 @@ def ocr_with_tables(image, clean, tables, page_size, args, temporary):
             crop, scale = prepare_cell_image(crop)
             pad = 12
             crop = ImageOps.expand(crop, border=pad, fill='white')
-            cell_words = ocr_words(crop, [crop.width/(sx*scale), crop.height/(sy*scale)],
+            cell_words = ocr_words(crop, [crop.width / (sx * scale), crop.height / (sy * scale)],
                                    args, temporary, psm=6)
             for word in cell_words:
-                dx, dy = (left-pad/scale)/sx, (top-pad/scale)/sy
-                word.bbox = [word.bbox[0]+dx, word.bbox[1]+dy, word.bbox[2]+dx, word.bbox[3]+dy]
-                word.line = (1000+table_index, cell_index, *word.line)
+                dx, dy = (left - pad / scale) / sx, (top - pad / scale) / sy
+                word.bbox = [word.bbox[0] + dx, word.bbox[1] + dy, word.bbox[2] + dx, word.bbox[3] + dy]
+                word.line = (1000 + table_index, cell_index, *word.line)
                 for char in word.characters:
                     b = char['bbox']
-                    char['bbox'] = [b[0]+dx, b[1]+dy, b[2]+dx, b[3]+dy]
+                    char['bbox'] = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy]
                 replacement.append(word)
         words = [word for word in words if not contains(table['bbox'], *centre(word.bbox))]
         words.extend(replacement)
@@ -431,8 +417,8 @@ def ocr_with_tables(image, clean, tables, page_size, args, temporary):
 
 
 def words_overlap(a, b):
-    intersection = max(0, min(a[2], b[2])-max(a[0], b[0])) * max(0, min(a[3], b[3])-max(a[1], b[1]))
-    smaller = min((a[2]-a[0])*(a[3]-a[1]), (b[2]-b[0])*(b[3]-b[1]))
+    intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
     return smaller > 0 and intersection / smaller >= .5
 
 
@@ -473,10 +459,10 @@ class MarkdownWriter:
             if position is not None:
                 mapped.add(position)
             self.characters.append({
-                'id': f'p{page}-c{len(self.characters)+1}', 'text': text, 'page': page,
+                'id': f'p{page}-c{len(self.characters) + 1}', 'text': text, 'page': page,
                 'markdown_span': char_spans[position] if position is not None else None,
-                'bbox_normalized': [x0/page_size[0], y0/page_size[1],
-                                    x1/page_size[0], y1/page_size[1]],
+                'bbox_normalized': [x0 / page_size[0], y0 / page_size[1],
+                                    x1 / page_size[0], y1 / page_size[1]],
             })
         self.unmapped_character_count += len(word.text) - len(mapped)
 
@@ -522,7 +508,7 @@ def write_page(writer: MarkdownWriter, words, tables, page_number, page_size):
                             writer.write('<br>' if word.line != previous_line else ' ')
                         writer.word(word, page_number, page_size)
                         previous_line = word.line
-                    writer.write(' | ' if col < len(cells)-1 else ' |\n')
+                    writer.write(' | ' if col < len(cells) - 1 else ' |\n')
                 if row == 0:
                     writer.write('|' + ' --- |' * len(cells) + '\n')
             writer.write('\n')
@@ -550,7 +536,8 @@ def convert(source: Path, output: Path, args) -> dict:
         preview = temporary / 'preview.pdf'
         renderer, image_info = prepare_pdf(source, preview, args)
         if renderer in ('libreoffice_docker', 'text_render'):
-            warnings.append('Coordinates refer to the fixed preview.pdf rendering; office/text files have no intrinsic page geometry.')
+            warnings.append(
+                'Coordinates refer to the fixed preview.pdf rendering; office/text files have no intrinsic page geometry.')
         if source.suffix.lower() == '.xlsx':
             warnings.append('All XLSX formulas were explicitly recalculated in the network-disabled office sandbox. '
                             'See recalculated.xlsx and office-report.json; the source XLSX was not modified.')
@@ -568,7 +555,7 @@ def convert(source: Path, output: Path, args) -> dict:
                 render_dpi = 72 if renderer == 'image_pixels' else args.dpi
                 pix = page.get_pixmap(dpi=render_dpi, alpha=False, colorspace=fitz.csRGB)
                 image = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
-                sx, sy = image.width/size[0], image.height/size[1]
+                sx, sy = image.width / size[0], image.height / size[1]
                 tables, clean = raster_tables(image, sx, sy) if args.tables else ([], image)
                 use_ocr = args.ocr == 'always' or (args.ocr == 'auto' and not native)
                 if use_ocr:
@@ -590,7 +577,8 @@ def convert(source: Path, output: Path, args) -> dict:
                         except Exception as exc:
                             warnings.append(f'Page {number}: vector table detection failed: {exc}')
                 if not words:
-                    warnings.append(f'Page {number}: no text recognized; inspect the preview for blank or unsupported content.')
+                    warnings.append(
+                        f'Page {number}: no text recognized; inspect the preview for blank or unsupported content.')
                 if args.ocr == 'auto' and native and page.get_images():
                     # Mixed PDFs can have a native title over a scanned body.
                     # OCR image regions, retaining native tokens where available.
@@ -598,23 +586,23 @@ def convert(source: Path, output: Path, args) -> dict:
                         rect = (fitz.Rect(info['bbox']) * page.rotation_matrix) & page.rect
                         if rect.is_empty:
                             continue
-                        pixel_rect = [max(0, round(rect.x0*sx)), max(0, round(rect.y0*sy)),
-                                      min(image.width, round(rect.x1*sx)), min(image.height, round(rect.y1*sy))]
+                        pixel_rect = [max(0, round(rect.x0 * sx)), max(0, round(rect.y0 * sy)),
+                                      min(image.width, round(rect.x1 * sx)), min(image.height, round(rect.y1 * sy))]
                         crop = image.crop(pixel_rect)
                         if crop.width < 20 or crop.height < 20:
                             continue
                         region_psm = 6 if crop.height < crop.width * .3 else (3 if args.psm == 'auto' else args.psm)
-                        extra = ocr_words(crop, [crop.width/sx, crop.height/sy], args, temporary, psm=region_psm)
+                        extra = ocr_words(crop, [crop.width / sx, crop.height / sy], args, temporary, psm=region_psm)
                         for word in extra:
-                            dx, dy = pixel_rect[0]/sx, pixel_rect[1]/sy
+                            dx, dy = pixel_rect[0] / sx, pixel_rect[1] / sy
                             b = word.bbox
-                            word.bbox = [b[0]+dx, b[1]+dy, b[2]+dx, b[3]+dy]
+                            word.bbox = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy]
                             if any(contains(n.bbox, *centre(word.bbox), 1) for n in words):
                                 continue
                             for char in word.characters:
                                 b = char['bbox']
-                                char['bbox'] = [b[0]+dx, b[1]+dy, b[2]+dx, b[3]+dy]
-                            word.line = (2000+image_index, *word.line)
+                                char['bbox'] = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy]
+                            word.line = (2000 + image_index, *word.line)
                             words.append(word)
                     words.sort(key=lambda word: (word.bbox[1], word.bbox[0]))
                 visible_words = []
@@ -623,7 +611,7 @@ def convert(source: Path, output: Path, args) -> dict:
                     visible = bounds & page.rect
                     if visible.is_empty:
                         continue
-                    if any(abs(a-b) > .001 for a, b in zip(visible, bounds)):
+                    if any(abs(a - b) > .001 for a, b in zip(visible, bounds)):
                         word.clipped = True
                         word.bbox = list(visible)
                         characters = []
@@ -643,8 +631,9 @@ def convert(source: Path, output: Path, args) -> dict:
                 write_page(writer, words, tables, number, size)
                 unmapped = writer.unmapped_character_count - unmapped_start
                 if unmapped:
-                    warnings.append(f'Page {number}: {unmapped} source-text characters have no aligned visible glyph box; '
-                                    'no coordinates were fabricated for them.')
+                    warnings.append(
+                        f'Page {number}: {unmapped} source-text characters have no aligned visible glyph box; '
+                        'no coordinates were fabricated for them.')
                 low_confidence = sum(w.confidence is not None and w.confidence < .6 for w in words)
                 if low_confidence:
                     warnings.append(f'Page {number}: {low_confidence} words have OCR confidence below 0.60.')
@@ -666,11 +655,11 @@ def convert(source: Path, output: Path, args) -> dict:
                 pages.append(info)
         shutil.copyfile(preview, assets / 'preview.pdf')
         office_report = None
-        if (temporary/'office-report.json').is_file():
-            office_report = json.loads((temporary/'office-report.json').read_text(encoding='utf-8'))
-            shutil.copyfile(temporary/'office-report.json', assets/'office-report.json')
-        if (temporary/'recalculated.xlsx').is_file():
-            shutil.copyfile(temporary/'recalculated.xlsx', assets/'recalculated.xlsx')
+        if (temporary / 'office-report.json').is_file():
+            office_report = json.loads((temporary / 'office-report.json').read_text(encoding='utf-8'))
+            shutil.copyfile(temporary / 'office-report.json', assets / 'office-report.json')
+        if (temporary / 'recalculated.xlsx').is_file():
+            shutil.copyfile(temporary / 'recalculated.xlsx', assets / 'recalculated.xlsx')
     markdown = writer.text()
     manifest = {'schema_version': '2.0',
                 'source': {'path': str(source), 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
@@ -686,8 +675,8 @@ def convert(source: Path, output: Path, args) -> dict:
                 'office_processing': None if office_report is None else {
                     'engine': office_report['engine'], 'recalculated': office_report['recalculated'],
                     'formula_count': office_report.get('formula_count', 0),
-                    'report': os.path.relpath(assets/'office-report.json', sidecar.parent),
-                    'recalculated_workbook': os.path.relpath(assets/'recalculated.xlsx', sidecar.parent)
+                    'report': os.path.relpath(assets / 'office-report.json', sidecar.parent),
+                    'recalculated_workbook': os.path.relpath(assets / 'recalculated.xlsx', sidecar.parent)
                     if source.suffix.lower() == '.xlsx' else None,
                     'isolation': office_report['isolation']},
                 'preview_pdf': os.path.relpath(assets / 'preview.pdf', sidecar.parent),
@@ -731,7 +720,7 @@ def highlight(manifest_path: Path, character_ids: list[str], output: Path, span=
         raise ConversionError('Highlight output must not overwrite an input artifact.')
     with fitz.open(source) as doc:
         for character in selected:
-            page = doc[character['page']-1]
+            page = doc[character['page'] - 1]
             x0, y0, x1, y1 = character['bbox_normalized']
             rect = fitz.Rect(x0 * page.rect.width, y0 * page.rect.height,
                              x1 * page.rect.width, y1 * page.rect.height) * page.derotation_matrix
@@ -756,8 +745,7 @@ def parser():
     p.add_argument('--timeout', type=int, default=180)
     p.add_argument('--tesseract')
     p.add_argument('--tessdata')
-    p.add_argument('--sandbox-image', default=DEFAULT_IMAGE, help='Trusted local office sandbox image')
-    p.add_argument('--docker', help='Docker executable; only local Linux engines are allowed')
+    p.add_argument('--office-url', help='Office conversion service URL; defaults to OFFICE_SANDBOX_URL')
     p.add_argument('--encoding', default='utf-8-sig')
     p.add_argument('--font')
     p.add_argument('--no-tables', dest='tables', action='store_false', default=True)
@@ -769,13 +757,7 @@ def parser():
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     try:
-        if argv and argv[0] == 'sandbox-build':
-            p = argparse.ArgumentParser(description='Build the local office sandbox image (no documents are used).')
-            p.add_argument('--sandbox-image', default=DEFAULT_IMAGE)
-            p.add_argument('--docker')
-            args = p.parse_args(argv[1:])
-            build_image(args.sandbox_image, args.docker)
-        elif argv and argv[0] == 'highlight':
+        if argv and argv[0] == 'highlight':
             p = argparse.ArgumentParser(description='Highlight characters on the stored PDF preview.')
             p.add_argument('boxes', type=Path)
             p.add_argument('output', type=Path)

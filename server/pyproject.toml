@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cyber-accountant-server"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi==0.162.4",
+    "uvicorn[standard]==0.54.0",
+    "python-multipart==0.0.33",
+    "PyMuPDF==1.28.2",
+    "Pillow>=11.0,<13",
+    "opencv-python-headless>=4.10,<5",
+    "numpy>=2.0,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "openpyxl>=3.1,<4"]
+
+[project.scripts]
+document-ocr = "app.ocr:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

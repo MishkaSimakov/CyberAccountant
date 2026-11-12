@@ -1,3 +1,5 @@
 *
 !Dockerfile
 !office_worker.py
+!pyproject.toml
+!service.py
