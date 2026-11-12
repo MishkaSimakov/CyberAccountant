@@ -4,41 +4,92 @@
 - [DESIGN.md](docs/DESIGN.md) - описание дизайна системы.
 - [OCR.md](docs/OCR.md) - локальная конвертация документов в Markdown и координаты символов.
 
-## Local development start
+## Development
+
+Only Docker Compose is required on the host. From the project root:
 
 ```sh
-# From the project root on Linux/WSL; requires Python 3.13+, Node.js 24+ and Docker.
-# Install OCR system dependencies (Debian/Ubuntu).
-sudo apt install tesseract-ocr tesseract-ocr-rus fonts-dejavu-core
+# Optional: create .env for model API credentials, or keep your existing file.
+cp -n .env.example .env
 
-# Create the server environment.
-python3 -m venv server/.venv
+# Start the API, Vite, PostgreSQL, Redis and the Office sandbox.
+docker compose -f compose.dev.yaml up --build
 
-# Install server and development dependencies.
-server/.venv/bin/python -m pip install -e './server[dev]'
-
-# Install frontend dependencies.
-npm --prefix client ci
-
-# Terminal 1: build and start the Office development container on localhost:8001.
-docker build -t cyberaccountant-office ./office_sandbox
-docker run --rm --init --name office-dev \
-  -p 127.0.0.1:8001:8001 \
-  cyberaccountant-office
-
-# Terminal 2: start the API at http://localhost:8000 with automatic reload.
-OFFICE_SANDBOX_URL=http://127.0.0.1:8001 server/.venv/bin/python -m uvicorn server.app.main:app --reload
-
-# Terminal 3: start the frontend and open the URL printed by Vite.
-npm --prefix client run dev
+# Stop the development containers.
+docker compose -f compose.dev.yaml down
 ```
 
-## Docker start
+Open http://localhost:5173 for the frontend; the API is available at http://localhost:8000.
+`compose.dev.yaml` is a complete development stack. It reuses the backend service definitions from
+`compose.yaml` through `extends`, adds Vite, and enables source mounts and reloads. Pass only
+`compose.dev.yaml` for development, including in your IDE's Docker Compose run configuration.
+The client waits for the API health check before starting.
+
+Both development containers bind-mount the workdir at `/app`. Python changes restart Uvicorn;
+frontend changes use Vite hot reload. Polling is enabled for Docker Desktop/WSL bind mounts.
+Vite proxies `/api` to the `server` container. Python dependencies are installed in the image;
+frontend dependencies live in a separate `client_node_modules` Docker volume.
+
+After changing Python dependencies, rebuild with the startup command above. After changing
+`client/package.json` or its lockfile, refresh the frontend dependency volume:
 
 ```sh
-# From the project root: build and start both services at http://localhost:8000.
+docker compose -f compose.dev.yaml run --rm --no-deps client npm ci
+```
+
+`.env` is passed to the API if present. Compose overrides `DATABASE_URL`, `REDIS_URL` and `OFFICE_SANDBOX_URL`
+to use its own services, so local PostgreSQL is not needed. Tables are initialized automatically
+from the models before the API starts. The development project uses its own database volume.
+Stop one mode before starting the other because both publish API port 8000.
+
+## Database
+
+The database layer uses SQLAlchemy and Psycopg 3. Its four tables follow `docs/DESIGN.md`.
+`database-init` calls `Base.metadata.create_all()`: it creates missing tables but does not alter existing
+tables when models change. Changes to an existing schema need explicit SQL or a database recreation
+when its development data can be discarded.
+Use `app.database.session_scope()` for a short transaction in a worker, or `get_session` as a
+dependency in synchronous FastAPI handlers. Transactions commit on success and roll back on failure;
+keep OCR and LLM requests outside them. API routes currently still use the in-memory demonstration stores;
+adding this database layer does not migrate those routes or their existing data.
+
+With the development stack running, execute database integration tests inside the API container.
+They create/drop only a temporary schema:
+
+```sh
+docker compose -f compose.dev.yaml exec server \
+  sh -c 'TEST_DATABASE_URL="$DATABASE_URL" python -m pytest server/tests/test_database.py'
+```
+
+## Redis
+
+Both environments include Redis for RQ. The API receives `REDIS_URL=redis://redis:6379/0`;
+workers on the same Compose network should use that URL too. Redis is available inside Docker
+without publishing port 6379 to the host. Append-only persistence stores queue data in the
+`redis_data` volume, which survives container replacement and `docker compose down`.
+The API waits for Redis to become healthy before starting.
+
+Check the development Redis service:
+
+```sh
+docker compose -f compose.dev.yaml exec redis redis-cli ping
+# PONG
+```
+
+## Docker production
+
+```sh
+# From the project root: build and start the API, Office sandbox, PostgreSQL and Redis.
+# The application is available at http://localhost:8000.
 docker compose up --build
 
 # In another terminal: stop the services and remove their containers.
 docker compose down
 ```
+
+Compose waits for PostgreSQL to become healthy, then the server runs `database-init` before starting the API.
+The production image contains the installed API, runtime dependencies and built frontend assets;
+it has no source bind mounts, Node.js, development dependencies or Python package build output.
+The container connects to PostgreSQL using the internal service name `postgres`; it does not use the local
+database or publish port 5432, so both can run together. Database data is stored in the named
+`postgres_data` volume and survives `docker compose down`. The Compose credentials are for local development.

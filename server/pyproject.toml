@@ -7,6 +7,11 @@ name = "cyber-accountant-server"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "SQLAlchemy>=2.0,<3",
+    "psycopg[binary]>=3.2,<4",
+    "python-dotenv>=1.0,<2",
+    "redis>=5,<7",
+    "rq>=2.6,<3",
     "fastapi==0.162.4",
     "uvicorn[standard]==0.54.0",
     "python-multipart==0.0.33",
@@ -14,13 +19,25 @@ dependencies = [
     "Pillow>=11.0,<13",
     "opencv-python-headless>=4.10,<5",
     "numpy>=2.0,<3",
+    "openpyxl>=3.1.5,<4",
+    "tabulate>=0.9,<0.11",
+    "requests>=2.32",
+    "sympy>=1.13",
+    "jsonschema>=4.23",
+    "z3-solver>=4.12",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "openpyxl>=3.1,<4"]
+dev = ["pytest>=8,<10"]
 
 [project.scripts]
 document-ocr = "app.ocr:main"
+database-init = "app.database:initialize_database"
+ocr-worker = "app.worker:main"
+entities-worker = "app.worker:entities_main"
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "checkier*"]
+
+[tool.setuptools.package-data]
+"checkier.data" = ["bip39_english.txt"]

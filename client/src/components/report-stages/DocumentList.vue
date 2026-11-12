@@ -16,21 +16,36 @@ export default defineComponent({
     return {
       faFileLines, faTrashCan, faSpinner, faRotateRight,
       statusLabels: {
+        idle: 'Ожидает обработки',
         queued: 'Загружен · в очереди',
         running: 'Обрабатывается',
         completed: 'Обработан',
         failed: 'Ошибка',
       },
+      extractionLabels: {
+        idle: 'Ожидает извлечения',
+        queued: 'В очереди извлечения',
+        running: 'Извлекаем сущности',
+        completed: 'Сущности извлечены',
+        failed: 'Ошибка извлечения',
+      },
     }
   },
   computed: {
-    ...mapState('report', ['advancing', 'deleting', 'uploads']),
+    ...mapState('report', ['advancing', 'deleting', 'retrying', 'uploads']),
     duplicateIds(): Set<number> {
       return new Set(this.report.duplicate_groups.flat())
     },
   },
   methods: {
-    ...mapActions('report', ['refresh', 'remove', 'dismissUpload']),
+    ...mapActions('report', ['refresh', 'remove', 'dismissUpload', 'retryExtraction']),
+    processingStatus(document: ReportDocument) {
+      return this.report.stage === 'entities' ? document.extraction_status : document.ocr_status
+    },
+    statusLabel(document: ReportDocument) {
+      const labels = this.report.stage === 'entities' ? this.extractionLabels : this.statusLabels
+      return labels[this.processingStatus(document)]
+    },
     sizeLabel(size: number) {
       return size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} КБ` : `${(size / 1024 / 1024).toFixed(1)} МБ`
     },
@@ -51,7 +66,7 @@ export default defineComponent({
     <div class="flex flex-wrap items-center justify-between gap-3 p-4">
       <h2 id="documents-heading" class="font-semibold">Документы <span
           class="ml-2 text-slate-500">{{ report.documents.length + uploads.length }}</span></h2>
-      <div class="flex items-center gap-4">
+      <div class="flex flex-wrap items-center gap-4">
             <span class="text-xs text-slate-500" aria-live="polite">Обработано {{
                 report.progress.completed
               }} из {{ report.progress.total }}</span>
@@ -81,9 +96,9 @@ export default defineComponent({
         </button>
       </li>
       <li v-for="document in report.documents" :key="document.id" class="flex flex-wrap items-start gap-3 p-4">
-        <FontAwesomeIcon :icon="['queued', 'running'].includes(document.ocr_status) ? faSpinner : faFileLines"
+        <FontAwesomeIcon :icon="['queued', 'running'].includes(processingStatus(document)) ? faSpinner : faFileLines"
                          class="mt-1 size-4 shrink-0 text-slate-400"
-                         :class="['queued', 'running'].includes(document.ocr_status) ? 'animate-spin' : ''"
+                         :class="['queued', 'running'].includes(processingStatus(document)) ? 'animate-spin' : ''"
                          aria-hidden="true"/>
         <div class="min-w-0 flex-1 basis-1/2 sm:basis-0">
           <p class="break-all font-medium">{{ document.name }}</p>
@@ -95,14 +110,23 @@ export default defineComponent({
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <span class="inline-flex h-7 items-center rounded px-3 text-xs leading-none"
-                :class="document.ocr_status === 'completed' ? 'bg-green-50 text-green-700' : document.ocr_status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'">{{
-              statusLabels[document.ocr_status]
+                :class="processingStatus(document) === 'completed' ? 'bg-green-50 text-green-700' : processingStatus(document) === 'failed' ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'">{{
+              statusLabel(document)
             }}</span>
           <span v-if="duplicateIds.has(document.id)"
                 class="inline-flex h-7 items-center rounded bg-amber-100 px-3 text-xs leading-none text-amber-900">Дубликат</span>
         </div>
         <div class="ml-auto flex items-center gap-2">
-          <button v-if="document.ocr_status === 'completed'"
+          <button
+              v-if="report.stage === 'entities' && (document.extraction_status === 'failed' || retrying.includes(document.id))"
+              class="inline-flex h-7 cursor-pointer items-center gap-2 rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+              :aria-label="`Повторить извлечение из ${document.name}`"
+              :disabled="advancing || retrying.includes(document.id)" @click="retryExtraction(document.id)">
+            <FontAwesomeIcon :icon="retrying.includes(document.id) ? faSpinner : faRotateRight" class="size-3"
+                             :class="{'animate-spin': retrying.includes(document.id)}" aria-hidden="true"/>
+            {{ retrying.includes(document.id) ? 'Повторяем…' : 'Повторить извлечение' }}
+          </button>
+          <button v-if="processingStatus(document) === 'completed'"
                   class="inline-flex h-7 cursor-pointer items-center rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                   :disabled="deleting.includes(document.id) || advancing" @click="$emit('select', document)">Просмотреть
           </button>

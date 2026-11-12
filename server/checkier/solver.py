@@ -133,10 +133,10 @@ def _dec_of(v) -> Decimal | str:
 
 class Solver:
     def __init__(
-        self,
-        relations: list[Relation],
-        registry: EntityRegistry,
-        variable_keys: set | list | None = None,
+            self,
+            relations: list[Relation],
+            registry: EntityRegistry,
+            variable_keys: set | list | None = None,
     ) -> None:
         self.relations = relations
         self.registry = registry
@@ -176,7 +176,7 @@ class Solver:
         if e.type == "date":
             return "int"
         if e.type in NUMERIC_TYPES and (
-            e.value is None or _to_decimal(e.value) is not None
+                e.value is None or _to_decimal(e.value) is not None
         ):
             return "real"
         return "string"
@@ -446,7 +446,7 @@ class Solver:
                 rel.touches_card = any(
                     k in self.by_key and self.by_key[k].role == "card" for k in ids
                 )
-            except FormulaError as exc:
+            except (FormulaError, ValueError) as exc:
                 rel.status = "error"
                 rel.error = str(exc)
 
@@ -461,16 +461,20 @@ class Solver:
                 rel.status = "unverifiable"
                 rel.error = str(exc)
                 continue
-            except FormulaError as exc:
+            except (FormulaError, ValueError, z3.Z3Exception) as exc:
                 rel.status = "error"
                 rel.error = str(exc)
+                continue
+            if not isinstance(result, bool) and not z3.is_bool(result):
+                rel.status = "error"
+                rel.error = "An equation must produce a boolean value"
                 continue
             rel.unknowns = [
                 k
                 for k in collect_ids(rel.ast)
                 if k in self.by_key
-                and self.by_key[k].mnemonic not in self.grounded
-                and self.by_key[k].num not in self.grounded
+                   and self.by_key[k].mnemonic not in self.grounded
+                   and self.by_key[k].num not in self.grounded
             ]
             if isinstance(result, bool):
                 rel.status = "true" if result else "false"
@@ -579,9 +583,9 @@ class Solver:
 
 
 def solve_system(
-    relations_raw: list[dict],
-    registry: EntityRegistry,
-    variable_keys: set | list | None = None,
+        relations_raw: list[dict],
+        registry: EntityRegistry,
+        variable_keys: set | list | None = None,
 ) -> tuple[list[Relation], list[Fishy], list[Verdict], list[str]]:
     """Top-level entry: build relations, solve against the registry.
 

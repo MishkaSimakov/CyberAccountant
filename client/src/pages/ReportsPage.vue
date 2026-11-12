@@ -115,7 +115,6 @@ export default defineComponent({
       </div>
       <div v-else-if="reports.length === 0" class="space-y-4 border-t border-slate-200 p-8 text-center">
         <h3 class="font-semibold">Пока нет отчётов</h3>
-        <p class="text-slate-500">Создайте первый отчёт для сверки с подтверждающими документами.</p>
         <button
             class="inline-flex cursor-pointer items-center gap-2 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
             @click="openCreateDialog">

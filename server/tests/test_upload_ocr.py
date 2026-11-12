@@ -5,17 +5,20 @@ from unittest.mock import patch
 import pymupdf as fitz
 import pytest
 
-from server.app import documents
+from server.app import storage
 from server.app.ocr import converter as ocr
 from server.app.ocr import ConversionError
 
 
 @pytest.mark.parametrize("fails", [False, True])
-def test_temporary_artifacts_are_removed_on_success_and_failure(fails):
+def test_ocr_bundle_is_preserved_before_temporary_files_are_removed(fails, tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    source = tmp_path / "original.pdf"
+    source.write_bytes(b"uploaded bytes")
     paths = []
 
     def convert(source, output, args):
-        paths.extend([source.parent, output.parent])
+        paths.append(output.parent)
         assert source.suffix == ".pdf"
         assert source.read_bytes() == b"uploaded bytes"
         assets = output.parent / "document.assets"
@@ -30,11 +33,18 @@ def test_temporary_artifacts_are_removed_on_success_and_failure(fails):
     with patch.object(ocr, "convert", side_effect=convert):
         if fails:
             with pytest.raises(ConversionError):
-                documents.extract_markdown("../../REPORT.PDF", b"uploaded bytes")
+                with ocr.parse_document(source):
+                    pytest.fail("Failed OCR must not produce artifacts")
         else:
-            assert documents.extract_markdown("../../REPORT.PDF", b"uploaded bytes") == "# Распознанный текст\n"
-    assert len(paths) == 2
+            with ocr.parse_document(source) as parsed:
+                saved = storage.save_ocr(1, 2, 1, parsed.markdown)
+            markdown = storage.artifact_path(saved)
+            assert markdown.read_text(encoding="utf-8") == "# Распознанный текст\n"
+            assert markdown.with_suffix(".boxes.json").is_file()
+            assert (markdown.parent / "document.assets" / "preview.pdf").read_bytes() == b"preview"
+    assert len(paths) == 1
     assert all(not path.exists() for path in paths)
+    assert source.read_bytes() == b"uploaded bytes"
 
 
 def test_parse_document_returns_bundle_for_one_original(tmp_path):

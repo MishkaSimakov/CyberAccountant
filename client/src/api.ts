@@ -42,7 +42,7 @@ export interface ReportDocument {
     content_type: string
     role: DocumentRole
     ocr_status: 'queued' | 'running' | 'completed' | 'failed'
-    extraction_status: 'idle' | 'completed'
+    extraction_status: 'idle' | 'queued' | 'running' | 'completed' | 'failed'
     markdown_revision: number
     user_edited: boolean
     error: string | null
@@ -54,7 +54,7 @@ export interface ReportDetails extends Report {
     progress: { completed: number; total: number }
     blockers: string[]
     available_actions: string[]
-    processing_mode: 'stub'
+    processing_mode: 'ocr' | 'entities' | 'verification'
 }
 
 export interface MarkdownRevision {
@@ -74,8 +74,8 @@ export const uploadDocument = (reportId: number, file: File, role: DocumentRole)
 export const deleteDocument = (reportId: number, documentId: number) =>
     request<void>(`/reports/${reportId}/documents/${documentId}`, {method: 'DELETE'})
 
-export const originalUrl = (reportId: number, documentId: number) =>
-    `/api/v1/reports/${reportId}/documents/${documentId}/original`
+export const pdfUrl = (reportId: number, documentId: number) =>
+    `/api/v1/reports/${reportId}/documents/${documentId}/pdf`
 
 export const getMarkdown = (reportId: number, documentId: number) =>
     request<MarkdownRevision>(`/reports/${reportId}/documents/${documentId}/markdown`)
@@ -90,11 +90,18 @@ export const saveMarkdown = (reportId: number, documentId: number, content: stri
 export const runEntityExtraction = (reportId: number) =>
     request<ReportDetails>(`/reports/${reportId}/run-entity-extraction`, {method: 'POST'})
 
+export const retryDocumentExtraction = (reportId: number, documentId: number) =>
+    request<ReportDetails>(`/reports/${reportId}/documents/${documentId}/run-entity-extraction`, {method: 'POST'})
+
+export type RequirementVerdict = 'true' | 'false' | 'error' | 'unverifiable'
+
 export interface Requirement {
     id: number
-    verdict: boolean
+    verdict: RequirementVerdict
     equation: string | null
     evidence: string | null
+    source: string
+    error: string | null
     ids_related: number[]
     notes: string
     silenced: boolean

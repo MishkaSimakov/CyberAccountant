@@ -9,7 +9,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 DEFAULT_TAG_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
-DEFAULT_REL_MODEL = "~deepseek/deepseek-pro-latest"
+# DEFAULT_REL_MODEL = "~deepseek/deepseek-pro-latest"
+DEFAULT_REL_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
 
 #: folder name -> role
 ROLE_DIRS = {"данные": "data", "card": "card", "request": "request"}

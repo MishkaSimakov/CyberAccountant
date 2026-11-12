@@ -22,3 +22,12 @@ __pycache__/
 
 # Vite production output
 /client/dist/
+
+# OCR output can be regenerated from the preserved originals.
+/storage/*/*/versions/*/ocr/
+
+# Extracted entries can be regenerated from OCR markdown.
+/storage/*/*/versions/*/entities/
+
+# Verification artifacts can be regenerated from the reviewed document revisions.
+/storage/*/verification/

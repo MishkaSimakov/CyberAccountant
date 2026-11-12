@@ -2,12 +2,16 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..models.requirement import RequirementVerdict
+
 
 class RequirementResponse(BaseModel):
     id: int
-    verdict: bool
+    verdict: RequirementVerdict
     equation: str | None = None
     evidence: str | None = None
+    source: str = ""
+    error: str | None = None
     ids_related: list[int] = []
     notes: str = ""
     silenced: bool = False

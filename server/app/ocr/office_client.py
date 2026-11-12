@@ -26,7 +26,8 @@ def unpack_result(archive_path, destination, *, xlsx):
             for member in archive:
                 if member.name not in expected or member.name in result or not member.isfile():
                     raise SandboxError('Sandbox returned an unexpected file or link.')
-                limit = 2 * 1024 * 1024 if member.name == 'report.json' else MAX_OUTPUT // 2
+                # XLSX metadata includes per-cell display strings and geometry.
+                limit = MAX_OUTPUT // 2
                 if member.size < 0 or member.size > limit:
                     raise SandboxError('Sandbox returned an oversized file.')
                 data = archive.extractfile(member).read(limit + 1)

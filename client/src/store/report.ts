@@ -1,6 +1,6 @@
 import type {Module} from 'vuex'
 import {
-    deleteDocument, getReport, runEntityExtraction, runVerification, uploadDocument,
+    deleteDocument, getReport, retryDocumentExtraction, runEntityExtraction, runVerification, uploadDocument,
     type DocumentRole, type ReportDetails, type ReportDocument,
 } from '../api'
 import type {RootState} from './index'
@@ -23,12 +23,13 @@ export interface ReportState {
     actionError: string
     advancing: boolean
     deleting: number[]
+    retrying: number[]
     uploads: LocalUpload[]
 }
 
 const initialState = (): ReportState => ({
     id: null, session: 0, request: 0, current: null, loading: true,
-    loadError: '', pollError: '', actionError: '', advancing: false, deleting: [], uploads: [],
+    loadError: '', pollError: '', actionError: '', advancing: false, deleting: [], retrying: [], uploads: [],
 })
 
 function errorText(cause: unknown) {
@@ -47,7 +48,8 @@ export const report: Module<ReportState, RootState> = {
         finalPresent: state => Boolean(state.current?.documents.some(item => item.role === 'final_report')
             || state.uploads.some(item => item.role === 'final_report')),
         canAdvance: state => Boolean(!state.advancing && !state.pollError && !state.uploads.length
-            && !state.deleting.length && state.current?.documents.every(item => item.ocr_status === 'completed')
+            && !state.deleting.length && !state.retrying.length
+            && state.current?.documents.every(item => item.ocr_status === 'completed')
             && state.current?.available_actions.some(action => ['run_entity_extraction', 'run_verification'].includes(action))),
     },
     mutations: {
@@ -176,6 +178,24 @@ export const report: Module<ReportState, RootState> = {
             } finally {
                 if (state.session === session) {
                     commit('patch', {advancing: false})
+                    await dispatch('refresh')
+                }
+            }
+        },
+        async retryExtraction({state, commit, dispatch}, documentId: number) {
+            if (state.id === null || state.advancing || state.retrying.includes(documentId)
+                || state.current?.stage !== 'entities'
+                || !state.current.documents.some(document => document.id === documentId
+                    && document.extraction_status === 'failed')) return
+            const session = state.session
+            commit('patch', {retrying: [...state.retrying, documentId], actionError: '', request: state.request + 1})
+            try {
+                await retryDocumentExtraction(state.id, documentId)
+            } catch (cause) {
+                if (state.session === session) commit('patch', {actionError: errorText(cause)})
+            } finally {
+                if (state.session === session) {
+                    commit('patch', {retrying: state.retrying.filter(id => id !== documentId)})
                     await dispatch('refresh')
                 }
             }

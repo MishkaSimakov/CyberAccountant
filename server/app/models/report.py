@@ -1,29 +1,35 @@
 """Report metadata and processing state."""
 
-from datetime import date, datetime, timezone
-from typing import Literal, Self
+from datetime import date
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import CheckConstraint, String, text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from ..database import Base
+from .base import Timestamps
 
 
-class Report(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+class Report(Timestamps, Base):
+    __tablename__ = "reports"
+    __table_args__ = (
+        CheckConstraint("length(trim(name)) > 0", name="report_name_not_empty"),
+        CheckConstraint(
+            "(period_start IS NULL AND period_end IS NULL) OR "
+            "(period_start IS NOT NULL AND period_end IS NOT NULL AND period_start <= period_end)",
+            name="report_valid_period",
+        ),
+        CheckConstraint("stage IN ('documents', 'entities', 'verification')", name="report_valid_stage"),
+        CheckConstraint(
+            "processing_status IN ('idle', 'queued', 'running', 'completed', 'failed')",
+            name="report_valid_processing_status",
+        ),
+    )
 
-    id: int = Field(ge=1)
-    name: str = Field(min_length=1, max_length=200)
-    contract_number: str | None = Field(default=None, max_length=100)
-    period_start: date | None = None
-    period_end: date | None = None
-    target_row: str | None = Field(default=None, max_length=200)
-    stage: Literal["documents", "entities", "verification"] = "documents"
-    processing_status: Literal["idle", "queued", "running", "completed", "failed"] = "idle"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-    @model_validator(mode="after")
-    def validate_period(self) -> Self:
-        if (self.period_start is None) != (self.period_end is None):
-            raise ValueError("Укажите начало и конец периода подтверждающих документов.")
-        if self.period_start and self.period_end and self.period_start > self.period_end:
-            raise ValueError("Конец периода не может быть раньше начала.")
-        return self
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200))
+    contract_number: Mapped[str | None] = mapped_column(String(100))
+    period_start: Mapped[date | None]
+    period_end: Mapped[date | None]
+    target_row: Mapped[str | None] = mapped_column(String(200))
+    stage: Mapped[str] = mapped_column(String(32), server_default=text("'documents'"))
+    processing_status: Mapped[str] = mapped_column(String(32), server_default=text("'idle'"))

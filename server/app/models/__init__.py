@@ -1,4 +1,4 @@
-"""Standalone storage models, separate from the mock API models."""
+"""SQLAlchemy storage models; importing this module registers all tables."""
 
 from .entity_file import EntityFile
 from .file import File

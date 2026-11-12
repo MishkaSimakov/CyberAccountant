@@ -32,6 +32,8 @@ output/
 
 
 data/
+!server/checkier/data/
 data_md/
 out/
+/storage/
 .ipynb_checkpoints/

@@ -6,8 +6,11 @@ import {defineConfig} from 'vite'
 export default defineConfig({
     plugins: [vue(), tailwindcss()],
     server: {
+        watch: {
+            usePolling: process.env.VITE_USE_POLLING === 'true',
+        },
         proxy: {
-            '/api': 'http://127.0.0.1:8000',
+            '/api': process.env.API_PROXY_TARGET || 'http://127.0.0.1:8000',
         },
     },
 })
