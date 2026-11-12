@@ -268,8 +268,12 @@ class Solver:
         for rel in self.relations:
             if rel.status != "pending" or rel.ast is None:
                 continue
-            if self._try_relation(rel):
-                progressed = True
+            try:
+                if self._try_relation(rel):
+                    progressed = True
+            except Exception as exc:  # noqa: BLE001 - one bad relation must not
+                rel.status = "error"   # kill the solve; diagnose and move on
+                rel.error = f"{type(exc).__name__}: {exc}"
         return progressed
 
     # -- relation handling --------------------------------------------------
@@ -388,16 +392,30 @@ class Solver:
         if op == "!=":
             return False  # can't prove disequality of symbolic forms
         # diff = sum(coeff_k * k) + const == 0
-        unknowns = [k for k in diff.coeffs if k not in self.values]
+        # a "known" entity with a non-numeric value (e.g. docid-like "3/1"
+        # tagged as number) can't take part in arithmetic — flag the relation
+        bad = [
+            k for k in diff.coeffs
+            if k in self.values and not isinstance(self.values[k], Decimal)
+        ]
+        if bad:
+            detail = "; ".join(
+                f"{k}={self.values[k]!r} "
+                f"(type={self.by_key[k].type}, raw={self.by_key[k].raw!r}, file={self.by_key[k].file})"
+                for k in bad
+            )
+            rel.status = "error"
+            rel.error = f"non-numeric entity in arithmetic equation: {detail}"
+            return False
+        unknowns = {k: v for k, v in diff.coeffs.items() if k not in self.values}
         known_coeffs = {
             k: v for k, v in diff.coeffs.items() if k in self.values
         }
         const_total = diff.const + sum(
             self.values[k] * c for k, c in known_coeffs.items()
         )
-        real_unknowns = {k: v for k, v in diff.coeffs.items() if k not in self.values}
-        if len(real_unknowns) == 1:
-            (key, coeff) = next(iter(real_unknowns.items()))
+        if len(unknowns) == 1:
+            (key, coeff) = next(iter(unknowns.items()))
             try:
                 val = -const_total / coeff
             except Exception:

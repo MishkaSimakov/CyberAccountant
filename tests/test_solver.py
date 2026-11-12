@@ -125,3 +125,22 @@ def test_non_numeric_number_value_does_not_crash():
     rels = [{"equation": f'{e.key} == "3/1"'}]
     relations, _, _, _ = solve_system(rels, reg)
     assert relations[0].status == "true"
+
+
+def test_string_valued_entity_in_arithmetic_is_flagged_not_crash():
+    """A 'number' entity whose value stayed a string (e.g. raw '3/1') used in
+    arithmetic must produce a relation error naming the entity, not TypeError."""
+    reg, ents = _reg_with_card(
+        cards={"card-total": ("amount", "1000", "1000", "card")},
+        data={"doc-num": ("number", "3", "3", "data"),
+              "doc-frac": ("amount", "500", "500", "data")},
+    )
+    frac = reg.add(type_="number", raw="3/1", unit="", norm="1",
+                   file="f3", role="data", span=(0, 0))
+    assert frac.value == "3/1"
+    a, c = ents["doc-num"].key, ents["card-total"].key
+    rels = [{"equation": f"{frac.key} * {a} == {c}"}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "error"
+    assert "3/1" in relations[0].error
+    assert frac.key in relations[0].error
