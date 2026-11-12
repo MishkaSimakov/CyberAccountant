@@ -12,3 +12,8 @@ __pycache__/
 !.env.example
 
 AGENTS.md
+
+data/
+data_md/
+out/
+.ipynb_checkpoints/

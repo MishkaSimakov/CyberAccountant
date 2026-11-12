@@ -1,0 +1,30 @@
+[project]
+name = "checkier"
+version = "0.1.0"
+readme = "README.md"
+authors = []
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.32",
+    "sympy>=1.13",
+    "python-dotenv>=1.0",
+    "jsonschema>=4.23",
+    "z3-solver>=4.12",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "jupyter>=1.1",
+    "ipykernel>=6.29",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.build-backend]
+module-root = "server"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
