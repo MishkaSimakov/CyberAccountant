@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session
 
 from .. import storage
 from ..database import session_scope
+from ..entities import prepare_entities
 from ..models import File
 from ..queue import enqueue_ocr
-from ..schemas.documents import Document, MarkdownRevision
+from ..schemas.documents import Document, MarkdownEdit, MarkdownRevision
 from . import ServiceError
 from .reports import document_response, find_report, sync_processing_status
 
@@ -113,3 +114,36 @@ def delete_document(report_id: int, file_id: int) -> None:
         session.execute(delete(File).where(File.report_id == report_id, File.file_id == file_id))
         sync_processing_status(session, report)
     shutil.rmtree(storage.storage_root() / str(report_id) / str(file_id), ignore_errors=True)
+
+
+def edit_markdown(report_id: int, file_id: int, payload: MarkdownEdit) -> MarkdownRevision:
+    with session_scope() as session:
+        report = find_report(session, report_id, lock=True)
+        file = find_document(session, report_id, file_id)
+        if report.stage not in {"documents", "entities"}:
+            raise ServiceError(409, "Редактирование на этом этапе недоступно.")
+        if (not file.markdown_path or file.status not in {"ocr_completed", "completed"}
+                or (report.stage == "entities" and not file.entities_path)):
+            raise ServiceError(409, "Дождитесь завершения обработки документа.")
+        if payload.base_revision != file.version:
+            raise ServiceError(409, "Документ уже изменён. Откройте его заново.")
+        if not payload.content.strip():
+            raise ServiceError(422, "Текст документа не должен быть пустым.")
+        content = prepare_entities(payload.content)
+        version = file.version + 1
+        # User edits are preserved separately from regenerable OCR/extraction output.
+        relative = Path(str(report_id)) / str(file_id) / "versions" / str(version) / "edited" / "document.md"
+        destination = storage.artifact_path(relative.as_posix())
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(content, encoding="utf-8")
+        edited_path = relative.as_posix()
+        revision = File(
+            report_id=report_id, file_id=file_id, version=version, name=file.name,
+            path=file.path, hash=file.hash, role=file.role, size=file.size, content_type=file.content_type,
+            markdown_path=file.markdown_path if file.entities_path else edited_path,
+            entities_path=edited_path if file.entities_path else None,
+            status=file.status, hand_edited=True,
+        )
+        session.add(revision)
+        sync_processing_status(session, report)
+        return MarkdownRevision(content=content, revision=version)

@@ -40,13 +40,14 @@ export default defineComponent({
   data() {
     return {
       popupId: `entity-popup-${++nextPopupId}`,
-      attributeNames: ['id', 'type', 'value', 'unit'] as const,
+      attributeNames: ['t', 'u', 'n', 'value'] as const,
       selected: null as Entity | null,
       selection: null as Entity | null,
       selectionError: '',
-      draftType: 'id',
+      draftType: 'number',
       draftValue: '',
-      draftUnit: 'string',
+      draftUnit: '',
+      draftNorm: '1',
       position: {left: '0px', top: '0px'},
       anchor: null as HTMLElement | null,
       selectionRect: null as DOMRect | null,
@@ -55,21 +56,15 @@ export default defineComponent({
     }
   },
   computed: {
-    units(): string[] {
-      return this.draftType === 'number' ? ['rubles', 'euros', 'kg']
-          : this.draftType === 'date' ? ['date'] : ['string']
-    },
     valueError(): string {
-      if (!this.draftValue.trim()) return 'Укажите значение.'
-      if (this.draftType === 'number' && !/^-?\d+(?:\.\d+)?$/.test(this.draftValue)) {
-        return 'Укажите число с точкой, без пробелов: 1015500.00.'
+      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(this.draftNorm.trim())) {
+        return 'Укажите числовой множитель, например 1 или 1000.'
       }
-      if (this.draftType === 'date') {
+      if (this.draftType === 'date' && this.draftValue) {
         const value = this.draftValue
-        if (!/^\d{4}(?:-\d{2}){0,2}$/.test(value)) return 'Используйте формат YYYY, YYYY-MM или YYYY-MM-DD.'
-        const full = value.length === 4 ? `${value}-01-01` : value.length === 7 ? `${value}-01` : value
-        const date = new Date(`${full}T00:00:00Z`)
-        if (value.startsWith('0000') || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== full) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 'Используйте формат YYYY-MM-DD.'
+        const date = new Date(`${value}T00:00:00Z`)
+        if (value.startsWith('0000') || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
           return 'Укажите существующую дату.'
         }
       }
@@ -86,7 +81,7 @@ export default defineComponent({
       let ranges = new Map<Token, SourceRange>()
 
       function tokenizeEntity(src: string) {
-        const match = /^<entity\b((?:"[^"]*"|'[^']*'|[^'">])*)>([\s\S]*?)<\/entity\s*>/i.exec(src)
+        const match = /^<ent\s+((?:"[^"]*"|'[^']*'|[^'">])*)>([\s\S]*?)<\/ent>/.exec(src)
         if (!match) return
         const attributes: Entity['attributes'] = {}
         for (const attribute of match[1]!.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
@@ -134,7 +129,7 @@ export default defineComponent({
           {
             name: 'entity',
             level: 'inline',
-            start: src => src.search(/<entity\b/i),
+            start: src => src.search(/<ent\s+/),
             tokenizer: tokenizeEntity,
             renderer: renderEntity
           },
@@ -154,9 +149,6 @@ export default defineComponent({
   watch: {
     'rendered.html'() {
       void this.revealSelectedEntity()
-    },
-    draftType() {
-      if (!this.units.includes(this.draftUnit)) this.draftUnit = this.units[0]!
     },
     content() {
       this.dismiss()
@@ -230,9 +222,10 @@ export default defineComponent({
       this.anchor = button
       this.selected = markRaw(entity)
       this.selection = null
-      this.draftType = ['id', 'date', 'number'].includes(entity.attributes.type ?? '') ? entity.attributes.type! : 'id'
-      this.draftValue = entity.attributes.value ?? entity.text
-      this.draftUnit = this.units.includes(entity.attributes.unit ?? '') ? entity.attributes.unit! : this.units[0]!
+      this.draftType = entity.attributes.t ?? 'number'
+      this.draftValue = entity.attributes.value ?? ''
+      this.draftUnit = entity.attributes.u ?? (this.draftType === 'amount' ? 'RUB' : '')
+      this.draftNorm = entity.attributes.n ?? '1'
       await this.$nextTick()
       const popup = this.$refs.popup as HTMLDivElement | undefined
       const closeButton = this.$refs.closeButton as HTMLButtonElement | undefined
@@ -315,8 +308,9 @@ export default defineComponent({
     apply() {
       const entity = this.selected
       if (!this.entities || this.readonly || !entity?.range || this.valueError) return
-      const id = entity.attributes.id ? ` id="${escapeHtml(entity.attributes.id)}"` : ''
-      const markup = `<entity type="${this.draftType}" value="${escapeHtml(this.draftValue)}" unit="${this.draftUnit}"${id}>${entity.body}</entity>`
+      const unit = this.draftUnit ? ` u="${escapeHtml(this.draftUnit)}"` : ''
+      const norm = this.draftNorm.trim() !== '1' ? ` n="${escapeHtml(this.draftNorm.trim())}"` : ''
+      const markup = `<ent t="${escapeHtml(this.draftType)}"${unit}${norm} value="${escapeHtml(this.draftValue)}">${entity.body}</ent>`
       this.replaceEntity(markup)
     },
     removeEntity() {
@@ -369,17 +363,24 @@ export default defineComponent({
         <dl v-if="readonly" class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2">
           <template v-for="name in attributeNames" :key="name">
             <dt class="font-mono text-slate-500">{{ name }}</dt>
-            <dd class="whitespace-pre-wrap break-words font-mono">{{ selected.attributes[name] ?? '—' }}</dd>
+            <dd class="whitespace-pre-wrap break-words font-mono">{{
+                selected.attributes[name] ?? (name === 'n' ? '1' : name === 'u' && selected.attributes.t === 'amount' ? 'RUB' : '—')
+              }}
+            </dd>
           </template>
         </dl>
         <form v-else class="space-y-3" @submit.prevent="apply">
-          <label class="block">Тип
+          <label class="block">Тип (t)
             <span class="relative mt-1 block">
             <select v-model="draftType"
                     class="w-full cursor-pointer appearance-none rounded-lg border border-slate-300 bg-slate-50 py-2.5 pl-3 pr-10 text-sm text-slate-800 shadow-sm transition-colors hover:border-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
-              <option value="id">Идентификатор (id)</option>
+              <option value="amount">Сумма (amount)</option>
+              <option value="docid">Номер документа (docid)</option>
+              <option value="contract">Номер договора (contract)</option>
               <option value="date">Дата (date)</option>
               <option value="number">Число (number)</option>
+              <option value="pct">Процент (pct)</option>
+              <option value="ratio">Отношение (ratio)</option>
             </select>
               <svg class="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-slate-500"
                    viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
@@ -387,24 +388,23 @@ export default defineComponent({
               </svg>
             </span>
           </label>
-          <label class="block">Значение
-            <input ref="valueInput" v-model="draftValue" required :aria-invalid="!!valueError"
+          <label class="block">Нормализованное значение (value)
+            <input ref="valueInput" v-model="draftValue" :aria-invalid="!!valueError"
                    :aria-describedby="`${popupId}-error`"
-                   :inputmode="draftType === 'number' ? 'decimal' : 'text'"
+                   :inputmode="['amount', 'number', 'pct', 'ratio'].includes(draftType) ? 'decimal' : 'text'"
                    class="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm shadow-sm transition-colors hover:border-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"/>
           </label>
-          <label class="block">Единица
-            <span class="relative mt-1 block">
-            <select v-model="draftUnit"
-                    class="w-full cursor-pointer appearance-none rounded-lg border border-slate-300 bg-slate-50 py-2.5 pl-3 pr-10 text-sm text-slate-800 shadow-sm transition-colors hover:border-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
-              <option v-for="unit in units" :key="unit" :value="unit">{{ unit }}</option>
-            </select>
-              <svg class="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-slate-500"
-                   viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
-                <path d="m6 8 4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </span>
+          <label class="block">Единица (u)
+            <input v-model="draftUnit" placeholder="RUB, RUB_K, USD, EUR, person_month…"
+                   class="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm focus:outline-blue-500"/>
           </label>
+          <label class="block">Множитель (n)
+            <input v-model="draftNorm" required inputmode="decimal" :aria-invalid="!!valueError"
+                   :aria-describedby="`${popupId}-error`"
+                   class="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm focus:outline-blue-500"/>
+          </label>
+          <p class="text-xs text-slate-500">Например, 1000 для тысяч рублей. Нормализованное значение уже включает
+            множитель.</p>
           <p v-if="valueError" :id="`${popupId}-error`" class="text-xs text-red-700" role="status">{{ valueError }}</p>
           <p v-if="!selected.range" class="text-xs text-red-700" role="alert">Не удалось определить положение сущности в
             исходном тексте.</p>

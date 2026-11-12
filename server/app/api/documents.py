@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import FileResponse
 
 from ..schemas.documents import Document, MarkdownEdit, MarkdownRevision
@@ -45,10 +45,9 @@ def document_markdown(report_id: int, document_id: int):
     return service.document_markdown(report_id, document_id)
 
 
-@router.post("/reports/{report_id}/documents/{document_id}/markdown")
+@router.post("/reports/{report_id}/documents/{document_id}/markdown", response_model=MarkdownRevision)
 def edit_markdown(report_id: int, document_id: int, payload: MarkdownEdit):
-    service.document_details(report_id, document_id)
-    raise HTTPException(501, "Редактирование документов пока не подключено.")
+    return service.edit_markdown(report_id, document_id, payload)
 
 
 @router.post("/reports/{report_id}/run-entity-extraction")

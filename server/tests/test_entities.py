@@ -248,3 +248,71 @@ def test_real_rq_uses_separate_entities_queue(ready, monkeypatch):
             Job.fetch(job_id, connection=connection).delete()
         test_queue.delete(delete_jobs=True)
         connection.close()
+
+
+def test_review_edits_preserve_revisions_and_checkier_fields(ready):
+    report_id, revisions, _ = ready
+    path = f"/reports/{report_id}"
+    request("POST", path + "/run-entity-extraction")
+    job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        file_id = session.get(File, revisions[0]).file_id
+    markdown_path = path + f"/documents/{file_id}/markdown"
+    content = '<ent t="amount" u="RUB_K" n="1000" value="250000.00">100,00</ent>'
+    status, result = request("POST", markdown_path, {"content": content, "base_revision": 1})
+    assert status == 200
+    assert result == {"content": content, "revision": 2}
+    assert request("GET", markdown_path)[1] == result
+    assert request("POST", markdown_path, {"content": content, "base_revision": 1})[0] == 409
+    invalid = '<ent t="id">100</ent>'
+    assert request("POST", markdown_path, {"content": invalid, "base_revision": 2})[0] == 422
+    assert request("GET", markdown_path)[1] == result
+    assert request("GET", path + f"/documents/{file_id}")[1]["user_edited"] is True
+    with database.session_scope() as session:
+        original = session.get(File, revisions[0])
+        assert storage.artifact_path(original.markdown_path).read_text(encoding="utf-8") == MARKDOWN
+        assert storage.artifact_path(original.entities_path).read_text(encoding="utf-8") == TAGGED
+        edited = reports.report_documents(session, report_id)[0]
+        assert edited.version == 2 and edited.status == "completed"
+        assert "/edited/" in edited.entities_path
+        assert edited.markdown_path == original.markdown_path
+
+
+def test_edit_requires_finished_processing_and_editable_stage(ready):
+    report_id, revisions, _ = ready
+    path = f"/reports/{report_id}"
+    with database.session_scope() as session:
+        file_id = session.get(File, revisions[0]).file_id
+    markdown_path = path + f"/documents/{file_id}/markdown"
+    request("POST", path + "/run-entity-extraction")
+    payload = {"content": MARKDOWN, "base_revision": 1}
+    assert request("POST", markdown_path, payload)[0] == 409
+    job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        session.get(Report, report_id).stage = "verification"
+    assert request("POST", markdown_path, payload)[0] == 409
+
+
+def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
+    report_id, revisions, pending = ready
+    path = f"/reports/{report_id}"
+    with database.session_scope() as session:
+        file_id = session.get(File, revisions[0]).file_id
+    markdown_path = path + f"/documents/{file_id}/markdown"
+    content = MARKDOWN + "\n"
+    status, result = request("POST", markdown_path, {"content": content, "base_revision": 1})
+    assert status == 200
+    assert request("GET", markdown_path)[1] == {"content": content, "revision": 2}
+    with database.session_scope() as session:
+        edited = reports.report_documents(session, report_id)[0]
+        assert edited.entities_path is None
+        assert edited.status == "ocr_completed"
+        edited_id = edited.id
+        assert storage.artifact_path(session.get(File, revisions[0]).markdown_path).read_text(
+            encoding="utf-8") == MARKDOWN
+    monkeypatch.setattr(entities, "enqueue_entities", pending.append)
+    assert request("POST", path + "/run-entity-extraction")[0] == 200
+    assert pending == [edited_id, revisions[1]]
+    job.process_entities(revisions[0])  # The old OCR revision must stay obsolete.
+    job.process_entities(edited_id)
+    assert request("GET", markdown_path)[1]["content"] == TAGGED
