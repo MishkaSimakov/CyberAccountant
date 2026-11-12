@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from server.app import documents as store
 from server.app import entities
+from server.app import requirements as verification
 from server.app.main import Report, app, report_store
 
 
@@ -18,6 +19,7 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         store.revisions.clear()
         store.next_document_id = 1
         entities.next_entity_id = 1
+        verification.requirements.clear()
         self.sleep_patch = patch.object(store.asyncio, "sleep", new_callable=AsyncMock)
         self.sleep_patch.start()
         self.addCleanup(self.sleep_patch.stop)
@@ -51,11 +53,12 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def upload(self, role="supporting", name="invoice.pdf", content=b"%PDF-1.4\nexample\n%%EOF", report_id=1):
         body = (
-            f'--boundary\r\nContent-Disposition: form-data; name="role"\r\n\r\n{role}\r\n'
-            f'--boundary\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-            'Content-Type: application/octet-stream\r\n\r\n'
-        ).encode() + content + b"\r\n--boundary--\r\n"
-        status, response = await self.request("POST", f"/reports/{report_id}/documents", body, "multipart/form-data; boundary=boundary")
+                   f'--boundary\r\nContent-Disposition: form-data; name="role"\r\n\r\n{role}\r\n'
+                   f'--boundary\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
+                   'Content-Type: application/octet-stream\r\n\r\n'
+               ).encode() + content + b"\r\n--boundary--\r\n"
+        status, response = await self.request("POST", f"/reports/{report_id}/documents", body,
+                                              "multipart/form-data; boundary=boundary")
         return status, json.loads(response)
 
     async def test_upload_original_and_processing(self):
@@ -161,12 +164,14 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         _, uploaded = await self.upload()
         status, report = await self.json_request("POST", "/reports/1/run-entity-extraction")
         self.assertEqual((status, report["stage"]), (200, "entities"))
-        self.assertFalse(report["available_actions"])
+        self.assertEqual(report["available_actions"], ["run_verification"])
+        self.assertTrue(all(item["extraction_status"] == "completed" for item in report["documents"]))
         status, _ = await self.upload()
         self.assertEqual(status, 409)
         status, _ = await self.json_request("DELETE", f'/reports/1/documents/{uploaded["id"]}')
         self.assertEqual(status, 409)
-        status, _ = await self.json_request("POST", f'/reports/1/documents/{uploaded["id"]}/markdown', {"content": "edit", "base_revision": 1})
+        status, _ = await self.json_request("POST", f'/reports/1/documents/{uploaded["id"]}/markdown',
+                                            {"content": "edit", "base_revision": 1})
         self.assertEqual(status, 200)
         status, _ = await self.json_request("GET", f'/reports/1/documents/{uploaded["id"]}/markdown')
         self.assertEqual(status, 200)
@@ -186,7 +191,8 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         path = f'/reports/1/documents/{uploaded["id"]}/markdown'
         _, original = await self.json_request("GET", path)
         initial_id = re.search(r'id="(\d+)"', original["content"])[1]
-        content = original["content"].replace('value="ВЕД-ЗП-2026-02"', 'value="corrected &amp; quoted &quot;value&quot;"', 1)
+        content = original["content"].replace('value="ВЕД-ЗП-2026-02"',
+                                              'value="corrected &amp; quoted &quot;value&quot;"', 1)
         content += '\n<entity type="number" value="12.50" unit="euros">12,50 €</entity>'
         status, saved = await self.json_request("POST", path, {"content": content, "base_revision": 1})
         self.assertEqual(status, 200)
@@ -236,7 +242,8 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         path = f'/reports/1/documents/{second["id"]}/markdown'
         _, a = await self.json_request("GET", f'/reports/1/documents/{first["id"]}/markdown')
         _, b = await self.json_request("GET", path)
-        self.assertTrue(set(re.findall(r'\bid="(\d+)"', a["content"])).isdisjoint(re.findall(r'\bid="(\d+)"', b["content"])))
+        self.assertTrue(
+            set(re.findall(r'\bid="(\d+)"', a["content"])).isdisjoint(re.findall(r'\bid="(\d+)"', b["content"])))
         await self.json_request("POST", "/reports/1/run-entity-extraction")
         content = '\n'.join([
             '<entity type="id" value="code" unit="string">code</entity>',
@@ -256,11 +263,95 @@ class DocumentApiTests(unittest.IsolatedAsyncioTestCase):
         from io import BytesIO
 
         tasks = BackgroundTasks()
-        document = await store.upload_document(1, tasks, UploadFile(BytesIO(b"%PDF-1.4\n%%EOF"), filename="report.pdf"), "final_report")
+        document = await store.upload_document(1, tasks, UploadFile(BytesIO(b"%PDF-1.4\n%%EOF"), filename="report.pdf"),
+                                               "final_report")
         await store.delete_document(1, document.id)
         await tasks()
         self.assertFalse(store.documents[1])
         self.assertNotIn(document.id, store.revisions)
+
+    async def test_verification_permissions_and_boolean_results(self):
+        status, _ = await self.json_request("POST", "/reports/1/run-verification")
+        self.assertEqual(status, 409)
+        status, _ = await self.json_request("GET", "/reports/1/requirements")
+        self.assertEqual(status, 409)
+        await self.upload(role="final_report")
+        _, uploaded = await self.upload()
+        await self.json_request("POST", "/reports/1/run-entity-extraction")
+        store.documents[1][uploaded["id"]].extraction_status = "idle"
+        status, _ = await self.json_request("POST", "/reports/1/run-verification")
+        self.assertEqual(status, 409)
+        store.documents[1][uploaded["id"]].extraction_status = "completed"
+        status, started = await self.json_request("POST", "/reports/1/run-verification")
+        self.assertEqual(status, 200)
+        self.assertEqual((started["stage"], started["processing_status"]), ("verification", "queued"))
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["processing_status"], "completed")
+        self.assertFalse(details["available_actions"])
+        status, results = await self.json_request("GET", "/reports/1/requirements")
+        self.assertEqual(status, 200)
+        self.assertTrue(all(type(item["verdict"]) is bool for item in results))
+        self.assertEqual({item["verdict"] for item in results}, {True, False})
+        self.assertTrue(any(item["equation"] for item in results))
+        self.assertTrue(any(item["evidence"] for item in results))
+        status, _ = await self.json_request("GET", "/reports/2/requirements")
+        self.assertEqual(status, 409)
+        status, _ = await self.json_request("GET", "/reports/999/requirements")
+        self.assertEqual(status, 404)
+        with patch.object(verification, "simulate_verification", new_callable=AsyncMock) as job:
+            _, repeated = await self.json_request("POST", "/reports/1/run-verification")
+            self.assertEqual(repeated["processing_status"], "completed")
+            job.assert_not_called()
+        status, _ = await self.json_request(
+            "POST", f'/reports/1/documents/{uploaded["id"]}/markdown',
+            {"content": "edit", "base_revision": 1},
+        )
+        self.assertEqual(status, 409)
+
+    async def test_verification_polling_and_duplicate_start(self):
+        await self.upload(role="final_report")
+        await self.upload()
+        await self.json_request("POST", "/reports/1/run-entity-extraction")
+        waiting = [asyncio.Event(), asyncio.Event()]
+        release = [asyncio.Event(), asyncio.Event()]
+
+        async def wait_for_test(delay):
+            index = 0 if delay == 1 else 1
+            waiting[index].set()
+            await release[index].wait()
+
+        with patch.object(verification.asyncio, "sleep", side_effect=wait_for_test):
+            task = asyncio.create_task(self.json_request("POST", "/reports/1/run-verification"))
+            try:
+                for index, expected in enumerate(["queued", "running"]):
+                    await asyncio.wait_for(waiting[index].wait(), timeout=2)
+                    _, details = await self.json_request("GET", "/reports/1")
+                    self.assertEqual(details["processing_status"], expected)
+                    status, _ = await self.json_request("GET", "/reports/1/requirements")
+                    self.assertEqual(status, 409)
+                    _, repeated = await self.json_request("POST", "/reports/1/run-verification")
+                    self.assertEqual(repeated["processing_status"], expected)
+                    release[index].set()
+                await asyncio.wait_for(task, timeout=2)
+                _, details = await self.json_request("GET", "/reports/1")
+                self.assertEqual(details["processing_status"], "completed")
+            finally:
+                for event in release:
+                    event.set()
+                await task
+
+    async def test_verification_failure_and_retry(self):
+        await self.upload(role="final_report")
+        await self.upload()
+        await self.json_request("POST", "/reports/1/run-entity-extraction")
+        with patch.object(verification.asyncio, "sleep", side_effect=RuntimeError("unavailable")):
+            await self.json_request("POST", "/reports/1/run-verification")
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["processing_status"], "failed")
+        self.assertEqual(details["available_actions"], ["run_verification"])
+        await self.json_request("POST", "/reports/1/run-verification")
+        _, details = await self.json_request("GET", "/reports/1")
+        self.assertEqual(details["processing_status"], "completed")
 
 
 if __name__ == "__main__":

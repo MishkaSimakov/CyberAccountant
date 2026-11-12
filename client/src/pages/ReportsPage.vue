@@ -1,62 +1,75 @@
-<script setup lang="ts">
-import {onMounted, reactive, readonly, ref, toRefs} from 'vue'
-import {RouterLink, useRouter} from 'vue-router'
+<script lang="ts">
+import {defineComponent} from 'vue'
+import {mapActions, mapState} from 'vuex'
+import {RouterLink} from 'vue-router'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faPlus} from '@fortawesome/free-solid-svg-icons/faPlus'
 import {faRotateRight} from '@fortawesome/free-solid-svg-icons/faRotateRight'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import type {Report} from '../api'
-import {useStore} from '../store'
 
-const router = useRouter()
-const store = useStore()
-const {items: reports, loading, loadError, createError, saving, notice} = toRefs(readonly(store.state.reports))
-const loadReports = () => store.dispatch('reports/load')
-const dialog = ref<HTMLDialogElement | null>(null)
-const form = reactive({name: '', contract_number: '', period_start: '', period_end: '', target_row: ''})
-const stages: Record<Report['stage'], string> = {
-  documents: 'Загрузка документов',
-  entities: 'Разметка сущностей',
-  verification: 'Проверка требований',
-}
-const statuses: Record<Report['processing_status'], string> = {
-  idle: 'Ожидает действий',
-  queued: 'В очереди',
-  running: 'В обработке',
-  completed: 'Завершено',
-  failed: 'Ошибка обработки',
-}
-const statusClasses: Record<Report['processing_status'], string> = {
-  idle: 'bg-slate-100 text-slate-600',
-  queued: 'bg-blue-50 text-blue-700',
-  running: 'bg-blue-50 text-blue-700',
-  completed: 'bg-emerald-50 text-emerald-700',
-  failed: 'bg-red-50 text-red-700',
-}
 const dateFormatter = new Intl.DateTimeFormat('ru-RU', {timeZone: 'UTC'})
 
-function formatDate(value: string) {
-  return dateFormatter.format(new Date(`${value}T00:00:00Z`))
-}
+export default defineComponent({
+  components: {RouterLink, FontAwesomeIcon},
+  data() {
+    return {
+      form: {name: '', contract_number: '', period_start: '', period_end: '', target_row: ''},
+      faPlus, faRotateRight, faXmark,
+      stages: {
+        documents: 'Загрузка документов',
+        entities: 'Разметка сущностей',
+        verification: 'Проверка требований',
+      },
+      statuses: {
+        idle: 'Ожидает действий',
+        queued: 'В очереди',
+        running: 'В обработке',
+        completed: 'Завершено',
+        failed: 'Ошибка обработки',
+      },
+      statusClasses: {
+        idle: 'bg-slate-100 text-slate-600',
+        queued: 'bg-blue-50 text-blue-700',
+        running: 'bg-blue-50 text-blue-700',
+        completed: 'bg-emerald-50 text-emerald-700',
+        failed: 'bg-red-50 text-red-700',
+      },
 
-function openCreateDialog() {
-  Object.assign(form, {name: '', contract_number: '', period_start: '', period_end: '', target_row: ''})
-  store.commit('reports/patch', {createError: ''})
-  dialog.value?.showModal()
-}
-
-function closeCreateDialog() {
-  if (!saving.value) dialog.value?.close()
-}
-
-async function submitReport() {
-  const report: Report | null = await store.dispatch('reports/create', {...form})
-  if (!report) return
-  dialog.value?.close()
-  await router.push({name: 'report', params: {reportId: report.id}})
-}
-
-onMounted(loadReports)
+    }
+  },
+  computed: {
+    ...mapState('reports', ['loading', 'loadError', 'createError', 'saving', 'notice']),
+    reports(): Report[] {
+      return this.$store.state.reports.items
+    },
+  },
+  mounted() {
+    void this.loadReports()
+  },
+  methods: {
+    ...mapActions('reports', {loadReports: 'load', createReport: 'create'}),
+    formatDate(value: string) {
+      return dateFormatter.format(new Date(`${value}T00:00:00Z`))
+    },
+    openCreateDialog() {
+      Object.assign(this.form, {name: '', contract_number: '', period_start: '', period_end: '', target_row: ''})
+      this.$store.commit('reports/patch', {createError: ''})
+      const dialog = this.$refs.dialog as HTMLDialogElement
+      dialog.showModal()
+    },
+    closeCreateDialog() {
+      if (!this.saving) (this.$refs.dialog as HTMLDialogElement).close()
+    },
+    async submitReport() {
+      const report: Report | null = await this.createReport({...this.form})
+      if (!report) return
+      const dialog = this.$refs.dialog as HTMLDialogElement
+      dialog.close()
+      await this.$router.push({name: 'report', params: {reportId: report.id}})
+    },
+  },
+})
 </script>
 
 <template>
@@ -115,16 +128,18 @@ onMounted(loadReports)
           <thead class="border-y border-slate-200 bg-slate-50 text-slate-500">
           <tr>
             <th class="p-4 font-medium" scope="col">Название отчёта</th>
-            <th class="p-4 font-medium" scope="col">Период подтверждающих документов</th>
+            <th class="p-4 font-medium" scope="col">Период</th>
             <th class="p-4 font-medium" scope="col">Договор</th>
-            <th class="p-4 font-medium" scope="col">Этап и статус</th>
+            <th class="p-4 font-medium" scope="col">Этап</th>
+            <th class="p-4 font-medium" scope="col">Статус</th>
           </tr>
           </thead>
           <tbody class="divide-y divide-slate-200">
           <tr v-for="report in reports" :key="report.id">
             <td class="p-4">
-              <RouterLink :to="{name: 'report', params: {reportId: report.id}}"
-                          class="block max-w-sm font-medium break-all text-blue-700 hover:underline">{{ report.name }}
+              <RouterLink
+                  :to="{name: report.stage === 'verification' && report.processing_status === 'completed' ? 'requirements' : 'report', params: {reportId: report.id}}"
+                  class="block max-w-sm font-medium break-all text-blue-700 hover:underline">{{ report.name }}
               </RouterLink>
               <p v-if="report.target_row" class="mt-1 text-xs text-slate-500">{{ report.target_row }}</p>
             </td>
@@ -135,12 +150,12 @@ onMounted(loadReports)
               <span v-else class="text-slate-500">Не указан</span>
             </td>
             <td class="p-4">{{ report.contract_number || '—' }}</td>
+            <td class="p-4 text-xs whitespace-nowrap text-slate-500">{{ stages[report.stage] }}</td>
             <td class="p-4">
                   <span class="rounded px-2 py-1 text-xs whitespace-nowrap"
                         :class="statusClasses[report.processing_status]">
                     {{ statuses[report.processing_status] }}
                   </span>
-              <p class="mt-2 text-xs whitespace-nowrap text-slate-500">{{ stages[report.stage] }}</p>
             </td>
           </tr>
           </tbody>

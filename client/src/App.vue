@@ -1,5 +1,10 @@
-<script setup lang="ts">
+<script lang="ts">
+import {defineComponent} from 'vue'
 import {RouterLink, RouterView} from 'vue-router'
+
+export default defineComponent({
+  components: {RouterLink, RouterView},
+})
 </script>
 
 <template>
@@ -10,6 +15,6 @@ import {RouterLink, RouterView} from 'vue-router'
       </div>
     </header>
 
-    <RouterView />
+    <RouterView/>
   </div>
 </template>

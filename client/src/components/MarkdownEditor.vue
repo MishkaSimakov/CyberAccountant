@@ -1,70 +1,93 @@
-<script setup lang="ts">
-import {computed, onMounted, onUnmounted, readonly as readOnly, ref, toRefs, watch} from 'vue'
+<script lang="ts">
+import {defineComponent, type PropType} from 'vue'
+import {mapActions, mapGetters, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import {faFloppyDisk} from '@fortawesome/free-solid-svg-icons/faFloppyDisk'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import type {ReportDocument} from '../api'
-import {useStore} from '../store'
 import DocumentViewer from './viewers/DocumentViewer.vue'
 import MarkdownViewer from './viewers/MarkdownViewer.vue'
 
-const props = defineProps<{ reportId: number; document: ReportDocument; readonly: boolean; entities?: boolean }>()
-const emit = defineEmits<{ close: []; saved: [] }>()
-const dialog = ref<HTMLDialogElement | null>(null)
-const store = useStore()
-const {loading, saving, error, revision} = toRefs(readOnly(store.state.editor))
-const content = computed({
-  get: () => store.state.editor.content,
-  set: value => store.commit('editor/setContent', value),
-})
-const dirty = computed<boolean>(() => store.getters['editor/dirty'])
-const url = computed<string>(() => store.getters['editor/originalUrl'])
-const preview = ref(props.readonly || props.entities)
-const load = () => store.dispatch('editor/load')
-let restorePageScroll: (() => void) | undefined
-
-watch(() => props.readonly || props.entities, previewOnly => {
-  if (previewOnly) preview.value = true
-})
-
-function close() {
-  if (saving.value) return
-  if (dirty.value && !window.confirm('Закрыть документ без сохранения правок?')) return
-  emit('close')
-}
-
-async function save() {
-  if (props.readonly) return
-  if (await store.dispatch('editor/save')) emit('saved')
-}
-
-function saveEntity(updatedContent: string) {
-  if (props.readonly || saving.value || !revision.value) return
-  content.value = updatedContent
-  void save()
-}
-
-onMounted(() => {
-  const rootOverflow = document.documentElement.style.overflow
-  const bodyOverflow = document.body.style.overflow
-  document.documentElement.style.overflow = 'hidden'
-  document.body.style.overflow = 'hidden'
-  restorePageScroll = () => {
-    document.documentElement.style.overflow = rootOverflow
-    document.body.style.overflow = bodyOverflow
-  }
-  dialog.value?.showModal()
-})
-
-watch(() => [props.reportId, props.document.id] as const, ([reportId, documentId]) => {
-  preview.value = props.readonly || props.entities
-  void store.dispatch('editor/open', {reportId, documentId})
-}, {immediate: true})
-
-onUnmounted(() => {
-  restorePageScroll?.()
-  store.commit('editor/reset', null)
+export default defineComponent({
+  components: {FontAwesomeIcon, DocumentViewer, MarkdownViewer},
+  props: {
+    reportId: {type: Number, required: true},
+    document: {type: Object as PropType<ReportDocument>, required: true},
+    readonly: {type: Boolean, required: true},
+    entities: Boolean,
+  },
+  emits: ['close', 'saved'],
+  data() {
+    return {
+      preview: this.readonly || this.entities,
+      restorePageScroll: undefined as (() => void) | undefined,
+      faXmark, faFloppyDisk, faSpinner,
+    }
+  },
+  computed: {
+    ...mapState('editor', ['loading', 'saving', 'error', 'revision']),
+    ...mapGetters('editor', {dirty: 'dirty', url: 'originalUrl'}),
+    content: {
+      get(): string {
+        return this.$store.state.editor.content
+      },
+      set(value: string) {
+        this.$store.commit('editor/setContent', value)
+      },
+    },
+    previewOnly(): boolean {
+      return this.readonly || this.entities
+    },
+    documentKey(): string {
+      return `${this.reportId}/${this.document.id}`
+    },
+  },
+  watch: {
+    previewOnly(previewOnly: boolean) {
+      if (previewOnly) this.preview = true
+    },
+    documentKey: {
+      immediate: true,
+      handler() {
+        this.preview = this.previewOnly
+        void this.open({reportId: this.reportId, documentId: this.document.id})
+      },
+    },
+  },
+  mounted() {
+    const rootOverflow = document.documentElement.style.overflow
+    const bodyOverflow = document.body.style.overflow
+    document.documentElement.style.overflow = 'hidden'
+    document.body.style.overflow = 'hidden'
+    this.restorePageScroll = () => {
+      document.documentElement.style.overflow = rootOverflow
+      document.body.style.overflow = bodyOverflow
+    }
+    const dialog = this.$refs.dialog as HTMLDialogElement
+    dialog.showModal()
+  },
+  unmounted() {
+    this.restorePageScroll?.()
+    this.$store.commit('editor/reset', null)
+  },
+  methods: {
+    ...mapActions('editor', ['open', 'load']),
+    close() {
+      if (this.saving) return
+      if (this.dirty && !window.confirm('Закрыть документ без сохранения правок?')) return
+      this.$emit('close')
+    },
+    async save() {
+      if (this.readonly) return
+      if (await this.$store.dispatch('editor/save')) this.$emit('saved')
+    },
+    saveEntity(updatedContent: string) {
+      if (this.readonly || this.saving || !this.revision) return
+      this.content = updatedContent
+      void this.save()
+    },
+  },
 })
 </script>
 

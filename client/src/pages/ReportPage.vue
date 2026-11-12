@@ -1,59 +1,77 @@
-<script setup lang="ts">
-import {computed, onUnmounted, readonly, ref, toRefs, watch} from 'vue'
-import {RouterLink} from 'vue-router'
+<script lang="ts">
+import {defineComponent} from 'vue'
+import {mapActions, mapGetters, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faFileLines} from '@fortawesome/free-solid-svg-icons/faFileLines'
 import {faTrashCan} from '@fortawesome/free-solid-svg-icons/faTrashCan'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import {faCheck} from '@fortawesome/free-solid-svg-icons/faCheck'
 import {faRotateRight} from '@fortawesome/free-solid-svg-icons/faRotateRight'
-import type {DocumentRole, ReportDocument} from '../api'
-import {useStore} from '../store'
+import type {ReportDetails, ReportDocument} from '../api'
 import UploadZone from '../components/UploadZone.vue'
 import MarkdownEditor from '../components/MarkdownEditor.vue'
+import ReportHeader from '../components/ReportHeader.vue'
 
-const props = defineProps<{ reportId: number }>()
-const store = useStore()
-const {
-  current: report, loading, loadError, pollError, actionError, advancing, deleting, uploads,
-} = toRefs(readonly(store.state.report))
-const selected = ref<ReportDocument | null>(null)
-const finalPresent = computed<boolean>(() => store.getters['report/finalPresent'])
-const canAdvance = computed<boolean>(() => store.getters['report/canAdvance'])
-const advanceTooltip = computed<string>(() => store.getters['report/advanceTooltip'])
-const refresh = () => store.dispatch('report/refresh')
-const addFiles = (files: File[], role: DocumentRole) => store.dispatch('report/addFiles', {files, role})
-const remove = (document: ReportDocument) => store.dispatch('report/remove', document.id)
-const advance = () => store.dispatch('report/advance')
-const dismissUpload = (id: number) => store.dispatch('report/dismissUpload', id)
-const steps = [
-  {stage: 'documents', title: 'Загрузка документов'},
-  {stage: 'entities', title: 'Разметка сущностей'},
-  {stage: 'verification', title: 'Проверка требований'},
-]
-const stageIndex = computed(() => steps.findIndex(step => step.stage === report.value?.stage))
-const statusLabels: Record<ReportDocument['ocr_status'], string> = {
-  queued: 'Загружен · в очереди',
-  running: 'Обрабатывается',
-  completed: 'Обработан',
-  failed: 'Ошибка'
-}
-
-function sizeLabel(size: number) {
-  return size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} КБ` : `${(size / 1024 / 1024).toFixed(1)} МБ`
-}
-
-watch(() => props.reportId, id => {
-  selected.value = null
-  void store.dispatch('report/start', id)
-}, {immediate: true})
-onUnmounted(() => void store.dispatch('report/stop'))
+export default defineComponent({
+  components: {FontAwesomeIcon, UploadZone, MarkdownEditor, ReportHeader},
+  props: {reportId: {type: Number, required: true}},
+  data() {
+    return {
+      selected: null as ReportDocument | null,
+      faFileLines, faTrashCan, faSpinner, faCheck, faRotateRight,
+      steps: [
+        {stage: 'documents', title: 'Загрузка документов'},
+        {stage: 'entities', title: 'Разметка сущностей'},
+        {stage: 'verification', title: 'Проверка требований'},
+      ],
+      statusLabels: {
+        queued: 'Загружен · в очереди',
+        running: 'Обрабатывается',
+        completed: 'Обработан',
+        failed: 'Ошибка',
+      },
+    }
+  },
+  computed: {
+    ...mapState('report', ['loading', 'loadError', 'pollError', 'actionError', 'advancing', 'deleting', 'uploads']),
+    ...mapGetters('report', ['finalPresent', 'canAdvance', 'advanceTooltip']),
+    report(): ReportDetails | null {
+      return this.$store.state.report.current
+    },
+    stageIndex(): number {
+      return this.steps.findIndex(step => step.stage === this.report?.stage)
+    },
+    completed(): boolean {
+      return this.report?.stage === 'verification' && this.report.processing_status === 'completed'
+    },
+  },
+  watch: {
+    completed(completed: boolean) {
+      if (completed) void this.$router.replace({name: 'requirements', params: {reportId: this.reportId}})
+    },
+    reportId: {
+      immediate: true,
+      handler(id: number) {
+        this.selected = null
+        void this.start(id)
+      },
+    },
+  },
+  unmounted() {
+    void this.stop()
+  },
+  methods: {
+    ...mapActions('report', ['start', 'stop', 'refresh', 'addFiles', 'remove', 'advance', 'dismissUpload']),
+    sizeLabel(size: number) {
+      return size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} КБ` : `${(size / 1024 / 1024).toFixed(1)} МБ`
+    },
+  },
+})
 </script>
 
 <template>
   <main class="mx-auto max-w-6xl p-6">
-    <RouterLink :to="{name: 'reports'}" class="mb-5 inline-block text-slate-500 hover:text-blue-700">← Все отчёты
-    </RouterLink>
+    <ReportHeader :report="completed ? null : report"/>
     <p v-if="loading" class="rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500" role="status">
       Загружаем отчёт…</p>
     <div v-else-if="!report" class="space-y-4 rounded-lg border border-slate-200 bg-white p-8 text-center">
@@ -63,17 +81,9 @@ onUnmounted(() => void store.dispatch('report/stop'))
       </button>
     </div>
 
-    <template v-if="report">
-      <h1 class="break-words text-2xl font-semibold sm:text-3xl">{{ report.name }}</h1>
-      <div class="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-slate-500">
-        <span v-if="report.contract_number">Договор: {{ report.contract_number }}</span>
-        <span v-if="report.period_start && report.period_end">Период: {{
-            report.period_start.split('-').reverse().join('.')
-          }} — {{ report.period_end.split('-').reverse().join('.') }}</span>
-        <span v-if="report.target_row">Строка: {{ report.target_row }}</span>
-      </div>
-
-      <nav class="my-6 overflow-hidden rounded-lg border border-slate-200 bg-white" aria-label="Этапы проверки отчёта">
+    <template v-if="report && !completed">
+      <nav class="my-6 overflow-hidden rounded-lg border border-slate-200 bg-white"
+           aria-label="Этапы проверки отчёта">
         <ol class="grid divide-y divide-slate-200 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
           <li v-for="(step, index) in steps" :key="step.stage" class="flex items-center gap-3 p-4"
               :class="index === stageIndex ? 'bg-blue-50' : ''"
@@ -91,20 +101,42 @@ onUnmounted(() => void store.dispatch('report/stop'))
       <p v-if="pollError" class="mb-4 rounded bg-amber-50 p-3 text-amber-900" role="status">{{ pollError }}</p>
       <p v-if="actionError" class="mb-4 rounded bg-red-50 p-3 text-red-700" role="alert">{{ actionError }}</p>
 
+      <section v-if="report.stage === 'verification'"
+               class="rounded-lg border border-slate-200 bg-white p-10 text-center"
+               :aria-busy="report.processing_status !== 'failed'" aria-labelledby="verification-heading">
+        <template v-if="report.processing_status === 'failed'">
+          <h2 id="verification-heading" class="text-lg font-semibold">Не удалось проверить требования</h2>
+          <p class="mt-3 text-slate-500" role="alert">Во время проверки произошла ошибка. Попробуйте запустить её
+            снова.</p>
+          <button
+              class="mt-5 cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50"
+              :disabled="!canAdvance" @click="advance">{{ advancing ? 'Запускаем…' : 'Повторить проверку' }}
+          </button>
+        </template>
+        <template v-else>
+          <FontAwesomeIcon :icon="faSpinner" class="mb-4 size-8 animate-spin text-blue-600" aria-hidden="true"/>
+          <h2 id="verification-heading" class="text-lg font-semibold">Проверяем требования</h2>
+          <p class="mt-3 text-slate-500" role="status">Выделяем требования и сверяем их с документами. Это может занять
+            некоторое время.</p>
+          <p class="mt-2 text-slate-500">Результаты появятся автоматически. Можно вернуться к отчёту позже.</p>
+        </template>
+      </section>
+
       <section v-if="report.stage === 'documents'" class="mb-5 rounded-lg border border-slate-200 bg-white p-5"
                aria-labelledby="upload-heading">
         <h2 id="upload-heading" class="text-lg font-semibold">Загрузите документы</h2>
 
         <div class="mt-5 grid gap-4 sm:grid-cols-2">
           <UploadZone title="Итоговый отчёт" description="Один файл с показателями для проверки"
-                      :disabled="finalPresent || advancing" @select="addFiles($event, 'final_report')"/>
+                      :disabled="finalPresent || advancing" @select="addFiles({files: $event, role: 'final_report'})"/>
           <UploadZone title="Подтверждающие документы" description="Первичные и расчётные документы" multiple
-                      :disabled="advancing" @select="addFiles($event, 'supporting')"/>
+                      :disabled="advancing" @select="addFiles({files: $event, role: 'supporting'})"/>
         </div>
         <p class="mt-3 text-xs text-slate-500">PDF, DOCX, XLSX, PNG, JPEG · до 20 МБ на файл.</p>
       </section>
 
-      <section class="rounded-lg border border-slate-200 bg-white" aria-labelledby="documents-heading">
+      <section v-if="report.stage !== 'verification'" class="rounded-lg border border-slate-200 bg-white"
+               aria-labelledby="documents-heading">
         <div class="flex flex-wrap items-center justify-between gap-3 p-4">
           <h2 id="documents-heading" class="font-semibold">Документы <span
               class="ml-2 text-slate-500">{{ report.documents.length + uploads.length }}</span></h2>
@@ -162,7 +194,7 @@ onUnmounted(() => void store.dispatch('report/stop'))
               <button v-if="report.stage === 'documents'"
                       class="inline-flex h-7 cursor-pointer items-center rounded px-3 text-xs leading-none text-slate-500 hover:bg-red-50 hover:text-red-700 disabled:opacity-50"
                       :aria-label="`Удалить ${document.name}`" :disabled="deleting.includes(document.id) || advancing"
-                      @click="remove(document)">
+                      @click="remove(document.id)">
                 <FontAwesomeIcon :icon="faTrashCan" class="size-3" aria-hidden="true"/>
                 <span v-if="deleting.includes(document.id)" class="ml-2">Удаляем…</span></button>
             </div>
@@ -170,12 +202,14 @@ onUnmounted(() => void store.dispatch('report/stop'))
         </ul>
       </section>
 
-      <div v-if="report.stage === 'documents'" class="mt-6 flex flex-wrap items-start justify-end gap-4">
+      <div v-if="report.stage !== 'verification'" class="mt-6 flex flex-wrap items-start justify-end gap-4">
         <div class="sm:text-right" :class="{'cursor-not-allowed': !canAdvance}"
              :title="!canAdvance ? advanceTooltip : undefined">
           <button
               class="cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-50"
-              :disabled="!canAdvance" @click="advance">{{ advancing ? 'Переходим…' : 'К разметке сущностей →' }}
+              :disabled="!canAdvance" @click="advance">{{
+              advancing ? 'Переходим…' : report.stage === 'documents' ? 'К разметке сущностей →' : 'Проверить требования →'
+            }}
           </button>
         </div>
       </div>

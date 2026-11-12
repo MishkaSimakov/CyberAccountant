@@ -1,10 +1,18 @@
-<script setup lang="ts">
-import {defineAsyncComponent} from 'vue'
+<script lang="ts">
+import {defineAsyncComponent, defineComponent} from 'vue'
 import ImageViewer from './ImageViewer.vue'
 
-defineProps<{ src: string; name: string; contentType: string }>()
-
-const PdfViewer = defineAsyncComponent(() => import('./PdfViewer.vue'))
+export default defineComponent({
+  components: {
+    ImageViewer,
+    PdfViewer: defineAsyncComponent(() => import('./PdfViewer.vue')),
+  },
+  props: {
+    src: {type: String, required: true},
+    name: {type: String, required: true},
+    contentType: {type: String, required: true},
+  },
+})
 </script>
 
 <template>

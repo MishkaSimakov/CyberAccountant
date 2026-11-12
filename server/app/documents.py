@@ -45,7 +45,7 @@ class Document(BaseModel):
     content_type: str
     role: Literal["final_report", "supporting"]
     ocr_status: Literal["queued", "running", "completed", "failed"] = "queued"
-    extraction_status: Literal["idle"] = "idle"
+    extraction_status: Literal["idle", "completed"] = "idle"
     markdown_revision: int = 0
     user_edited: bool = False
     error: str | None = None
@@ -148,10 +148,10 @@ async def simulate_ocr(report_id: int, document_id: int):
         document.error = "Файл повреждён или его содержимое не соответствует расширению. Удалите его и загрузите исправленный файл."
     else:
         content = (
-            f"# {document.name}\n\n"
-            "> Демонстрационный результат: OCR пока работает как заглушка. "
-            "Ниже приведён пример текста с сущностями. Текст документа не распознан.\n\n"
-            + assign_entity_ids(MOCK_PAYROLL_MARKDOWN)
+                f"# {document.name}\n\n"
+                "> Демонстрационный результат: OCR пока работает как заглушка. "
+                "Ниже приведён пример текста с сущностями. Текст документа не распознан.\n\n"
+                + assign_entity_ids(MOCK_PAYROLL_MARKDOWN)
         )
         revisions[document_id] = [MarkdownRevision(content=content, revision=1)]
         document.markdown_revision = 1
@@ -169,7 +169,13 @@ async def report_details(report_id: int):
         "documents": items,
         "progress": {"completed": sum(item.ocr_status == "completed" for item in items), "total": len(items)},
         "blockers": blockers,
-        "available_actions": ["run_entity_extraction"] if not blockers and report.stage == "documents" else [],
+        "available_actions": (
+            ["run_entity_extraction"] if not blockers and report.stage == "documents"
+            else ["run_verification"] if not blockers and (
+                    report.stage == "entities" and all(item.extraction_status == "completed" for item in items)
+                    or report.stage == "verification" and report.processing_status == "failed"
+            ) else []
+        ),
         "processing_mode": "stub",
     }
 
@@ -271,7 +277,9 @@ async def run_entity_extraction(report_id: int):
     blockers = blockers_for(list(documents.get(report_id, {}).values()))
     if blockers:
         raise HTTPException(409, " ".join(blockers))
-    # The next stage is a placeholder; no entity processing is simulated yet.
+    # OCR fixtures already contain entity markup; extraction is immediate in stub mode.
+    for item in documents.get(report_id, {}).values():
+        item.extraction_status = "completed"
     report.stage = "entities"
     report.processing_status = "idle"
     return await report_details(report_id)

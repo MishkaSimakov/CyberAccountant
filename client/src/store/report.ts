@@ -1,6 +1,6 @@
 import type {Module} from 'vuex'
 import {
-    deleteDocument, getReport, runEntityExtraction, uploadDocument,
+    deleteDocument, getReport, runEntityExtraction, runVerification, uploadDocument,
     type DocumentRole, type ReportDetails, type ReportDocument,
 } from '../api'
 import type {RootState} from './index'
@@ -46,9 +46,9 @@ export const report: Module<ReportState, RootState> = {
         editable: state => state.current?.stage === 'documents' && !state.advancing,
         finalPresent: state => Boolean(state.current?.documents.some(item => item.role === 'final_report')
             || state.uploads.some(item => item.role === 'final_report')),
-        canAdvance: (state, getters) => Boolean(getters.editable && !state.pollError && !state.uploads.length
+        canAdvance: state => Boolean(!state.advancing && !state.pollError && !state.uploads.length
             && !state.deleting.length && state.current?.documents.every(item => item.ocr_status === 'completed')
-            && state.current?.available_actions.includes('run_entity_extraction')),
+            && state.current?.available_actions.some(action => ['run_entity_extraction', 'run_verification'].includes(action))),
         advanceTooltip: state => [
             ...(state.current?.blockers ?? []),
             ...(state.uploads.length ? ['Дождитесь загрузки файлов и удалите неудачные загрузки.'] : []),
@@ -91,7 +91,8 @@ export const report: Module<ReportState, RootState> = {
         async poll({state, dispatch}) {
             const session = state.session
             await dispatch('refresh')
-            if (state.id !== null && state.session === session) {
+            if (state.id !== null && state.session === session
+                && !(state.current?.stage === 'verification' && state.current.processing_status === 'completed')) {
                 timer = setTimeout(() => void dispatch('poll'), 2000)
             }
         },
@@ -170,7 +171,8 @@ export const report: Module<ReportState, RootState> = {
             const session = state.session
             commit('patch', {advancing: true, actionError: '', request: state.request + 1})
             try {
-                const current = await runEntityExtraction(state.id)
+                const current = await (state.current?.stage === 'documents'
+                    ? runEntityExtraction(state.id) : runVerification(state.id))
                 if (state.session !== session) return
                 commit('patch', {current})
                 commit('reports/upsert', current, {root: true})

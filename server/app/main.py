@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException
 from starlette.types import Scope
 
 from .documents import router as document_router
+from .requirements import router as requirements_router
 
 app = FastAPI(title="Cyber Accountant API")
 api = APIRouter(prefix="/api/v1")
@@ -71,6 +72,7 @@ async def create_report(payload: ReportCreate):
 
 
 api.include_router(document_router)
+api.include_router(requirements_router)
 app.include_router(api)
 
 

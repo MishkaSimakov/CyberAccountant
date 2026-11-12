@@ -1,19 +1,7 @@
-<script setup lang="ts">
-import {computed, nextTick, onMounted, onUnmounted, ref, shallowRef, useId, watch} from 'vue'
+<script lang="ts">
+import {defineComponent, markRaw} from 'vue'
 import {Marked, type Token, type Tokens} from 'marked'
 import {sourceRanges, textOffsets, type SourceRange} from './entitySource'
-
-const props = withDefaults(defineProps<{ content: string; readonly?: boolean; entities?: boolean }>(), {
-  readonly: true,
-  entities: false,
-})
-const emit = defineEmits<{ 'update:content': [content: string] }>()
-const viewer = ref<HTMLDivElement | null>(null)
-const popup = ref<HTMLDivElement | null>(null)
-const closeButton = ref<HTMLButtonElement | null>(null)
-const valueInput = ref<HTMLInputElement | null>(null)
-const popupId = useId()
-const attributeNames = ['id', 'type', 'value', 'unit'] as const
 
 interface Entity {
   text: string
@@ -28,40 +16,6 @@ interface TextSegment extends SourceRange {
   offsets: number[]
 }
 
-const selected = shallowRef<Entity | null>(null)
-const selection = shallowRef<Entity | null>(null)
-const selectionError = ref('')
-const draftType = ref('id')
-const draftValue = ref('')
-const draftUnit = ref('string')
-const position = ref({left: '0px', top: '0px'})
-let anchor: HTMLElement | null = null
-let selectionRect: DOMRect | null = null
-let selectionPointerId: number | null = null
-let selectionTimer: ReturnType<typeof setTimeout> | undefined
-
-const units = computed(() => draftType.value === 'number' ? ['rubles', 'euros', 'kg']
-    : draftType.value === 'date' ? ['date'] : ['string'])
-watch(draftType, () => {
-  if (!units.value.includes(draftUnit.value)) draftUnit.value = units.value[0]!
-})
-const valueError = computed(() => {
-  if (!draftValue.value.trim()) return 'Укажите значение.'
-  if (draftType.value === 'number' && !/^-?\d+(?:\.\d+)?$/.test(draftValue.value)) {
-    return 'Укажите число с точкой, без пробелов: 1015500.00.'
-  }
-  if (draftType.value === 'date') {
-    const value = draftValue.value
-    if (!/^\d{4}(?:-\d{2}){0,2}$/.test(value)) return 'Используйте формат YYYY, YYYY-MM или YYYY-MM-DD.'
-    const full = value.length === 4 ? `${value}-01-01` : value.length === 7 ? `${value}-01` : value
-    const date = new Date(`${full}T00:00:00Z`)
-    if (value.startsWith('0000') || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== full) {
-      return 'Укажите существующую дату.'
-    }
-  }
-  return ''
-})
-
 function escapeHtml(text: string) {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -73,237 +27,298 @@ function decodeText(text: string) {
   return textarea.value
 }
 
-const rendered = computed(() => {
-  const entities: Entity[] = []
-  const segments: TextSegment[] = []
-  let ranges = new Map<Token, SourceRange>()
+let nextPopupId = 0
 
-  function tokenizeEntity(src: string) {
-    const match = /^<entity\b((?:"[^"]*"|'[^']*'|[^'">])*)>([\s\S]*?)<\/entity\s*>/i.exec(src)
-    if (!match) return
-    const attributes: Entity['attributes'] = {}
-    for (const attribute of match[1]!.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
-      attributes[attribute[1]!.toLowerCase()] = decodeText(attribute[2] ?? attribute[3] ?? '')
+export default defineComponent({
+  props: {
+    content: {type: String, required: true},
+    readonly: {type: Boolean, default: true},
+    entities: Boolean,
+  },
+  emits: {'update:content': (_content: string) => true},
+  data() {
+    return {
+      popupId: `entity-popup-${++nextPopupId}`,
+      attributeNames: ['id', 'type', 'value', 'unit'] as const,
+      selected: null as Entity | null,
+      selection: null as Entity | null,
+      selectionError: '',
+      draftType: 'id',
+      draftValue: '',
+      draftUnit: 'string',
+      position: {left: '0px', top: '0px'},
+      anchor: null as HTMLElement | null,
+      selectionRect: null as DOMRect | null,
+      selectionPointerId: null as number | null,
+      selectionTimer: undefined as ReturnType<typeof setTimeout> | undefined,
     }
-    return {type: 'entity', raw: match[0], text: decodeText(match[2]!), body: match[2]!, attributes}
-  }
-
-  function renderEntity(token: Tokens.Generic) {
-    if (!props.entities) return escapeHtml(token.text)
-    const start = props.content.indexOf(token.raw)
-    const uniqueRange = start >= 0 && props.content.indexOf(token.raw, start + 1) < 0
-        ? {start, end: start + token.raw.length} : undefined
-    const index = entities.push({
-      text: token.text,
-      body: token.body,
-      attributes: token.attributes,
-      range: ranges.get(token) ?? uniqueRange
-    }) - 1
-    return `<button type="button" class="entity-highlight" data-entity-index="${index}" aria-haspopup="dialog" aria-controls="${escapeHtml(popupId)}" aria-expanded="false" title="Атрибуты сущности">${escapeHtml(token.text)}</button>`
-  }
-
-  const parser = new Marked({
-    gfm: true,
-    renderer: {
-      html: ({text}) => escapeHtml(text),
-      text(token) {
-        if ('tokens' in token && token.tokens) return this.parser.parseInline(token.tokens)
-        const range = ranges.get(token)
-        const decoded = decodeText(token.text)
-        const html = escapeHtml(decoded)
-        if (!props.entities || !range || token.raw !== token.text) return html
-        const segment = {...range, ...textOffsets(token.raw, decodeText)}
-        const index = segments.push(segment) - 1
-        return `<span data-source-index="${index}">${html}</span>`
-      },
-      link({href, title, tokens}) {
-        const text = this.parser.parseInline(tokens)
-        if (!['http:', 'https:', 'mailto:'].includes(new URL(href, window.location.href).protocol)) return text
-        return `<a href="${escapeHtml(href)}" title="${escapeHtml(title ?? '')}" target="_blank" rel="noopener noreferrer">${text}</a>`
-      },
+  },
+  computed: {
+    units(): string[] {
+      return this.draftType === 'number' ? ['rubles', 'euros', 'kg']
+          : this.draftType === 'date' ? ['date'] : ['string']
     },
-    extensions: [
-      {
-        name: 'entity',
-        level: 'inline',
-        start: src => src.search(/<entity\b/i),
-        tokenizer: tokenizeEntity,
-        renderer: renderEntity
-      },
-      {
-        name: 'blockEntity', level: 'block', tokenizer(src) {
-          const token = tokenizeEntity(src)
-          if (token) return {...token, type: 'blockEntity'}
-        }, renderer: token => `<p>${renderEntity(token)}</p>`
-      },
-    ],
-  })
-  const tokens = parser.lexer(props.content)
-  if (props.entities) ranges = sourceRanges(props.content, tokens)
-  return {html: parser.parser(tokens), entities, segments}
-})
+    valueError(): string {
+      if (!this.draftValue.trim()) return 'Укажите значение.'
+      if (this.draftType === 'number' && !/^-?\d+(?:\.\d+)?$/.test(this.draftValue)) {
+        return 'Укажите число с точкой, без пробелов: 1015500.00.'
+      }
+      if (this.draftType === 'date') {
+        const value = this.draftValue
+        if (!/^\d{4}(?:-\d{2}){0,2}$/.test(value)) return 'Используйте формат YYYY, YYYY-MM или YYYY-MM-DD.'
+        const full = value.length === 4 ? `${value}-01-01` : value.length === 7 ? `${value}-01` : value
+        const date = new Date(`${full}T00:00:00Z`)
+        if (value.startsWith('0000') || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== full) {
+          return 'Укажите существующую дату.'
+        }
+      }
+      return ''
+    },
+    rendered(): { html: string; entities: Entity[]; segments: TextSegment[] } {
+      const content = this.content
+      const showEntities = this.entities
+      const popupId = this.popupId
 
-function dismiss(restoreFocus = false) {
-  popup.value?.hidePopover()
-  if (restoreFocus) (anchor ?? viewer.value)?.focus({preventScroll: true})
-  resetPopup()
-}
+      const entities: Entity[] = []
+      const segments: TextSegment[] = []
+      let ranges = new Map<Token, SourceRange>()
 
-function resetPopup() {
-  anchor?.setAttribute('aria-expanded', 'false')
-  anchor = null
-  selected.value = null
-  selection.value = null
-  selectionRect = null
-}
+      function tokenizeEntity(src: string) {
+        const match = /^<entity\b((?:"[^"]*"|'[^']*'|[^'">])*)>([\s\S]*?)<\/entity\s*>/i.exec(src)
+        if (!match) return
+        const attributes: Entity['attributes'] = {}
+        for (const attribute of match[1]!.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+          attributes[attribute[1]!.toLowerCase()] = decodeText(attribute[2] ?? attribute[3] ?? '')
+        }
+        return {type: 'entity', raw: match[0], text: decodeText(match[2]!), body: match[2]!, attributes}
+      }
 
-function onToggle(event: ToggleEvent) {
-  if (event.newState === 'closed' && !popup.value?.matches(':popover-open')) {
-    resetPopup()
-  }
-}
+      function renderEntity(token: Tokens.Generic) {
+        if (!showEntities) return escapeHtml(token.text)
+        const start = content.indexOf(token.raw)
+        const uniqueRange = start >= 0 && content.indexOf(token.raw, start + 1) < 0
+            ? {start, end: start + token.raw.length} : undefined
+        const index = entities.push({
+          text: token.text,
+          body: token.body,
+          attributes: token.attributes,
+          range: ranges.get(token) ?? uniqueRange
+        }) - 1
+        return `<button type="button" class="entity-highlight" data-entity-index="${index}" aria-haspopup="dialog" aria-controls="${escapeHtml(popupId)}" aria-expanded="false" title="Атрибуты сущности">${escapeHtml(token.text)}</button>`
+      }
 
-function positionPopup(rect: DOMRect) {
-  if (!popup.value) return
-  const {width, height} = popup.value.getBoundingClientRect()
-  const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))
-  const top = rect.bottom + height + 8 <= window.innerHeight - 12
-      ? rect.bottom + 8 : Math.max(12, rect.top - height - 8)
-  position.value = {left: `${left}px`, top: `${top}px`}
-}
-
-async function open(entity: Entity, button: HTMLElement | null, rect: DOMRect) {
-  anchor?.setAttribute('aria-expanded', 'false')
-  anchor = button
-  selected.value = entity
-  selection.value = null
-  draftType.value = ['id', 'date', 'number'].includes(entity.attributes.type ?? '') ? entity.attributes.type! : 'id'
-  draftValue.value = entity.attributes.value ?? entity.text
-  draftUnit.value = units.value.includes(entity.attributes.unit ?? '') ? entity.attributes.unit! : units.value[0]!
-  await nextTick()
-  if (!popup.value || selected.value !== entity || (button && !button.isConnected)) return
-  popup.value.showPopover()
-  button?.setAttribute('aria-expanded', 'true')
-  positionPopup(rect)
-  const focusTarget = props.readonly ? closeButton.value : valueInput.value
-  focusTarget?.focus({preventScroll: true})
-}
-
-function inspect(event: MouseEvent) {
-  if (!props.entities) return
-  if (event.detail && window.getSelection()?.toString()) return
-  const button = (event.target as Element).closest<HTMLButtonElement>('button[data-entity-index]')
-  if (!button) return
-  const entity = rendered.value.entities[Number(button.dataset.entityIndex)]
-  if (!entity) return
-  if (anchor === button && popup.value?.matches(':popover-open')) {
-    dismiss(true)
-    return
-  }
-  void open(entity, button, button.getBoundingClientRect())
-}
-
-async function captureSelection() {
-  if (!props.entities || props.readonly || selected.value || selectionPointerId !== null || selectionTimer !== undefined) return
-  dismiss()
-  selectionError.value = ''
-  const current = window.getSelection()
-  if (!current?.rangeCount || current.isCollapsed || !current.toString().trim()) return
-  const range = current.getRangeAt(0)
-  if (!viewer.value?.contains(range.commonAncestorContainer)) return
-  const start = range.startContainer
-  const span = start.parentElement?.closest<HTMLElement>('[data-source-index]')
-  if (start.nodeType !== Node.TEXT_NODE || start !== range.endContainer || !span) {
-    selectionError.value = 'Выделите фрагмент внутри одного участка текста, без пересечения сущностей и форматирования.'
-    return
-  }
-  const segment = rendered.value.segments[Number(span.dataset.sourceIndex)]
-  if (!segment || start.textContent !== segment.text) return
-  const from = segment.offsets[range.startOffset]
-  const to = segment.offsets[range.endOffset]
-  if (from === undefined || to === undefined || from === to) return
-  const entity: Entity = {
-    text: current.toString(), body: escapeHtml(current.toString()), attributes: {},
-    range: {start: segment.start + from, end: segment.start + to},
-    isNew: true,
-  }
-  selection.value = entity
-  selectionRect = range.getBoundingClientRect()
-  await nextTick()
-  if (!popup.value || selection.value !== entity || selected.value) return
-  popup.value.showPopover()
-  positionPopup(selectionRect)
-}
-
-function beginSelection(event: PointerEvent) {
-  if (!props.entities || props.readonly || event.button !== 0) return
-  clearTimeout(selectionTimer)
-  selectionTimer = undefined
-  selectionPointerId = event.pointerId
-  dismiss()
-}
-
-function finishSelection(event: PointerEvent) {
-  if (selectionPointerId !== event.pointerId) return
-  selectionPointerId = null
-  // Opening during the drag lets the release click light-dismiss the new popover.
-  // Wait until that click has completed before showing the selection action.
-  selectionTimer = setTimeout(() => {
-    selectionTimer = undefined
-    void captureSelection()
-  }, 0)
-}
-
-function addEntity() {
-  if (!props.entities || props.readonly || !selection.value || !selectionRect) return
-  void open(selection.value, null, selectionRect)
-}
-
-function apply() {
-  const entity = selected.value
-  if (!props.entities || props.readonly || !entity?.range || valueError.value) return
-  const id = entity.attributes.id ? ` id="${escapeHtml(entity.attributes.id)}"` : ''
-  const markup = `<entity type="${draftType.value}" value="${escapeHtml(draftValue.value)}" unit="${draftUnit.value}"${id}>${entity.body}</entity>`
-  replaceEntity(markup)
-}
-
-function removeEntity() {
-  const entity = selected.value
-  if (!entity || entity.isNew) return
-  replaceEntity(entity.body)
-}
-
-function replaceEntity(markup: string) {
-  const entity = selected.value
-  if (!props.entities || props.readonly || !entity?.range) return
-  dismiss()
-  window.getSelection()?.removeAllRanges()
-  emit('update:content', props.content.slice(0, entity.range.start) + markup + props.content.slice(entity.range.end))
-  viewer.value?.focus({preventScroll: true})
-}
-
-const onResize = () => dismiss()
-watch(() => props.content, () => {
-  dismiss()
-  selection.value = null
-  selectionError.value = ''
-})
-watch(() => [props.readonly, props.entities], () => {
-  dismiss()
-  selection.value = null
-})
-onMounted(() => {
-  window.addEventListener('resize', onResize)
-  document.addEventListener('selectionchange', captureSelection)
-  document.addEventListener('pointerup', finishSelection)
-  document.addEventListener('pointercancel', finishSelection)
-})
-onUnmounted(() => {
-  window.removeEventListener('resize', onResize)
-  document.removeEventListener('selectionchange', captureSelection)
-  document.removeEventListener('pointerup', finishSelection)
-  document.removeEventListener('pointercancel', finishSelection)
-  clearTimeout(selectionTimer)
+      const parser = new Marked({
+        gfm: true,
+        renderer: {
+          html: ({text}) => escapeHtml(text),
+          text(token) {
+            if ('tokens' in token && token.tokens) return this.parser.parseInline(token.tokens)
+            const range = ranges.get(token)
+            const decoded = decodeText(token.text)
+            const html = escapeHtml(decoded)
+            if (!showEntities || !range || token.raw !== token.text) return html
+            const segment = {...range, ...textOffsets(token.raw, decodeText)}
+            const index = segments.push(segment) - 1
+            return `<span data-source-index="${index}">${html}</span>`
+          },
+          link({href, title, tokens}) {
+            const text = this.parser.parseInline(tokens)
+            if (!['http:', 'https:', 'mailto:'].includes(new URL(href, window.location.href).protocol)) return text
+            return `<a href="${escapeHtml(href)}" title="${escapeHtml(title ?? '')}" target="_blank" rel="noopener noreferrer">${text}</a>`
+          },
+        },
+        extensions: [
+          {
+            name: 'entity',
+            level: 'inline',
+            start: src => src.search(/<entity\b/i),
+            tokenizer: tokenizeEntity,
+            renderer: renderEntity
+          },
+          {
+            name: 'blockEntity', level: 'block', tokenizer(src) {
+              const token = tokenizeEntity(src)
+              if (token) return {...token, type: 'blockEntity'}
+            }, renderer: token => `<p>${renderEntity(token)}</p>`
+          },
+        ],
+      })
+      const tokens = parser.lexer(content)
+      if (showEntities) ranges = sourceRanges(content, tokens)
+      return {html: parser.parser(tokens), entities, segments}
+    },
+  },
+  watch: {
+    draftType() {
+      if (!this.units.includes(this.draftUnit)) this.draftUnit = this.units[0]!
+    },
+    content() {
+      this.dismiss()
+      this.selection = null
+      this.selectionError = ''
+    },
+    readonly() {
+      this.dismiss()
+    },
+    entities() {
+      this.dismiss()
+    },
+  },
+  mounted() {
+    window.addEventListener('resize', this.onResize)
+    document.addEventListener('selectionchange', this.captureSelection)
+    document.addEventListener('pointerup', this.finishSelection)
+    document.addEventListener('pointercancel', this.finishSelection)
+  },
+  beforeUnmount() {
+    window.removeEventListener('resize', this.onResize)
+    document.removeEventListener('selectionchange', this.captureSelection)
+    document.removeEventListener('pointerup', this.finishSelection)
+    document.removeEventListener('pointercancel', this.finishSelection)
+    clearTimeout(this.selectionTimer)
+  },
+  methods: {
+    onResize() {
+      this.dismiss()
+    },
+    dismiss(restoreFocus = false) {
+      const popup = this.$refs.popup as HTMLDivElement | undefined
+      const viewer = this.$refs.viewer as HTMLDivElement | undefined
+      popup?.hidePopover()
+      if (restoreFocus) (this.anchor ?? viewer)?.focus({preventScroll: true})
+      this.resetPopup()
+    },
+    resetPopup() {
+      this.anchor?.setAttribute('aria-expanded', 'false')
+      this.anchor = null
+      this.selected = null
+      this.selection = null
+      this.selectionRect = null
+    },
+    onToggle(event: ToggleEvent) {
+      const popup = this.$refs.popup as HTMLDivElement | undefined
+      if (event.newState === 'closed' && !popup?.matches(':popover-open')) {
+        this.resetPopup()
+      }
+    },
+    positionPopup(rect: DOMRect) {
+      const popup = this.$refs.popup as HTMLDivElement | undefined
+      if (!popup) return
+      const {width, height} = popup.getBoundingClientRect()
+      const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))
+      const top = rect.bottom + height + 8 <= window.innerHeight - 12
+          ? rect.bottom + 8 : Math.max(12, rect.top - height - 8)
+      this.position = {left: `${left}px`, top: `${top}px`}
+    },
+    async open(entity: Entity, button: HTMLElement | null, rect: DOMRect) {
+      this.anchor?.setAttribute('aria-expanded', 'false')
+      this.anchor = button
+      this.selected = markRaw(entity)
+      this.selection = null
+      this.draftType = ['id', 'date', 'number'].includes(entity.attributes.type ?? '') ? entity.attributes.type! : 'id'
+      this.draftValue = entity.attributes.value ?? entity.text
+      this.draftUnit = this.units.includes(entity.attributes.unit ?? '') ? entity.attributes.unit! : this.units[0]!
+      await this.$nextTick()
+      const popup = this.$refs.popup as HTMLDivElement | undefined
+      const closeButton = this.$refs.closeButton as HTMLButtonElement | undefined
+      const valueInput = this.$refs.valueInput as HTMLInputElement | undefined
+      if (!popup || this.selected !== entity || (button && !button.isConnected)) return
+      popup.showPopover()
+      button?.setAttribute('aria-expanded', 'true')
+      this.positionPopup(rect)
+      const focusTarget = this.readonly ? closeButton : valueInput
+      focusTarget?.focus({preventScroll: true})
+    },
+    inspect(event: MouseEvent) {
+      const popup = this.$refs.popup as HTMLDivElement | undefined
+      if (!this.entities) return
+      if (event.detail && window.getSelection()?.toString()) return
+      const button = (event.target as Element).closest<HTMLButtonElement>('button[data-entity-index]')
+      if (!button) return
+      const entity = this.rendered.entities[Number(button.dataset.entityIndex)]
+      if (!entity) return
+      if (this.anchor === button && popup?.matches(':popover-open')) {
+        this.dismiss(true)
+        return
+      }
+      void this.open(entity, button, button.getBoundingClientRect())
+    },
+    async captureSelection() {
+      const viewer = this.$refs.viewer as HTMLDivElement | undefined
+      if (!this.entities || this.readonly || this.selected || this.selectionPointerId !== null || this.selectionTimer !== undefined) return
+      this.dismiss()
+      this.selectionError = ''
+      const current = window.getSelection()
+      if (!current?.rangeCount || current.isCollapsed || !current.toString().trim()) return
+      const range = current.getRangeAt(0)
+      if (!viewer?.contains(range.commonAncestorContainer)) return
+      const start = range.startContainer
+      const span = start.parentElement?.closest<HTMLElement>('[data-source-index]')
+      if (start.nodeType !== Node.TEXT_NODE || start !== range.endContainer || !span) {
+        this.selectionError = 'Выделите фрагмент внутри одного участка текста, без пересечения сущностей и форматирования.'
+        return
+      }
+      const segment = this.rendered.segments[Number(span.dataset.sourceIndex)]
+      if (!segment || start.textContent !== segment.text) return
+      const from = segment.offsets[range.startOffset]
+      const to = segment.offsets[range.endOffset]
+      if (from === undefined || to === undefined || from === to) return
+      const entity: Entity = {
+        text: current.toString(), body: escapeHtml(current.toString()), attributes: {},
+        range: {start: segment.start + from, end: segment.start + to},
+        isNew: true,
+      }
+      this.selection = markRaw(entity)
+      this.selectionRect = range.getBoundingClientRect()
+      await this.$nextTick()
+      const popup = this.$refs.popup as HTMLDivElement | undefined
+      if (!popup || this.selection !== entity || this.selected) return
+      popup.showPopover()
+      this.positionPopup(this.selectionRect)
+    },
+    beginSelection(event: PointerEvent) {
+      if (!this.entities || this.readonly || event.button !== 0) return
+      clearTimeout(this.selectionTimer)
+      this.selectionTimer = undefined
+      this.selectionPointerId = event.pointerId
+      this.dismiss()
+    },
+    finishSelection(event: PointerEvent) {
+      if (this.selectionPointerId !== event.pointerId) return
+      this.selectionPointerId = null
+      // Opening during the drag lets the release click light-dismiss the new popover.
+      // Wait until that click has completed before showing the selection action.
+      this.selectionTimer = setTimeout(() => {
+        this.selectionTimer = undefined
+        void this.captureSelection()
+      }, 0)
+    },
+    addEntity() {
+      if (!this.entities || this.readonly || !this.selection || !this.selectionRect) return
+      void this.open(this.selection, null, this.selectionRect)
+    },
+    apply() {
+      const entity = this.selected
+      if (!this.entities || this.readonly || !entity?.range || this.valueError) return
+      const id = entity.attributes.id ? ` id="${escapeHtml(entity.attributes.id)}"` : ''
+      const markup = `<entity type="${this.draftType}" value="${escapeHtml(this.draftValue)}" unit="${this.draftUnit}"${id}>${entity.body}</entity>`
+      this.replaceEntity(markup)
+    },
+    removeEntity() {
+      const entity = this.selected
+      if (!entity || entity.isNew) return
+      this.replaceEntity(entity.body)
+    },
+    replaceEntity(markup: string) {
+      const viewer = this.$refs.viewer as HTMLDivElement | undefined
+      const entity = this.selected
+      if (!this.entities || this.readonly || !entity?.range) return
+      this.dismiss()
+      window.getSelection()?.removeAllRanges()
+      this.$emit('update:content', this.content.slice(0, entity.range.start) + markup + this.content.slice(entity.range.end))
+      viewer?.focus({preventScroll: true})
+    },
+  },
 })
 </script>
 
@@ -311,7 +326,8 @@ onUnmounted(() => {
   <div class="flex min-h-0 flex-1 flex-col">
     <div ref="viewer" tabindex="-1"
          class="markdown-viewer min-h-0 flex-1 overflow-auto overscroll-contain p-4 leading-relaxed"
-         aria-label="Текст документа" @pointerdown="beginSelection" @click="inspect" @scroll.passive="dismiss()" v-html="rendered.html"/>
+         aria-label="Текст документа" @pointerdown="beginSelection" @click="inspect" @scroll.passive="dismiss()"
+         v-html="rendered.html"/>
     <div v-if="entities" :id="popupId" ref="popup" popover="auto" :role="selected ? 'dialog' : 'toolbar'"
          :aria-label="selected ? 'Атрибуты сущности' : 'Действия с выделенным текстом'"
          class="fixed m-0 max-h-[calc(100dvh-24px)] max-w-[calc(100vw-24px)] overflow-auto rounded-xl border border-slate-200 bg-white text-sm text-slate-800 shadow-xl"
@@ -320,19 +336,20 @@ onUnmounted(() => {
       <button v-if="!selected && selection" type="button" aria-haspopup="dialog" :aria-controls="popupId"
               class="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 font-medium text-white transition-colors hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
               @pointerdown.prevent @click="addEntity">
-        <svg class="size-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+        <svg class="size-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75"
+             aria-hidden="true">
           <path d="M10 4v12M4 10h12" stroke-linecap="round"/>
         </svg>
         Добавить сущность
       </button>
       <template v-if="selected">
-      <div class="mb-3 flex items-center justify-between gap-3">
-        <h4 class="font-semibold">{{ selected.isNew ? 'Новая сущность' : 'Атрибуты сущности' }}</h4>
-        <button ref="closeButton" type="button"
-                class="cursor-pointer rounded px-2 py-1 text-slate-500 hover:bg-slate-100 focus-visible:outline-blue-500"
-                aria-label="Закрыть атрибуты" @click="dismiss(true)">✕
-        </button>
-      </div>
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <h4 class="font-semibold">{{ selected.isNew ? 'Новая сущность' : 'Атрибуты сущности' }}</h4>
+          <button ref="closeButton" type="button"
+                  class="cursor-pointer rounded px-2 py-1 text-slate-500 hover:bg-slate-100 focus-visible:outline-blue-500"
+                  aria-label="Закрыть атрибуты" @click="dismiss(true)">✕
+          </button>
+        </div>
         <p class="mb-3 break-words rounded bg-amber-100 px-2 py-1">{{ selected.text }}</p>
         <dl v-if="readonly" class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2">
           <template v-for="name in attributeNames" :key="name">
@@ -356,7 +373,8 @@ onUnmounted(() => {
             </span>
           </label>
           <label class="block">Значение
-            <input ref="valueInput" v-model="draftValue" required :aria-invalid="!!valueError" :aria-describedby="`${popupId}-error`"
+            <input ref="valueInput" v-model="draftValue" required :aria-invalid="!!valueError"
+                   :aria-describedby="`${popupId}-error`"
                    :inputmode="draftType === 'number' ? 'decimal' : 'text'"
                    class="mt-1 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm shadow-sm transition-colors hover:border-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"/>
           </label>

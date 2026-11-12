@@ -42,7 +42,7 @@ export interface ReportDocument {
     content_type: string
     role: DocumentRole
     ocr_status: 'queued' | 'running' | 'completed' | 'failed'
-    extraction_status: 'idle'
+    extraction_status: 'idle' | 'completed'
     markdown_revision: number
     user_edited: boolean
     error: string | null
@@ -88,3 +88,17 @@ export const saveMarkdown = (reportId: number, documentId: number, content: stri
 
 export const runEntityExtraction = (reportId: number) =>
     request<ReportDetails>(`/reports/${reportId}/run-entity-extraction`, {method: 'POST'})
+
+export interface Requirement {
+    id: number
+    verdict: boolean
+    equation: string | null
+    evidence: string | null
+    ids_related: number[]
+}
+
+export const runVerification = (reportId: number) =>
+    request<ReportDetails>(`/reports/${reportId}/run-verification`, {method: 'POST'})
+
+export const getRequirements = (reportId: number) =>
+    request<Requirement[]>(`/reports/${reportId}/requirements`)

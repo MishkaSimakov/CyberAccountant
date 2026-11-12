@@ -1,102 +1,105 @@
-<script setup lang="ts">
-import {onMounted, onUnmounted, ref} from 'vue'
+<script lang="ts">
+import {defineComponent, markRaw, type Raw} from 'vue'
 import {getDocument, GlobalWorkerOptions, type PDFDocumentLoadingTask} from 'pdfjs-dist/legacy/build/pdf.mjs'
 import {EventBus, PDFLinkService, PDFViewer} from 'pdfjs-dist/legacy/web/pdf_viewer.mjs'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import 'pdfjs-dist/legacy/web/pdf_viewer.css'
 
-const props = defineProps<{ src: string }>()
-const container = ref<HTMLDivElement | null>(null)
-const pages = ref<HTMLDivElement | null>(null)
-const loading = ref(true)
-const error = ref('')
-const lifetime = new AbortController()
-let viewer: PDFViewer | undefined
-let loadingTask: PDFDocumentLoadingTask | undefined
-let safariGestureScale: number | undefined
-let resizeObserver: ResizeObserver | undefined
-
 GlobalWorkerOptions.workerSrc = workerUrl
 
-function scaleAt(factor: number, x: number, y: number) {
-  if (!viewer || loading.value || error.value) return
-  const current = viewer.currentScale
-  const next = Math.min(5, Math.max(0.25, current * factor))
-  viewer.updateScale({scaleFactor: next / current, origin: [x, y], drawingDelay: 150})
-}
-
-function onWheel(event: WheelEvent) {
-  // Trackpad pinches arrive as Ctrl+wheel; ordinary two-finger scrolling pans the PDF.
-  if (!event.ctrlKey) return
-  event.preventDefault()
-  if (safariGestureScale !== undefined) return
-  const delta = event.deltaY * (event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
-      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? container.value?.clientHeight ?? 800 : 1)
-  scaleAt(Math.exp(-delta * 0.01), event.clientX, event.clientY)
-}
-
-function onGesture(event: Event) {
-  // Safari on macOS exposes native gesture events instead of Ctrl+wheel.
-  const gesture = event as Event & { scale: number; clientX: number; clientY: number }
-  event.preventDefault()
-  if (event.type === 'gesturestart') {
-    safariGestureScale = gesture.scale
-  } else if (event.type === 'gesturechange') {
-    scaleAt(gesture.scale / (safariGestureScale ?? 1), gesture.clientX, gesture.clientY)
-    safariGestureScale = gesture.scale
-  } else {
-    safariGestureScale = undefined
-  }
-}
-
-onMounted(async () => {
-  if (!container.value || !pages.value) return
-  try {
-    const eventBus = new EventBus()
-    const linkService = new PDFLinkService({eventBus, externalLinkTarget: 2})
-    const options = {
-      container: container.value,
-      viewer: pages.value,
-      eventBus,
-      linkService,
-      abortSignal: lifetime.signal,
+export default defineComponent({
+  props: {src: {type: String, required: true}},
+  data() {
+    return {
+      loading: true,
+      error: '',
+      lifetime: markRaw(new AbortController()),
+      viewer: undefined as Raw<PDFViewer> | undefined,
+      loadingTask: undefined as Raw<PDFDocumentLoadingTask> | undefined,
+      safariGestureScale: undefined as number | undefined,
+      resizeObserver: undefined as ResizeObserver | undefined,
     }
-    viewer = new PDFViewer(options)
-    linkService.setViewer(viewer)
-    eventBus.on('pagesinit', () => {
-      if (!viewer || lifetime.signal.aborted) return
-      viewer.currentScaleValue = 'page-width'
-      loading.value = false
-    })
-    eventBus.on('pagerendered', ({error: cause}: { error?: Error }) => {
-      if (cause) error.value = 'Не удалось отобразить PDF. Откройте оригинал файла.'
-    })
-    container.value.addEventListener('wheel', onWheel, {passive: false, signal: lifetime.signal})
-    for (const name of ['gesturestart', 'gesturechange', 'gestureend']) {
-      container.value.addEventListener(name, onGesture, {passive: false, signal: lifetime.signal})
+  },
+  async mounted() {
+    const container = this.$refs.container as HTMLDivElement
+    const pages = this.$refs.pages as HTMLDivElement
+    try {
+      const eventBus = new EventBus()
+      const linkService = new PDFLinkService({eventBus, externalLinkTarget: 2})
+      const options = {
+        container,
+        viewer: pages,
+        eventBus,
+        linkService,
+        abortSignal: this.lifetime.signal,
+      }
+      this.viewer = markRaw(new PDFViewer(options))
+      linkService.setViewer(this.viewer)
+      eventBus.on('pagesinit', () => {
+        if (!this.viewer || this.lifetime.signal.aborted) return
+        this.viewer.currentScaleValue = 'page-width'
+        this.loading = false
+      })
+      eventBus.on('pagerendered', ({error: cause}: { error?: Error }) => {
+        if (cause) this.error = 'Не удалось отобразить PDF. Откройте оригинал файла.'
+      })
+      container.addEventListener('wheel', this.onWheel, {passive: false, signal: this.lifetime.signal})
+      for (const name of ['gesturestart', 'gesturechange', 'gestureend']) {
+        container.addEventListener(name, this.onGesture, {passive: false, signal: this.lifetime.signal})
+      }
+      this.resizeObserver = markRaw(new ResizeObserver(() => {
+        if (this.viewer?.currentScaleValue === 'page-width') this.viewer.currentScaleValue = 'page-width'
+      }))
+      this.resizeObserver.observe(container)
+      this.loadingTask = markRaw(getDocument({url: this.src, useSystemFonts: true}))
+      const pdf = await this.loadingTask.promise
+      if (this.lifetime.signal.aborted) return
+      linkService.setDocument(pdf)
+      this.viewer.setDocument(pdf)
+    } catch {
+      if (!this.lifetime.signal.aborted) {
+        this.error = 'Не удалось загрузить PDF. Откройте оригинал файла.'
+        this.loading = false
+      }
     }
-    resizeObserver = new ResizeObserver(() => {
-      if (viewer?.currentScaleValue === 'page-width') viewer.currentScaleValue = 'page-width'
-    })
-    resizeObserver.observe(container.value)
-    loadingTask = getDocument({url: props.src, useSystemFonts: true})
-    const pdf = await loadingTask.promise
-    if (lifetime.signal.aborted) return
-    linkService.setDocument(pdf)
-    viewer.setDocument(pdf)
-  } catch {
-    if (!lifetime.signal.aborted) {
-      error.value = 'Не удалось загрузить PDF. Откройте оригинал файла.'
-      loading.value = false
-    }
-  }
-})
-
-onUnmounted(() => {
-  lifetime.abort()
-  resizeObserver?.disconnect()
-  viewer?.setDocument(null)
-  void loadingTask?.destroy()
+  },
+  unmounted() {
+    this.lifetime.abort()
+    this.resizeObserver?.disconnect()
+    this.viewer?.setDocument(null)
+    void this.loadingTask?.destroy()
+  },
+  methods: {
+    scaleAt(factor: number, x: number, y: number) {
+      if (!this.viewer || this.loading || this.error) return
+      const current = this.viewer.currentScale
+      const next = Math.min(5, Math.max(0.25, current * factor))
+      this.viewer.updateScale({scaleFactor: next / current, origin: [x, y], drawingDelay: 150})
+    },
+    onWheel(event: WheelEvent) {
+      // Trackpad pinches arrive as Ctrl+wheel; ordinary two-finger scrolling pans the PDF.
+      if (!event.ctrlKey) return
+      event.preventDefault()
+      if (this.safariGestureScale !== undefined) return
+      const container = this.$refs.container as HTMLDivElement | undefined
+      const delta = event.deltaY * (event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? container?.clientHeight ?? 800 : 1)
+      this.scaleAt(Math.exp(-delta * 0.01), event.clientX, event.clientY)
+    },
+    onGesture(event: Event) {
+      // Safari on macOS exposes native gesture events instead of Ctrl+wheel.
+      const gesture = event as Event & { scale: number; clientX: number; clientY: number }
+      event.preventDefault()
+      if (event.type === 'gesturestart') {
+        this.safariGestureScale = gesture.scale
+      } else if (event.type === 'gesturechange') {
+        this.scaleAt(gesture.scale / (this.safariGestureScale ?? 1), gesture.clientX, gesture.clientY)
+        this.safariGestureScale = gesture.scale
+      } else {
+        this.safariGestureScale = undefined
+      }
+    },
+  },
 })
 </script>
 
