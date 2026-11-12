@@ -10,6 +10,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "jsonschema>=4.23",
     "z3-solver>=4.12",
+    "pandas>=3.1.0"
 ]
 
 [dependency-groups]
