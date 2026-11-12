@@ -142,10 +142,10 @@ markdown-файл.
 - note
 - is_silenced
 
-### entities
+### entity file
 
 Эта таблица полезна, когда надо вернуть пользователю то, из какого файла пришёл каждый из entity. Иначе надо будет
 загружать все файлы и заново их парсить.
 
-- report_id, id - combined primary key
+- report_id, entity_id - combined primary key
 - file_id
