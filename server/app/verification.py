@@ -12,6 +12,7 @@ from checkier.stage4_scope import run_scope
 from checkier.stage5_relations import generate_relations
 
 from . import storage
+from .generators.insurance import generate_insurance
 from .models import File, Report
 from .models.requirement import RequirementVerdict
 
@@ -28,7 +29,7 @@ def generate_llm(context: VerificationContext) -> list[dict]:
     return generate_relations(context.config, context.documents, context.registry, context.scope)
 
 
-GENERATORS = {"llm": generate_llm}
+GENERATORS = {"llm": generate_llm, "insurance": generate_insurance}
 
 
 def prepare_verification(report: Report, files: list[File]) -> VerificationContext:
