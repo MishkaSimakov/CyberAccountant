@@ -3,3 +3,7 @@
 data/
 data_md/
 .env
+out/
+.venv/
+__pycache__/
+.ipynb_checkpoints/

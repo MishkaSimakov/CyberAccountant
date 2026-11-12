@@ -1,0 +1,114 @@
+"""Tests for the equation solver."""
+
+from __future__ import annotations
+
+from cyberaccountant.entities import EntityRegistry
+from cyberaccountant.solver import solve_system
+
+
+def _reg_with_card(cards: dict, data: dict, seed: int = 0):
+    """Build a registry from {logical_key: (type, raw, value, role)} dicts.
+
+    Returns (registry, ent_by_logical_key) where ent_by_logical_key maps the
+    logical dict key to the Entity (whose ``.key`` is the assigned mnemonic).
+    """
+    reg = EntityRegistry(seed)
+    entries = []
+    for key, (type_, raw, value, role) in {**data, **cards}.items():
+        entries.append((key, type_, raw, value, role))
+    # add in deterministic order: data first, then card
+    ordered = sorted(entries, key=lambda x: 0 if x[4] in ("data", "request") else 1)
+    ent_by_key = {}
+    for key, type_, raw, value, role in ordered:
+        norm = "1"
+        unit = "RUB" if type_ == "amount" else ""
+        e = reg.add(
+            type_=type_,
+            raw=raw,
+            unit=unit,
+            norm=norm,
+            file="f1" if role != "card" else "f2",
+            role=role,
+            span=(0, 0),
+        )
+        # override normalized value
+        if value is not None:
+            if type_ == "date":
+                e.value = value  # ordinal
+            elif type_ in ("amount", "number"):
+                e.value = str(value)
+            else:
+                e.value = value
+        ent_by_key[key] = e
+    return reg, ent_by_key
+
+
+def test_simple_equality_solves_card_variable():
+    reg, ents = _reg_with_card(
+        cards={"card-total": ("amount", "1000", "1000", "card")},
+        data={"doc-a": ("amount", "600", "600", "data"),
+              "doc-b": ("amount", "400", "400", "data")},
+    )
+    a, b, c = ents["doc-a"].key, ents["doc-b"].key, ents["card-total"].key
+    rels = [{"equation": f"{a} + {b} == {c}"}]
+    relations, fishy, verdicts, dangling = solve_system(rels, reg)
+    v = next(v for v in verdicts if v.mnemonic == ents["card-total"].mnemonic)
+    assert v.status == "ok"
+    assert v.expected == "1000"
+
+
+def test_mismatch_detected():
+    reg, ents = _reg_with_card(
+        cards={"card-total": ("amount", "999", "999", "card")},
+        data={"doc-a": ("amount", "600", "600", "data"),
+              "doc-b": ("amount", "400", "400", "data")},
+    )
+    a, b, c = ents["doc-a"].key, ents["doc-b"].key, ents["card-total"].key
+    rels = [{"equation": f"{a} + {b} == {c}"}]
+    _, _, verdicts, _ = solve_system(rels, reg)
+    v = next(v for v in verdicts if v.mnemonic == ents["card-total"].mnemonic)
+    assert v.status == "mismatch"
+    assert v.expected == "1000"
+    assert v.diff is not None
+
+
+def test_unverified_when_no_relation():
+    reg, ents = _reg_with_card(
+        cards={"card-x": ("amount", "100", "100", "card")},
+        data={"doc-a": ("amount", "600", "600", "data")},
+    )
+    rels = [{"equation": f"{ents['doc-a'].key} == 600"}]
+    _, _, verdicts, _ = solve_system(rels, reg)
+    v = next(v for v in verdicts if v.mnemonic == ents["card-x"].mnemonic)
+    assert v.status == "unverified"
+
+
+def test_constant_contradiction_flagged_false():
+    reg, ents = _reg_with_card(
+        cards={},
+        data={"doc-a": ("amount", "600", "600", "data"),
+              "doc-b": ("amount", "600", "600", "data")},
+    )
+    a, b = ents["doc-a"].key, ents["doc-b"].key
+    rels = [{"equation": f"{a} == {b}"}]
+    relations, _, _, _ = solve_system(rels, reg)
+    assert relations[0].status == "true"
+
+    rels2 = [{"equation": f"{a} + 1 == {b}"}]
+    relations2, _, _, _ = solve_system(rels2, reg)
+    assert relations2[0].status == "false"
+
+
+def test_dangling_files():
+    reg, ents = _reg_with_card(
+        cards={"card-x": ("amount", "100", "100", "card")},
+        data={"doc-a": ("amount", "600", "600", "data")},
+    )
+    # add an entity from a different file that is not referenced
+    e = reg.add(type_="amount", raw="999", unit="RUB", norm="1",
+                file="orphan", role="data", span=(0, 0))
+    e.value = "999"
+    rels = [{"equation": f"{ents['doc-a'].key} == 600"}]
+    _, _, _, dangling = solve_system(rels, reg)
+    assert "orphan" in dangling
+    assert "f1" not in dangling
