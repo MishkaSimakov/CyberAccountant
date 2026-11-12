@@ -11,12 +11,19 @@ error messages; the corrected equations are re-solved. Bounded by
 from __future__ import annotations
 
 import json
+import re
 
 from checkier.config import PipelineConfig
 from checkier.entities import EntityRegistry
 from checkier.llm import call_llm_json
 from checkier.schemas import RELATIONS_SCHEMA, RELATION_REPAIR_SCHEMA
 from checkier.solver import solve_system
+
+#: placeholder substituted for values of entity types in cfg.obfuscate_types
+HIDDEN = "<hidden>"
+
+#: an entity reference in a replaced doc: <e id="mnemonic-or-num">raw</e>
+_E_REF_RE = re.compile(r'<e id="([^"]+)">.*?</e>', re.DOTALL)
 
 REL_PROMPT = """\
 You are an auditor building a system of equations that pins down every value
@@ -48,6 +55,10 @@ Formula language:
 
 Rules:
 - PREFER ids over literal numbers: write "a + b == c", not "a + 1000 == c".
+- Values of some entity types are replaced with {hidden} on purpose. You cannot
+  see or compute the actual numbers — do NOT put numeric conclusions, computed
+  sums or differences in "evidence" text. Express every relation you suspect
+  as an equation between ids; the solver evaluates it against the real values.
 - Our target is to make all possible formulas, so we can pin all relevant (respective to request) fields in card exactly, using only data from other documents.
   I.e. we will need to be able to solve F(constants, x) = x, where x is vector of those relevant fields, and F(constants,x) = x is set of all equations/inequations that we built.
 - Cover ALL aggregations: card totals == sum of their components (from both card and data).
@@ -75,11 +86,40 @@ def _registry_lines(
     for e in registry.entities:
         if e.role == "card" or e.file in in_scope:
             eid = e.mnemonic if cfg.id_style == "mnemonic" else f"#{e.num}"
+            value = HIDDEN if e.type in cfg.obfuscate_types else e.value
             lines.append(
-                f"{eid}\ttype={e.type}\tvalue={e.value}\tunit={e.unit}\t"
+                f"{eid}\ttype={e.type}\tvalue={value}\tunit={e.unit}\t"
                 f"role={e.role}\tfile={e.file}"
             )
     return "\n".join(lines)
+
+
+def _obfuscate_docs(
+    cfg: PipelineConfig,
+    replaced_docs: dict[str, str],
+    registry: EntityRegistry,
+) -> dict[str, str]:
+    """Replace <e id>raw</e> inner text with <hidden> for obfuscated types.
+
+    Prompt-only masking: the returned dict is what gets sent to the
+    relation-extraction LLM; on-disk artifacts keep real values. With no
+    configured types the input is returned unchanged.
+    """
+    if not cfg.obfuscate_types:
+        return replaced_docs
+    hidden = {
+        e.mnemonic if cfg.id_style == "mnemonic" else str(e.num)
+        for e in registry.entities
+        if e.type in cfg.obfuscate_types
+    }
+
+    def repl(m: re.Match) -> str:
+        eid = m.group(1)
+        if eid not in hidden:
+            return m.group(0)
+        return f'<e id="{eid}">{HIDDEN}</e>'
+
+    return {h8: _E_REF_RE.sub(repl, text) for h8, text in replaced_docs.items()}
 
 
 def run_relations(
@@ -91,12 +131,14 @@ def run_relations(
     """Ask the LLM for all relations; combine with deterministic scope relations."""
     in_scope = set(scope["in_scope"])
     documents = []
-    for h8, text in sorted(replaced_docs.items()):
+    prompt_docs = _obfuscate_docs(cfg, replaced_docs, registry)
+    for h8, text in sorted(prompt_docs.items()):
         if h8 in in_scope or any(
             e.file == h8 and e.role == "card" for e in registry.entities
         ):
             documents.append(f"--- file {h8} ---\n{text}")
     prompt = REL_PROMPT.format(
+        hidden=HIDDEN,
         ids_description=(" Mnemonic ids are two lowercase words joined by one hyphen (\"mani-qyxo\"); the hyphen is part of the id — \"maniqyxo\" is INVALID." if cfg.id_style=="mnemonic" else "Ids are numbers, predicated with #, example: #123. Treat all examples with mnemonic-based ids, as ones with numeric ids."),
         documents="\n\n".join(documents),
         registry=_registry_lines(cfg, registry, in_scope),

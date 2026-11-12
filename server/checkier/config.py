@@ -31,6 +31,11 @@ class PipelineConfig:
     # LLM reasoning control: "disabled" (fast, no thinking tokens), "enabled",
     # or "exclude" (reason but strip from output). See OpenRouter reasoning docs.
     reasoning: str = "disabled"
+    #: entity types whose exact values are hidden from the relation-extraction
+    #: LLM (document bodies + registry listing), forcing it to write symbolic
+    #: equations instead of judging the numbers itself. The solver still
+    #: evaluates against real registry values. Empty = no obfuscation.
+    obfuscate_types: tuple[str, ...] = ()
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
