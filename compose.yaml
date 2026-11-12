@@ -7,12 +7,30 @@ services:
       - "8000:8000"
     environment:
       OFFICE_SANDBOX_URL: http://office_sandbox:8001
+      DATABASE_URL: postgresql+psycopg://cyberaccountant:cyberaccountant@postgres:5432/cyberaccountant
     depends_on:
+      postgres:
+        condition: service_healthy
       office_sandbox:
         condition: service_healthy
     networks:
       - default
       - office
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: cyberaccountant
+      POSTGRES_PASSWORD: cyberaccountant
+      POSTGRES_DB: cyberaccountant
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U cyberaccountant -d cyberaccountant" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   office_sandbox:
     build: ./office_sandbox
@@ -44,3 +62,6 @@ services:
 networks:
   office:
     internal: true
+
+volumes:
+  postgres_data:

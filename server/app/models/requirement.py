@@ -1,13 +1,20 @@
-"""Requirement storage while the definition JSON schema is being finalized."""
+"""Requirements and user annotations; the evolving definition is stored as JSONB."""
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from typing import Any
+
+from sqlalchemy import ForeignKey, text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import Mapped, mapped_column
+
+from ..database import Base
 
 
-class Requirement(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+class Requirement(Base):
+    __tablename__ = "requirements"
 
-    id: int = Field(ge=1)
-    report_id: int = Field(ge=1)
-    json_data: dict[str, JsonValue] = Field(alias="json")
-    note: str = ""
-    is_silenced: bool = False
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), index=True)
+    json_data: Mapped[dict[str, Any]] = mapped_column("json", MutableDict.as_mutable(JSONB))
+    note: Mapped[str] = mapped_column(server_default=text("''"))
+    is_silenced: Mapped[bool] = mapped_column(server_default=text("false"))

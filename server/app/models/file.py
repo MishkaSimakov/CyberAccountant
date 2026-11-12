@@ -1,34 +1,45 @@
 """File revisions and paths to their preserved artifacts."""
 
-from datetime import datetime, timezone
-from typing import Literal
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, String, UniqueConstraint, text
+from sqlalchemy.orm import Mapped, mapped_column
 
-from pydantic import BaseModel, Field
+from ..database import Base
+from .base import Timestamps
 
 
-class File(BaseModel):
+class File(Timestamps, Base):
     """One revision; file_id stays stable and (file_id, version) is unique.
 
     Unchanged artifacts may share paths between revisions. hand_edited describes
     this revision; any hand-edited revision marks the logical file as user-edited.
     """
 
-    id: int = Field(ge=1)
-    file_id: int = Field(ge=1)
-    report_id: int = Field(ge=1)
-    version: int = Field(default=1, ge=1)
-    name: str = Field(min_length=1)
-    path: str = Field(min_length=1)
-    hash: str = Field(min_length=1)
-    markdown_path: str | None = None
-    entities_path: str | None = None
-    role: Literal["final_report", "supporting"]
-    status: Literal[
-        "queued", "ocr_running", "ocr_completed", "entities_running", "completed", "failed"
-    ] = "queued"
-    error: str | None = None
-    size: int = Field(ge=0)
-    content_type: str = Field(min_length=1)
-    hand_edited: bool = False
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    __tablename__ = "files"
+    __table_args__ = (
+        UniqueConstraint("file_id", "version", name="files_file_id_version_key"),
+        Index("ix_files_report_id_file_id", "report_id", "file_id"),
+        CheckConstraint("file_id > 0", name="file_positive_file_id"),
+        CheckConstraint("version > 0", name="file_positive_version"),
+        CheckConstraint("size >= 0", name="file_nonnegative_size"),
+        CheckConstraint("role IN ('final_report', 'supporting')", name="file_valid_role"),
+        CheckConstraint(
+            "status IN ('queued', 'ocr_running', 'ocr_completed', 'entities_running', 'completed', 'failed')",
+            name="file_valid_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    file_id: Mapped[int]
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"))
+    version: Mapped[int] = mapped_column(server_default=text("1"))
+    name: Mapped[str]
+    path: Mapped[str]
+    hash: Mapped[str] = mapped_column(String(64))
+    markdown_path: Mapped[str | None]
+    entities_path: Mapped[str | None]
+    role: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), server_default=text("'queued'"))
+    error: Mapped[str | None]
+    size: Mapped[int] = mapped_column(BigInteger)
+    content_type: Mapped[str]
+    hand_edited: Mapped[bool] = mapped_column(server_default=text("false"))

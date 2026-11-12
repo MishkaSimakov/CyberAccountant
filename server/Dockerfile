@@ -22,5 +22,5 @@ COPY --from=client-build /app/client/dist/ ./client/dist/
 USER 10001:10001
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--app-dir", "server", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "database-init && exec uvicorn app.main:app --app-dir server --host 0.0.0.0 --port 8000"]
 
