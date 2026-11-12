@@ -2,6 +2,33 @@
 
 - [TASK.md](docs/TASK.md) - описание задачи.
 - [DESIGN.md](docs/DESIGN.md) - описание дизайна системы.
+- [OCR.md](docs/OCR.md) - локальная конвертация документов в Markdown и координаты символов.
+
+## Document OCR CLI
+
+The standalone `document_ocr.py` CLI supports PDF, scans/images, DOCX, XLSX,
+TXT and Markdown. It writes Markdown, a JSON character index with normalized
+bounding boxes, and PDF/PNG previews. Office conversion and formula recalculation
+run in a restricted local Linux Docker container. PDF extraction and OCR run locally.
+
+Install Python dependencies and Tesseract 5 with the `rus` and `eng` language data:
+
+```sh
+python -m pip install -r requirements.txt
+# Debian/Ubuntu: sudo apt install tesseract-ocr tesseract-ocr-rus fonts-dejavu-core
+# Windows: python setup_ocr_windows.py
+python document_ocr.py input.pdf output/result.md
+```
+
+For DOCX/XLSX, start a local Linux Docker engine and build the office image first:
+
+```sh
+python document_ocr.py sandbox-build
+python document_ocr.py input.xlsx output/workbook.md
+```
+
+This CLI is independent of the server's simulated OCR pipeline. See
+[docs/OCR.md](docs/OCR.md) for the JSON schema, highlighting, and sandbox details.
 
 ## Run with Docker
 

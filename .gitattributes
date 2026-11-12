@@ -1,0 +1,2 @@
+# Keep Linux guest bootstrap scripts runnable after a Windows checkout.
+docker_vm/*.sh text eol=lf

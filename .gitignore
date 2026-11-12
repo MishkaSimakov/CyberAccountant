@@ -12,3 +12,11 @@ __pycache__/
 !.env.example
 
 AGENTS.md
+
+# Local OCR runtime and generated artifacts
+.tools/
+output/
+
+# Local hackathon documents are not published
+/данные/
+/*.docx
