@@ -26,18 +26,20 @@ def _sample_report() -> dict:
                    "verdict": "false"}],
         "relations": [
             {"index": 0, "equation": "a == b", "tag": "agg", "source": "llm",
-             "status": "true", "error": None, "files": ["h8a"]},
+             "status": "true", "error": None, "files": ["h8a"],
+             "touches_card": True},
             {"index": 1, "equation": "c * d == e", "tag": None, "source": "llm",
-             "status": "false", "error": None, "files": ["h8a", "h8d"]},
+             "status": "false", "error": None, "files": ["h8a", "h8d"],
+             "touches_card": True},
             {"index": 2, "equation": "f * g == h", "tag": None, "source": "llm",
              "status": "error", "error": "non-numeric entity in arithmetic equation",
-             "files": ["h8c"]},
+             "files": ["h8c"], "touches_card": False},
         ],
         "summary": {
             "card_cells_total": 3, "ok": 1, "mismatch": 1, "unverified": 1,
             "duplicates": 1, "out_of_scope": 1, "dangling": 1, "fishy": 1,
             "relations_total": 3, "relations_true": 1, "relations_false": 1,
-            "relations_unverifiable": 0,
+            "relations_false_on_card": 1, "relations_unverifiable": 0,
         },
     }
 
@@ -52,7 +54,9 @@ def test_format_report_text_renders_all_sections():
     assert "1 mismatch" in text
     assert "expected=400" in text
     assert "UNVERIFIED" in text
+    assert "touching card (1 of 3)" in text
     assert "#1 FALSE" in text
-    assert "non-numeric entity" in text
+    assert "non-numeric entity" not in text  # off-card relation is skipped
+    assert "skipped, 1 of 3" in text
     assert "нет печати" in text
     assert "данные/09_акт.md" in text  # mapping resolves obfuscated names

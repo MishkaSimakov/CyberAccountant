@@ -70,6 +70,7 @@ class Relation:
     error: str | None = None
     unknowns: list = field(default_factory=list)
     involved_files: list = field(default_factory=list)
+    touches_card: bool = False  # references at least one card entity
 
 
 @dataclass
@@ -415,6 +416,9 @@ class Solver:
                 ids = collect_ids(rel.ast)
                 rel.involved_files = sorted(
                     {self.by_key[k].file for k in ids if k in self.by_key}
+                )
+                rel.touches_card = any(
+                    k in self.by_key and self.by_key[k].role == "card" for k in ids
                 )
             except FormulaError as exc:
                 rel.status = "error"

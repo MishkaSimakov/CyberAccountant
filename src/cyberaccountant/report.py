@@ -65,6 +65,7 @@ def build_report(
             "status": r.status,
             "error": r.error,
             "files": r.involved_files,
+            "touches_card": r.touches_card,
         }
         for r in relations
     ]
@@ -81,6 +82,9 @@ def build_report(
         "relations_total": len(relations),
         "relations_true": sum(1 for r in relations if r.status == "true"),
         "relations_false": sum(1 for r in relations if r.status == "false"),
+        "relations_false_on_card": sum(
+            1 for r in relations if r.status == "false" and r.touches_card
+        ),
         "relations_unverifiable": sum(
             1 for r in relations if r.status == "unverifiable"
         ),
@@ -173,6 +177,10 @@ def format_report_text(report: dict, mapping: dict | None = None) -> str:
 
     rels = report["relations"]
     interesting = [r for r in rels if r["status"] in ("false", "error", "unverifiable")]
+    # the audit only cares about relations touching the card; the rest are
+    # data-internal contradictions — reported as a count, not in full
+    on_card = [r for r in interesting if r.get("touches_card")]
+    off_card = [r for r in interesting if not r.get("touches_card")]
     # id -> cell/constant info, for annotating equations with what each
     # mnemonic actually is (raw value, type, source file)
     id_map: dict[str, dict] = {}
@@ -196,9 +204,9 @@ def format_report_text(report: dict, mapping: dict | None = None) -> str:
 
     lines.append("")
     lines.append(
-        f"=== RELATIONS NOT PROVEN TRUE ({len(interesting)} of {len(rels)}) ==="
+        f"=== RELATIONS NOT PROVEN TRUE — touching card ({len(on_card)} of {len(rels)}) ==="
     )
-    for r in interesting:
+    for r in on_card:
         status = r["status"].upper()
         tag = f"[{r['tag']}] " if r.get("tag") else ""
         files = ", ".join(orig(f) for f in r.get("files", []))
@@ -210,6 +218,14 @@ def format_report_text(report: dict, mapping: dict | None = None) -> str:
             lines.append(f"      error: {r['error']}")
         if files:
             lines.append(f"      files: {files}")
+
+    lines.append("")
+    lines.append(
+        f"=== relations not touching card (skipped, {len(off_card)} of {len(rels)}): "
+        f"{sum(1 for r in off_card if r['status'] == 'false')} false / "
+        f"{sum(1 for r in off_card if r['status'] == 'error')} error / "
+        f"{sum(1 for r in off_card if r['status'] == 'unverifiable')} unverifiable ==="
+    )
 
     fishy = report.get("fishy", [])
     lines.append("")
