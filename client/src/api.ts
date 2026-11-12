@@ -74,8 +74,8 @@ export const uploadDocument = (reportId: number, file: File, role: DocumentRole)
 export const deleteDocument = (reportId: number, documentId: number) =>
     request<void>(`/reports/${reportId}/documents/${documentId}`, {method: 'DELETE'})
 
-export const originalUrl = (reportId: number, documentId: number) =>
-    `/api/v1/reports/${reportId}/documents/${documentId}/original`
+export const pdfUrl = (reportId: number, documentId: number) =>
+    `/api/v1/reports/${reportId}/documents/${documentId}/pdf`
 
 export const getMarkdown = (reportId: number, documentId: number) =>
     request<MarkdownRevision>(`/reports/${reportId}/documents/${documentId}/markdown`)

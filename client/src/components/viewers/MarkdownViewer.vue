@@ -108,7 +108,7 @@ export default defineComponent({
       const parser = new Marked({
         gfm: true,
         renderer: {
-          html: ({text}) => escapeHtml(text),
+          html: ({text}) => escapeHtml(text).replace(/&lt;br\s*\/?&gt;/gi, '<br>'),
           text(token) {
             if ('tokens' in token && token.tokens) return this.parser.parseInline(token.tokens)
             const range = ranges.get(token)

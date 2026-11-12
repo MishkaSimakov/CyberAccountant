@@ -41,7 +41,7 @@ export default defineComponent({
         this.loading = false
       })
       eventBus.on('pagerendered', ({error: cause}: { error?: Error }) => {
-        if (cause) this.error = 'Не удалось отобразить PDF. Откройте оригинал файла.'
+        if (cause) this.error = 'Не удалось отобразить PDF. Откройте PDF отдельно.'
       })
       container.addEventListener('wheel', this.onWheel, {passive: false, signal: this.lifetime.signal})
       for (const name of ['gesturestart', 'gesturechange', 'gestureend']) {
@@ -58,7 +58,7 @@ export default defineComponent({
       this.viewer.setDocument(pdf)
     } catch {
       if (!this.lifetime.signal.aborted) {
-        this.error = 'Не удалось загрузить PDF. Откройте оригинал файла.'
+        this.error = 'Не удалось загрузить PDF. Откройте PDF отдельно.'
         this.loading = false
       }
     }
@@ -106,7 +106,7 @@ export default defineComponent({
 <template>
   <div class="relative min-h-0 flex-1 bg-slate-100" :aria-busy="loading">
     <div ref="container" class="absolute inset-0 overflow-auto overscroll-contain" tabindex="0" role="region"
-         aria-label="Оригинал документа PDF">
+         aria-label="PDF документа">
       <div ref="pages" class="pdfViewer"/>
     </div>
     <p v-if="loading" class="absolute inset-x-0 top-0 bg-slate-100 p-6 text-slate-500" role="status">Загружаем PDF…</p>

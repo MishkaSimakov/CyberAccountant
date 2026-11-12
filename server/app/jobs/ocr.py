@@ -1,6 +1,7 @@
 """Run OCR for a queued file revision, save its artifacts, and update report progress."""
 
 import logging
+from pathlib import Path
 
 from ..database import session_scope
 from ..models import File
@@ -28,6 +29,7 @@ def process_ocr(file_revision_id: int) -> None:
     try:
         with parse_document(artifact_path(file.path)) as parsed:
             markdown_path = save_ocr(report_id, file.file_id, file.version, parsed.markdown)
+            pdf_path = (Path(markdown_path).parent / parsed.pdf.relative_to(parsed.markdown.parent)).as_posix()
     except Exception:
         logger.exception("OCR failed for file revision %s", file_revision_id)
         with session_scope() as session:
@@ -43,6 +45,7 @@ def process_ocr(file_revision_id: int) -> None:
         report = find_report(session, report_id, lock=True)
         file = session.get(File, file_revision_id)
         if file is not None:
+            file.pdf_path = pdf_path
             file.markdown_path = markdown_path
             file.status = "ocr_completed"
             file.error = None

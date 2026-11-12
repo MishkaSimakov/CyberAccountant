@@ -93,6 +93,17 @@ def original_document(report_id: int, file_id: int) -> File:
         return find_document(session, report_id, file_id)
 
 
+def pdf_document(report_id: int, file_id: int) -> File:
+    with session_scope() as session:
+        find_report(session, report_id)
+        file = find_document(session, report_id, file_id)
+        if not file.pdf_path:
+            raise ServiceError(409, "PDF документа ещё не готов.")
+        if not storage.artifact_path(file.pdf_path).is_file():
+            raise ServiceError(404, "PDF документа не найден.")
+        return file
+
+
 def document_markdown(report_id: int, file_id: int) -> MarkdownRevision:
     with session_scope() as session:
         report = find_report(session, report_id)
@@ -142,6 +153,7 @@ def edit_markdown(report_id: int, file_id: int, payload: MarkdownEdit) -> Markdo
         revision = File(
             report_id=report_id, file_id=file_id, version=version, name=file.name,
             path=file.path, hash=file.hash, role=file.role, size=file.size, content_type=file.content_type,
+            pdf_path=file.pdf_path,
             markdown_path=file.markdown_path if file.entities_path else edited_path,
             entities_path=edited_path if file.entities_path else None,
             status=file.status, hand_edited=True,

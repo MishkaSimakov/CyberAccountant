@@ -16,6 +16,7 @@ from rq.job import Job
 from sqlalchemy import select
 
 from app import database, queue, storage
+from app.api.documents import document_pdf
 from app.jobs import ocr
 from app.main import app
 from app.models import File, Report
@@ -47,7 +48,7 @@ def request(method, path, payload=None, *, body=None, content_type="application/
         return messages[0]["status"], content
 
     status, content = asyncio.run(run())
-    return status, json.loads(content) if content and not path.endswith("/original") else content
+    return status, json.loads(content) if content and not path.endswith(("/original", "/pdf")) else content
 
 
 def upload(report_id, name="invoice.pdf", role="supporting", content=b"%PDF-1.4\ninvoice\n%%EOF"):
@@ -125,9 +126,10 @@ def test_documents_are_scoped_and_can_be_deleted_while_queued(api):
     _, uploaded = upload(report_id, name="../../invoice.pdf")
     assert uploaded["name"] == "invoice.pdf"
     document_id = uploaded["id"]
-    for suffix in ("", "/original", "/markdown"):
+    for suffix in ("", "/original", "/pdf", "/markdown"):
         assert request("GET", f'/reports/{other["id"]}/documents/{document_id}{suffix}')[0] == 404
     assert request("GET", f"/reports/{report_id}/documents/{document_id}/markdown")[0] == 409
+    assert request("GET", f"/reports/{report_id}/documents/{document_id}/pdf")[0] == 409
     assert request("DELETE", f"/reports/{report_id}/documents/{document_id}")[0] == 204
     ocr.process_ocr(pending[0])
     assert request("GET", f"/reports/{report_id}")[1]["documents"] == []
@@ -152,9 +154,54 @@ def test_real_ocr_preserves_artifacts_and_updates_progress(api):
         assert file.status == "ocr_completed"
         markdown = storage.artifact_path(file.markdown_path)
         data = json.loads(markdown.with_suffix(".boxes.json").read_text())
-        assert (markdown.parent / data["preview_pdf"]).is_file()
+        preview = markdown.parent / data["preview_pdf"]
+        assert storage.artifact_path(file.pdf_path) == preview
+        assert request("GET", f'/reports/{report_id}/documents/{uploaded["id"]}/pdf') == (200, preview.read_bytes())
         assert storage.artifact_path(file.path).read_bytes() == original
     ocr.process_ocr(pending[0])  # Completed jobs do not run again.
+
+
+@pytest.mark.parametrize("name", ["scan.png", "invoice.docx", "workbook.xlsx"])
+def test_pdf_endpoint_serves_converted_artifact_across_revisions(api, monkeypatch, tmp_path, name):
+    report_id, pending = api
+    original = b"original upload"
+    with fitz.open() as pdf:
+        pdf.new_page().insert_text((50, 50), "Converted preview")
+        preview = pdf.tobytes()
+
+    @contextmanager
+    def parse(source):
+        assert source.read_bytes() == original
+        output = tmp_path / "converted"
+        output.mkdir()
+        markdown = output / "document.md"
+        markdown.write_text("Converted preview", encoding="utf-8")
+        assets = output / "document.assets"
+        assets.mkdir()
+        pdf_path = assets / "preview.pdf"
+        pdf_path.write_bytes(preview)
+        sidecar = output / "document.boxes.json"
+        sidecar.write_text("{}")
+        yield ParsedDocument(markdown=markdown, pdf=pdf_path, json=sidecar)
+
+    monkeypatch.setattr(ocr, "parse_document", parse)
+    _, uploaded = upload(report_id, name=name, content=original)
+    ocr.process_ocr(pending[0])
+    path = f'/reports/{report_id}/documents/{uploaded["id"]}'
+    assert request("GET", path + "/pdf") == (200, preview)
+    response = document_pdf(report_id, uploaded["id"])
+    assert response.media_type == "application/pdf"
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert response.filename == name.rsplit(".", 1)[0] + ".pdf"
+    assert request("POST", path + "/markdown", {"content": "Edited text", "base_revision": 1})[0] == 200
+    assert request("GET", path + "/pdf") == (200, preview)
+    assert request("GET", path + "/original") == (200, original)
+    with database.session_scope() as session:
+        revisions = list(session.scalars(select(File).where(File.file_id == uploaded["id"]).order_by(File.version)))
+        assert len(revisions) == 2
+        assert revisions[0].pdf_path == revisions[1].pdf_path
+        storage.artifact_path(revisions[0].pdf_path).unlink()
+    assert request("GET", path + "/pdf")[0] == 404
 
 
 def test_ocr_failure_is_persisted(api, monkeypatch):

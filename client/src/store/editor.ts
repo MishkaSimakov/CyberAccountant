@@ -1,5 +1,5 @@
 import type {Module} from 'vuex'
-import {getMarkdown, originalUrl, saveMarkdown, type MarkdownRevision} from '../api'
+import {getMarkdown, pdfUrl, saveMarkdown, type MarkdownRevision} from '../api'
 import type {RootState} from './index'
 
 export interface EditorState {
@@ -24,8 +24,8 @@ export const editor: Module<EditorState, RootState> = {
     state: initialState,
     getters: {
         dirty: state => state.content !== state.savedContent,
-        originalUrl: state => state.reportId !== null && state.documentId !== null
-            ? originalUrl(state.reportId, state.documentId) : '',
+        pdfUrl: state => state.reportId !== null && state.documentId !== null
+            ? pdfUrl(state.reportId, state.documentId) : '',
         editable: (state, _getters, rootState) => state.reportId === rootState.report.id
             && !rootState.report.advancing
             && ['documents', 'entities'].includes(rootState.report.current?.stage ?? ''),

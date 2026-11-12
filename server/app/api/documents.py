@@ -1,5 +1,6 @@
 """HTTP controllers for persisted uploads and OCR output."""
 
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, File, Form, UploadFile
@@ -37,6 +38,14 @@ def delete_document(report_id: int, document_id: int):
 def original_document(report_id: int, document_id: int):
     file = service.original_document(report_id, document_id)
     return FileResponse(artifact_path(file.path), media_type=file.content_type, filename=file.name,
+                        content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
+
+
+@router.get("/reports/{report_id}/documents/{document_id}/pdf")
+def document_pdf(report_id: int, document_id: int):
+    file = service.pdf_document(report_id, document_id)
+    return FileResponse(artifact_path(file.pdf_path), media_type="application/pdf",
+                        filename=Path(file.name).with_suffix(".pdf").name,
                         content_disposition_type="inline", headers={"X-Content-Type-Options": "nosniff"})
 
 

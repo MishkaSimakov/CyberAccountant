@@ -35,6 +35,7 @@ class File(Timestamps, Base):
     name: Mapped[str]
     path: Mapped[str]
     hash: Mapped[str] = mapped_column(String(64))
+    pdf_path: Mapped[str | None]
     markdown_path: Mapped[str | None]
     entities_path: Mapped[str | None]
     role: Mapped[str] = mapped_column(String(32))

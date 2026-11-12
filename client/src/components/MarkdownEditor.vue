@@ -21,14 +21,14 @@ export default defineComponent({
   emits: ['close', 'saved'],
   data() {
     return {
-      preview: this.readonly || this.entities,
+      preview: true,
       restorePageScroll: undefined as (() => void) | undefined,
       faXmark, faFloppyDisk, faSpinner,
     }
   },
   computed: {
     ...mapState('editor', ['loading', 'saving', 'error', 'revision']),
-    ...mapGetters('editor', {dirty: 'dirty', url: 'originalUrl'}),
+    ...mapGetters('editor', {dirty: 'dirty', url: 'pdfUrl'}),
     content: {
       get(): string {
         return this.$store.state.editor.content
@@ -54,7 +54,7 @@ export default defineComponent({
     documentKey: {
       immediate: true,
       handler() {
-        this.preview = this.previewOnly
+        this.preview = true
         void this.open({reportId: this.reportId, documentId: this.document.id})
       },
     },
@@ -125,7 +125,7 @@ export default defineComponent({
       {{ error }}</p>
 
     <div class="grid min-h-0 flex-1 grid-rows-2 gap-4 sm:grid-cols-2 sm:grid-rows-1">
-      <DocumentViewer :src="url" :name="document.name" :content-type="document.content_type"/>
+      <DocumentViewer :src="url"/>
       <section class="flex min-h-0 min-w-0 flex-col overflow-hidden rounded border border-slate-200"
                :aria-busy="loading">
         <div class="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-3">

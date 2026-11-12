@@ -38,3 +38,6 @@ entities-worker = "app.worker:entities_main"
 
 [tool.setuptools.packages.find]
 include = ["app*", "checkier*"]
+
+[tool.setuptools.package-data]
+"checkier.data" = ["bip39_english.txt"]
