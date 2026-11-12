@@ -29,6 +29,7 @@ import numpy as np
 from PIL import Image, ImageOps, ImageSequence
 import pymupdf as fitz
 from .office_client import SandboxError, render as render_in_sandbox
+from .spreadsheet_layout import SpreadsheetLayout
 
 
 class ConversionError(RuntimeError):
@@ -575,6 +576,12 @@ def convert(source: Path, output: Path, args) -> dict:
         temporary = Path(temporary)
         preview = temporary / 'preview.pdf'
         renderer, image_info = prepare_pdf(source, preview, args)
+        spreadsheet = None
+        if source.suffix.lower() == '.xlsx':
+            report = json.loads((temporary / 'office-report.json').read_text(encoding='utf-8'))
+            if 'spreadsheet_layout' not in report:
+                raise ConversionError('Office service lacks cell geometry; rebuild the office_sandbox image.')
+            spreadsheet = SpreadsheetLayout(temporary / 'recalculated.xlsx', report['spreadsheet_layout'])
         if renderer in ('libreoffice_docker', 'text_render'):
             warnings.append(
                 'Coordinates refer to the fixed preview.pdf rendering; office/text files have no intrinsic page geometry.')
@@ -584,6 +591,8 @@ def convert(source: Path, output: Path, args) -> dict:
         with fitz.open(preview) as doc:
             if doc.needs_pass:
                 raise ConversionError('Encrypted PDF: decrypt it locally before conversion.')
+            if spreadsheet and len(doc) != len(spreadsheet.sheets):
+                raise ConversionError('Spreadsheet sheets and PDF pages do not match; refusing ambiguous coordinates.')
             for index, page in enumerate(doc):
                 number = index + 1
                 original_rotation = page.rotation
@@ -596,8 +605,8 @@ def convert(source: Path, output: Path, args) -> dict:
                 pix = page.get_pixmap(dpi=render_dpi, alpha=False, colorspace=fitz.csRGB)
                 image = Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
                 sx, sy = image.width / size[0], image.height / size[1]
-                tables, clean = raster_tables(image, sx, sy) if args.tables else ([], image)
-                use_ocr = args.ocr == 'always' or (args.ocr == 'auto' and not native)
+                tables, clean = raster_tables(image, sx, sy) if args.tables and not spreadsheet else ([], image)
+                use_ocr = not spreadsheet and (args.ocr == 'always' or (args.ocr == 'auto' and not native))
                 if use_ocr:
                     print(f'Page {number}/{len(doc)}: OCR', file=sys.stderr)
                     words = ocr_with_tables(image, clean, tables, size, args, temporary)
@@ -607,7 +616,7 @@ def convert(source: Path, output: Path, args) -> dict:
                         word.bbox = list(fitz.Rect(word.bbox) * page.rotation_matrix)
                         for character in word.characters:
                             character['bbox'] = list(fitz.Rect(character['bbox']) * page.rotation_matrix)
-                    if args.tables and not original_rotation:
+                    if args.tables and not original_rotation and not spreadsheet:
                         try:
                             vector = page.find_tables()
                             detected = [{'bbox': list(t.bbox), 'cells': [list(c) for c in t.cells if c],
@@ -619,7 +628,7 @@ def convert(source: Path, output: Path, args) -> dict:
                 if not words:
                     warnings.append(
                         f'Page {number}: no text recognized; inspect the preview for blank or unsupported content.')
-                if args.ocr == 'auto' and native and page.get_images():
+                if args.ocr == 'auto' and native and page.get_images() and not spreadsheet:
                     # Mixed PDFs can have a native title over a scanned body.
                     # OCR image regions, retaining native tokens where available.
                     for image_index, info in enumerate(page.get_image_info()):
@@ -668,7 +677,11 @@ def convert(source: Path, output: Path, args) -> dict:
                                     'character bounds are clipped. Extracted text may include cropped characters.')
                 character_start = len(writer.characters)
                 unmapped_start = writer.unmapped_character_count
-                write_page(writer, words, tables, number, size)
+                if spreadsheet:
+                    table_count = spreadsheet.write_page(writer, page, number)
+                else:
+                    write_page(writer, words, tables, number, size)
+                    table_count = sum(bool(table_grid(t, words)) for t in tables)
                 unmapped = writer.unmapped_character_count - unmapped_start
                 if unmapped:
                     warnings.append(
@@ -688,7 +701,7 @@ def convert(source: Path, output: Path, args) -> dict:
                         'word_count': len(words), 'ocr': any(w.method == 'tesseract' for w in words),
                         'character_count': len(writer.characters) - character_start,
                         'unmapped_character_count': unmapped,
-                        'table_count': sum(bool(table_grid(t, words)) for t in tables),
+                        'table_count': table_count,
                         }
                 if image_info:
                     info.update(image_info[index])
@@ -697,7 +710,11 @@ def convert(source: Path, output: Path, args) -> dict:
         office_report = None
         if (temporary / 'office-report.json').is_file():
             office_report = json.loads((temporary / 'office-report.json').read_text(encoding='utf-8'))
-            shutil.copyfile(temporary / 'office-report.json', assets / 'office-report.json')
+            # Cell rectangles are only needed to align text to the preview.
+            # Persist normalized character geometry without duplicate cell boxes.
+            office_report.pop('spreadsheet_layout', None)
+            (assets / 'office-report.json').write_text(
+                json.dumps(office_report, ensure_ascii=False, indent=2), encoding='utf-8')
         if (temporary / 'recalculated.xlsx').is_file():
             shutil.copyfile(temporary / 'recalculated.xlsx', assets / 'recalculated.xlsx')
     markdown = writer.text()
@@ -711,7 +728,7 @@ def convert(source: Path, output: Path, args) -> dict:
                                       'bbox_format': '[x0,y0,x1,y1]',
                                       'space': 'visible_rotated_page',
                                       'normalized_range': [0, 1]},
-                'renderer': renderer,
+                'renderer': renderer, 'layout_backend': 'openpyxl' if spreadsheet else 'classic',
                 'office_processing': None if office_report is None else {
                     'engine': office_report['engine'], 'recalculated': office_report['recalculated'],
                     'formula_count': office_report.get('formula_count', 0),

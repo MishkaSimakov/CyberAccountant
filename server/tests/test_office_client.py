@@ -106,3 +106,15 @@ class OfficeClientTests(unittest.TestCase):
             factory.return_value.open.return_value = Response(b'not an archive', 'text/html')
             with self.assertRaisesRegex(client.SandboxError, 'content type'):
                 client.render(self.source, self.destination)
+
+    def test_large_cell_layout_metadata_is_preserved(self):
+        layout = [{'name': 'Sheet', 'page': 1, 'cells': [
+            {'row': 0, 'col': 0, 'text': 'x' * (2 * 1024 * 1024), 'rect': [0, 0, 10, 10]},
+        ]}]
+        self.artifacts['report.json'] = json.dumps({
+            'engine': 'libreoffice', 'recalculated': True, 'spreadsheet_layout': layout,
+        }).encode()
+        with patch.object(client, 'build_opener') as factory:
+            factory.return_value.open.return_value = Response(make_archive(self.artifacts))
+            report = client.render(self.source, self.destination)
+        self.assertEqual(report['spreadsheet_layout'], layout)
