@@ -20,6 +20,20 @@ FILE_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
+MOCK_PAYROLL_MARKDOWN = """## Ведомость
+
+РАСЧЕТНАЯ ВЕДОМОСТЬ ПО ОПЛАТЕ ТРУДА
+
+Документ: <entity type="id" value="ВЕД-ЗП-2026-02" unit="string" id="143">ВЕД-ЗП-2026-02</entity>
+
+Проект: <entity type="id" value="24/03/15-01" unit="string" id="144">24/03/15-01</entity> | Период: <entity type="date" value="2026-02" unit="date" id="145">Февраль 2026</entity>
+
+| Код статьи | Вид начисления | Сумма, руб. | Основание |
+| --- | --- | --- | --- |
+| <entity type="id" value="0201" unit="string" id="146">0201</entity> | Основная заработная плата | <entity type="number" value="1015500.00" unit="rubles" id="147">1 015 500,00</entity> | Табель и расчет начислений |
+| <entity type="id" value="0202" unit="string" id="148">0202</entity> | Дополнительная заработная плата и резерв отпусков | <entity type="number" value="101500.00" unit="rubles" id="149">101 500,00</entity> | Доплаты и компенсационные начисления |
+|  | ИТОГО | <entity type="number" value="1117000.00" unit="rubles" id="150">1 117 000,00</entity> |  |
+"""
 
 
 class Document(BaseModel):
@@ -134,9 +148,8 @@ async def simulate_ocr(report_id: int, document_id: int):
         content = (
             f"# {document.name}\n\n"
             "> Демонстрационный результат: OCR пока работает как заглушка. "
-            "Текст документа не распознан.\n\n"
-            "Здесь появится распознанный текст. Вы можете заменить его текстом оригинала "
-            "и сохранить исправления.\n"
+            "Ниже приведён пример текста с сущностями. Текст документа не распознан.\n\n"
+            + MOCK_PAYROLL_MARKDOWN
         )
         revisions[document_id] = [MarkdownRevision(content=content, revision=1)]
         document.markdown_revision = 1

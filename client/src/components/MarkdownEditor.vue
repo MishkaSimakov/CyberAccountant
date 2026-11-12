@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import {computed, onMounted, onUnmounted, ref} from 'vue'
+import {computed, onMounted, onUnmounted, ref, watch} from 'vue'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import {faFloppyDisk} from '@fortawesome/free-solid-svg-icons/faFloppyDisk'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import {getMarkdown, originalUrl, saveMarkdown, type ReportDocument} from '../api'
 import DocumentViewer from './viewers/DocumentViewer.vue'
+import MarkdownViewer from './viewers/MarkdownViewer.vue'
 
 const props = defineProps<{ reportId: number; document: ReportDocument; readonly: boolean }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
@@ -16,9 +17,14 @@ const error = ref('')
 const content = ref('')
 const savedContent = ref('')
 const revision = ref(0)
+const preview = ref(props.readonly)
 const dirty = computed(() => content.value !== savedContent.value)
 const url = computed(() => originalUrl(props.reportId, props.document.id))
 let restorePageScroll: (() => void) | undefined
+
+watch(() => props.readonly, readonly => {
+  if (readonly) preview.value = true
+})
 
 function close() {
   if (saving.value) return
@@ -105,13 +111,23 @@ onUnmounted(() => restorePageScroll?.())
       <DocumentViewer :src="url" :name="document.name" :content-type="document.content_type"/>
       <section class="flex min-h-0 min-w-0 flex-col overflow-hidden rounded border border-slate-200"
                :aria-busy="loading">
-        <div class="shrink-0 border-b border-slate-200 p-3"><label for="markdown-content"
-                                                                   class="font-medium">Markdown</label>
+        <div class="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-3">
+          <h3 v-if="preview" class="font-medium">Текст документа</h3>
+          <label v-else for="markdown-content" class="font-medium">Markdown</label>
+          <div v-if="!readonly" class="flex gap-1" role="group" aria-label="Режим просмотра текста">
+            <button type="button" class="cursor-pointer rounded px-2 py-1 hover:bg-slate-100"
+                    :class="preview ? 'bg-blue-50 text-blue-700' : 'text-slate-500'"
+                    :aria-pressed="preview" @click="preview = true">Просмотр</button>
+            <button type="button" class="cursor-pointer rounded px-2 py-1 hover:bg-slate-100"
+                    :class="!preview ? 'bg-blue-50 text-blue-700' : 'text-slate-500'"
+                    :aria-pressed="!preview" @click="preview = false">Исходный текст</button>
+          </div>
         </div>
         <p v-if="loading" class="p-6 text-slate-500" role="status">Загружаем текст…</p>
         <div v-else-if="!revision" class="p-6">
           <button class="cursor-pointer text-blue-700 hover:underline" @click="load">Повторить загрузку текста</button>
         </div>
+        <MarkdownViewer v-else-if="preview" :content="content"/>
         <textarea v-else id="markdown-content" v-model="content"
                   class="block min-h-0 w-full flex-1 resize-none overflow-auto overscroll-contain p-4 font-mono text-sm leading-relaxed focus:outline-blue-500"
                   :readonly="readonly || saving" maxlength="1000000" spellcheck="false"/>
