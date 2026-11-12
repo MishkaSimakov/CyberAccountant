@@ -1,27 +1,22 @@
-"""Docling extracts XLSX structure; Calc and PyMuPDF supply real glyph geometry."""
+"""Read XLSX cells with openpyxl; preserve Calc display values and PDF glyphs."""
 from __future__ import annotations
 
 import re
 from types import SimpleNamespace
 
-from docling.document_converter import DocumentConverter, ExcelFormatOption
-from docling.datamodel.backend_options import MsExcelBackendOptions
-from docling.datamodel.base_models import InputFormat
-from docling_core.types.doc import TableItem
+from openpyxl import load_workbook
+from tabulate import tabulate
 
 
 class SpreadsheetLayout:
     def __init__(self, workbook, sheets):
         self.sheets = sheets
-        self.document = DocumentConverter(
-            allowed_formats=[InputFormat.XLSX],
-            format_options={InputFormat.XLSX: ExcelFormatOption(
-                backend_options=MsExcelBackendOptions(parse_charts=False))},
-        ).convert(workbook).document
+        self.workbook = load_workbook(workbook, data_only=True, keep_links=False)
 
     def write_page(self, writer, page, number):
         sheet = self.sheets[number-1]
-        cells = {(c['row'], c['col']): c for c in sheet['cells']}
+        worksheet = self.workbook.worksheets[number-1]
+        cells = {(c['row'], c['col']): c for c in sheet['cells'] if c['text'].strip()}
         glyphs = [dict(text=char['c'], bbox=list(char['bbox']))
                   for block in page.get_text('rawdict')['blocks']
                   for line in block.get('lines', []) for span in line['spans']
@@ -37,49 +32,46 @@ class SpreadsheetLayout:
             writer.word(SimpleNamespace(text=text, characters=characters), number,
                         [page.rect.width, page.rect.height])
 
+        rows = {}
+        for (row, col), cell in sorted(cells.items()):
+            rows.setdefault(row, []).append(cell)
+        blocks = []
+        for row in rows:
+            if not blocks or row != blocks[-1][-1]+1:
+                blocks.append([])
+            blocks[-1].append(row)
         count = 0
-        for table, _ in self.document.iterate_items():
-            if not table.prov or table.prov[0].page_no != number:
+        for block in blocks:
+            # Titles and metadata above a table occupy one source cell per row.
+            # Emit each once, including titles merged across several columns.
+            while block and len(rows[block[0]]) == 1:
+                emit(rows[block.pop(0)][0])
+                writer.write('\n\n')
+            if not block:
                 continue
-            origin = table.prov[0].bbox
-            if not isinstance(table, TableItem):
-                source = cells.get((int(origin.t), int(origin.l)))
-                if source and getattr(table, 'text', None):
-                    emit(source)
-                    writer.write('\n\n')
-                continue
-            entries = []
-            for cell in table.data.table_cells:
-                key = (int(origin.t)+cell.start_row_offset_idx,
-                       int(origin.l)+cell.start_col_offset_idx)
-                source = cells.get(key)
-                if source and source['text'].strip():
-                    entries.append((cell, source))
-            # A merged title followed by one-cell metadata rows is prose, not
-            # a table header to repeat in every Markdown column.
-            rows = [cell.start_row_offset_idx for cell, _ in entries]
-            if (any(cell.col_span == table.data.num_cols for cell, _ in entries)
-                    and len(rows) == len(set(rows))):
-                for _, source in entries:
-                    emit(source)
-                    writer.write('\n\n')
-                continue
-            if not entries:
-                continue
-            clone = table.model_copy(deep=True)
+            first_col = min(c['col'] for row in block for c in rows[row])
+            last_col = max(c['col'] for row in block for c in rows[row])
             markers = {}
-            for cell in clone.data.table_cells:
-                key = (int(origin.t)+cell.start_row_offset_idx,
-                       int(origin.l)+cell.start_col_offset_idx)
-                source = cells.get(key)
-                cell.text = ''
-                if source and source['text'].strip():
-                    marker = f'ZQOCR{len(markers)}QZ'
-                    markers[marker] = source
-                    cell.text = marker
-            # Docling's serializer handles Markdown tables, spans and escaping.
-            # Unique markers retain exact cell offsets even for repeated values.
-            rendered = clone.export_to_markdown(doc=self.document)
+            matrix = []
+            for row in block:
+                values = []
+                for col in range(first_col, last_col+1):
+                    source = cells.get((row, col))
+                    value = ''
+                    if source:
+                        value = f'ZQOCR{len(markers)}QZ'
+                        markers[value] = source
+                    values.append(value)
+                matrix.append(values)
+            first = [worksheet.cell(block[0]+1, c['col']+1) for c in rows[block[0]]]
+            text_header = all(isinstance(c.value, str) and not c.value.isdigit() for c in first)
+            has_numbers = any(isinstance(worksheet.cell(r+1, c['col']+1).value, (int, float))
+                              for r in block[1:] for c in rows[r])
+            header = text_header and (all(c.font.bold for c in first) or has_numbers)
+            headers = matrix.pop(0) if header else ['']*(last_col-first_col+1)
+            # The library renders Markdown; markers keep identical values tied
+            # to their own source cells and exact Markdown offsets.
+            rendered = tabulate(matrix, headers=headers, tablefmt='github', disable_numparse=True)
             position = 0
             for match in re.finditer(r'ZQOCR\d+QZ', rendered):
                 writer.write(rendered[position:match.start()])
