@@ -57,9 +57,9 @@ def context_factory(tmp_path, monkeypatch):
     monkeypatch.setattr(verification, 'generate_llm', forbidden)
     monkeypatch.setattr('checkier.stage5_relations.call_llm_json', forbidden)
 
-    def prepare(documents, *, start=date(2026, 1, 1), end=date(2026, 2, 28), style='numeric'):
+    def prepare(documents, *, start=date(2026, 1, 1), end=date(2026, 2, 28), style='numeric', row='3 этап, 2026 г.'):
         report = Report(id=1, name='Insurance test', contract_number='24/03/15-01',
-                        period_start=start, period_end=end, target_row='3 этап, 2026 г.')
+                        period_start=start, period_end=end, target_row=row)
         files = [File(file_id=i, version=1, name=name,
                       role='final_report' if name == 'card.md' else 'supporting',
                       entities_path=storage.save_entities(1, i, 1, text))
@@ -217,3 +217,31 @@ def test_missing_or_invalid_scope_cannot_generate_empty_sum(documents, context_f
     context.scope['target_period'] = period
     own = generate_insurance(context)
     assert own[0]['verdict'] == 'unverifiable' and 'equation' not in own[0]
+
+
+@pytest.mark.parametrize('style', ['numeric', 'mnemonic'])
+def test_row_number_selects_same_entities_as_label_and_keeps_report_year(documents, context_factory, style):
+    named, _ = run(context_factory(documents, style=style))
+    context = context_factory(documents, row='2', style=style, start=date(2025, 8, 1))
+    assert context.scope['target_label'] == '3 этап, 2026 г.'
+    own, results = run(context)
+    assert own == named
+    assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'
+
+
+def test_row_number_ignores_multirow_header_and_column_numbers(documents, context_factory):
+    documents['card.md'] = documents['card.md'].replace('| 3 этап, 2025 г.',
+        '| Уточняющая шапка | Взносы, всего | Другие затраты |\n| 1 | 2 | 3 |\n| 3 этап, 2025 г.', 1)
+    own, _ = run(context_factory(documents, row='2'))
+    assert 'equation' in own[0]
+
+
+def test_unknown_row_number_fails_instead_of_selecting_all_card_cells(documents, context_factory):
+    with pytest.raises(ValueError, match='Строка №99 не найдена'):
+        context_factory(documents, row='99')
+
+
+def test_row_number_rejects_ambiguous_monetary_tables(documents, context_factory):
+    documents['card.md'] += f'\n| Другая таблица | Сумма |\n| --- | --- |\n| Расходы | {tag("amount", "1", unit="RUB")} |\n'
+    with pytest.raises(ValueError, match='одна таблица'):
+        context_factory(documents, row='2')

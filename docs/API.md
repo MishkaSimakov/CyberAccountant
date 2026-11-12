@@ -11,6 +11,11 @@ The frontend uses the same API contract with stubs and the real processing pipel
 
 - POST /reports
   Create a report. Accepts a name and optional context: contract number, reporting period, and target row.
+  `target_row` accepts a label (`"3 этап, 2026 г."`) or a positive row number (`3` or `"3"`).
+  Numbers start at 1 among data rows of the final report's monetary table; leading headers,
+  the Markdown separator, and column-number rows are excluded. For example, `{"name": "КФЗ", "target_row": 3}`
+  selects the third data row. If there are multiple monetary tables or the row is missing,
+  verification reports an error instead of choosing an arbitrary row. The stored/returned value is a string.
 
 - GET /reports/{report_id}
   Return report details, document statuses, processing progress, blockers, and available actions. This is the main polling endpoint.

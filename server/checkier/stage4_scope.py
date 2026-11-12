@@ -160,8 +160,10 @@ def find_target_row_keys(
         *,
         target_label: str | None = None,
 ) -> tuple[set[str | int] | None, str | None]:
-    """Locate the requested card row («3 этап, 2026 г.») and return the
-    configured IDs of every entity on it.
+    """Locate a card row by label or one-based data-row number and return its IDs.
+
+    Numeric selection requires one monetary table and excludes its leading
+    headers and column-number row. The returned label is the selected row label.
 
     Returns (keys, label). ``keys is None`` means targeting is disabled or
     the row could not be located — the caller should then treat ALL card
@@ -207,12 +209,16 @@ def find_target_row_keys(
         lines.append((off, off + len(line), _TAGMARKUP_RE.sub("", line)))
         off += len(line)
 
-    hits = [
-        (s, e)
-        for s, e, plain in lines
-        if (re.search(rf"(?<!\d){re.escape(stage_no)}\s*этап", plain, re.IGNORECASE)
-            if stage_no is not None else " ".join(label.casefold().split()) in " ".join(plain.casefold().split()))
-    ]
+    if label.strip().isdecimal():
+        selected = _numbered_row(lines, registry, card_h8, int(label))
+        hits = [(selected[0], selected[1])]
+        label = selected[2].strip().strip("|").split("|")[0].strip()
+    else:
+        hits = [
+            (s, e) for s, e, plain in lines
+            if (re.search(rf"(?<!\d){re.escape(stage_no)}\s*этап", plain, re.IGNORECASE)
+                if stage_no is not None else " ".join(label.casefold().split()) in " ".join(plain.casefold().split()))
+        ]
     if not hits:
         return None, label
     if year is not None:
@@ -231,3 +237,33 @@ def find_target_row_keys(
            and any(s <= e.span[0] and e.span[1] <= en for s, en in hits)
     }
     return (keys or None), label
+
+
+def _numbered_row(lines, registry, card_file, number):
+    """One-based data rows of the unique monetary table; preserve source spans."""
+    if number < 1:
+        raise ValueError("Номер строки должен быть положительным целым числом.")
+    amounts = [e for e in registry.entities if e.file == card_file and e.type == "amount"]
+    tables, rows, fenced = [], [], False
+    for line in lines + [(0, 0, "")]:
+        if line[2].lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        if not fenced and line[2].lstrip().startswith("|"):
+            rows.append(line)
+        elif rows:
+            tables.append(rows)
+            rows = []
+    has_amount = lambda row: any(row[0] <= e.span[0] and e.span[1] <= row[1] for e in amounts)
+    tables = [table for table in tables if any(has_amount(row) for row in table)]
+    if len(tables) != 1:
+        raise ValueError("Для выбора по номеру нужна одна таблица с денежными суммами; укажите подпись строки.")
+    table = tables[0]
+    data = []
+    for row in table[next(i for i, row in enumerate(table) if has_amount(row)):]:
+        cells = [c.strip() for c in re.split(r"(?<!\\)\|", row[2].strip().strip("|"))]
+        if all(re.fullmatch(r":?-+:?", c) for c in cells) or cells == [str(i+1) for i in range(len(cells))]:
+            continue
+        data.append(row)
+    if number > len(data):
+        raise ValueError(f"Строка №{number} не найдена: в таблице {len(data)} строк данных.")
+    return data[number-1]
