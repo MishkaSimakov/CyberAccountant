@@ -61,3 +61,20 @@ def test_target_row_missing_falls_back_to_none(tmp_path):
     keys, label = find_target_row_keys(cfg, reg, mapping)
     assert keys is None   # row not found -> caller keeps all card cells as variables
     assert label == "7 этап, 2026 г."
+
+
+def test_label_prefers_row_spec_over_filename_quote(tmp_path):
+    """A «...этап_3.pdf» filename quote must not win over «3 этап, 2026 г.»."""
+    card = "# КФЗ\n| <ent t=\"number\">3</ent> этап | <ent t=\"amount\" u=\"RUB\">1,00</ent> |\n"
+    req = ("# README\nФайл: «01_Карточка_учета_фактических_затрат_этап_3.pdf».\n"
+           "Проверяемая строка отчета: «3 этап, 2026 г.».\n")
+    cfg, mapping = _mk(tmp_path,
+                       {"card1": "card", "req1": "request"},
+                       {"card1": card, "req1": req})
+    reg = EntityRegistry(0)
+    _add_span(reg, card, '<ent t="number">3</ent>', "3", "number", "card", "card1")
+    _add_span(reg, card, '<ent t="amount" u="RUB">1,00</ent>', "1,00",
+              "amount", "card", "card1")
+    keys, label = find_target_row_keys(cfg, reg, mapping)
+    assert label == "3 этап, 2026 г."
+    assert keys is not None and len(keys) == 2

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from cyberaccountant.config import PipelineConfig
 from cyberaccountant.entities import EntityRegistry
@@ -172,6 +173,27 @@ def format_report_text(report: dict, mapping: dict | None = None) -> str:
 
     rels = report["relations"]
     interesting = [r for r in rels if r["status"] in ("false", "error", "unverifiable")]
+    # id -> cell/constant info, for annotating equations with what each
+    # mnemonic actually is (raw value, type, source file)
+    id_map: dict[str, dict] = {}
+    for c in report["card"]["cells"] + report.get("constants", []):
+        id_map[str(c.get("mnemonic") or c.get("id"))] = c
+
+    def annotate(equation: str) -> str:
+        notes = []
+        for i in dict.fromkeys(re.findall(r"[a-z]+-[a-z]+", equation)):
+            info = id_map.get(i)
+            if info is None:
+                notes.append(f"{i}=?")
+                continue
+            val = info.get("stated") or info.get("expected") or ""
+            notes.append(
+                f"{i} = {info.get('raw')!r} [{info.get('type')}"
+                + (f" = {val}" if val else "")
+                + f", {orig(info.get('file') or '?')}]"
+            )
+        return "; ".join(notes)
+
     lines.append("")
     lines.append(
         f"=== RELATIONS NOT PROVEN TRUE ({len(interesting)} of {len(rels)}) ==="
@@ -181,6 +203,9 @@ def format_report_text(report: dict, mapping: dict | None = None) -> str:
         tag = f"[{r['tag']}] " if r.get("tag") else ""
         files = ", ".join(orig(f) for f in r.get("files", []))
         lines.append(f"  #{r['index']} {status} {tag}{r['equation']}")
+        ann = annotate(r["equation"])
+        if ann:
+            lines.append(f"      where: {ann}")
         if r.get("error"):
             lines.append(f"      error: {r['error']}")
         if files:

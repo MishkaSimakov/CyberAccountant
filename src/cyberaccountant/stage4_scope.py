@@ -172,9 +172,9 @@ def find_target_row_keys(
         if p.exists():
             request_plain += "\n" + _TAGMARKUP_RE.sub("", p.read_text(encoding="utf-8"))
     label: str | None = None
-    # prefer the «...» phrase that mentions an этап (the report row spec);
-    # fall back to the first quoted phrase
-    m = re.search(r"«([^»]*этап[^»]*)»", request_plain, re.IGNORECASE) or _QUOTED_RE.search(
+    # prefer the «...» phrase naming a report row (digit + "этап") — a bare
+    # «...этап_3.pdf» filename quote must not win; fall back to first quote
+    m = re.search(r"«([^»]*\d+\s*этап[^»]*)»", request_plain, re.IGNORECASE) or _QUOTED_RE.search(
         request_plain
     )
     if m:

@@ -1,5 +1,5 @@
 """Stage 6: SMT-backed equation system solver (Z3 for numeric/date
-constraints, union-find for string identities).
+constraints, worklist propagation for string identities).
 
 Model:
   - данные/request entities are constants (truth by definition);
@@ -10,11 +10,12 @@ Model:
 String identities (docids, contract numbers) are NOT given to z3 — the
 String/seq theory in this z3 build hangs on mixed string+arithmetic contexts
 (ignoring solver timeouts). Instead, all ``==``/``!=`` between string-typed
-operands are resolved with a union-find over a shared value universe:
-entities with grounded values and string literals form components; a
-component with exactly one distinct value pins every member (including
-card string variables); a component with two distinct values is contradictory
-(``==`` evaluates false, ``!=`` true). This is complete for ==/!= systems.
+operands are resolved by WORKLIST PROPAGATION: grounded entity values and
+string literals are known; an ``==`` between a known and an unknown node
+assigns the known value; between two known nodes it is decided true/false on
+the spot. This keeps contradictions LOCAL — a false claim (e.g. an
+out-of-scope document's contract number) can never poison unrelated
+identities, which blind union-find merging would do.
 
 Numeric/date relations go to z3 as LRA/LIA (amounts as Real, dates as Int
 ordinals). Each relation is either *entailed* by the constants, *contradicted*
@@ -51,6 +52,11 @@ from cyberaccountant.formula import (
 
 NUMERIC_TYPES = ("amount", "number", "pct", "ratio")
 NUMERIC_SORTS = (z3.Z3_REAL_SORT, z3.Z3_INT_SORT)
+
+
+class FormulaUndetermined(FormulaError):
+    """A relation is well-formed but cannot be decided for lack of data
+    (e.g. an identity between two ungrounded string variables)."""
 
 
 @dataclass
@@ -148,8 +154,6 @@ class Solver:
         self.free: set[str] = set()
         #: num -> resolved string value for string-typed entities
         self.str_value: dict[int, str | None] = {}
-        #: nums whose string component is contradictory (== false, != true)
-        self.str_contra: set[int] = set()
         self.acc = z3.Solver()
         self.acc.set("timeout", 20_000)  # ms; unknown -> "unverifiable"
         self._build_consts()
@@ -224,23 +228,10 @@ class Solver:
         for e in self.registry.entities:
             self._const(e)
 
-    # -- string identity resolution (union-find, no z3) -------------------------
+    # -- string identity resolution (worklist propagation, no z3) ---------------
     def _resolve_strings(self) -> None:
-        parent: dict[tuple, tuple] = {}
-
-        def find(x: tuple) -> tuple:
-            parent.setdefault(x, x)
-            root = x
-            while parent[root] != root:
-                root = parent[root]
-            while parent[x] != root:  # path compression
-                parent[x], x = root, parent[x]
-            return root
-
-        def union(a: tuple, b: tuple) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
+        known: dict[tuple, str] = {}  # ("ent", num) | ("lit", value) -> value
+        eqs: list[tuple[tuple, tuple]] = []
 
         def key_of(node: Node) -> tuple | None:
             if isinstance(node, Str):
@@ -251,47 +242,38 @@ class Solver:
                     return ("ent", e.num)
             return None
 
-        neq: list[tuple[tuple, tuple]] = []
+        for e in self.registry.entities:
+            if self._const_sort(e) == "string" and e.value is not None:
+                known[("ent", e.num)] = str(e.value)
+
         for rel in self.relations:
             if rel.ast is None:
                 continue
             for op, l_node, r_node in self._eq_leaves(rel.ast):
+                if op != "==":
+                    continue  # != never assigns values
                 ka, kb = key_of(l_node), key_of(r_node)
-                if ka is None or kb is None:
-                    continue
-                if op == "==":
-                    union(ka, kb)
-                else:
-                    neq.append((ka, kb))
+                if ka is not None and kb is not None:
+                    eqs.append((ka, kb))
 
-        # component values from grounded entities and literals
-        values: dict[tuple, set[str]] = {}
-
-        def add_val(k: tuple, v: str) -> None:
-            values.setdefault(find(k), set()).add(v)
-
-        for e in self.registry.entities:
-            if self._const_sort(e) == "string" and e.value is not None:
-                add_val(("ent", e.num), str(e.value))
-        for pair in neq:
-            for k in pair:
-                if k[0] == "lit":
-                    add_val(k, k[1])
-
-        def resolve(k: tuple) -> tuple[str | None, bool]:
-            vals = values.get(find(k), set())
-            if len(vals) == 1:
-                return next(iter(vals)), False
-            if len(vals) > 1:
-                return None, True
-            return None, False
+        # propagate known values along == edges until fixpoint; a known-known
+        # mismatch is left for translation-time leaf evaluation (local false)
+        changed = True
+        while changed:
+            changed = False
+            for a, b in eqs:
+                va, vb = known.get(a), known.get(b)
+                if va is not None and vb is None:
+                    known[b] = va
+                    changed = True
+                elif vb is not None and va is None:
+                    known[a] = vb
+                    changed = True
 
         for e in self.registry.entities:
             if self._const_sort(e) != "string":
                 continue
-            v, contra = resolve(("ent", e.num))
-            if contra:
-                self.str_contra.add(e.num)
+            v = known.get(("ent", e.num))
             self.str_value[e.num] = v
             if self._is_variable(e):
                 if v is not None:
@@ -375,16 +357,8 @@ class Solver:
                     f"type clash in '{op}': {self._describe(l)}"
                     f" vs {self._describe(r)}"
                 )
-            e_l = self.by_key.get(node.left.key) if isinstance(node.left, Id) else None
-            e_r = self.by_key.get(node.right.key) if isinstance(node.right, Id) else None
-            contra = (
-                (e_l is not None and e_l.num in self.str_contra)
-                or (e_r is not None and e_r.num in self.str_contra)
-            )
-            if contra:
-                return op == "!="
             if l.value is None or r.value is None:
-                raise FormulaError(
+                raise FormulaUndetermined(
                     f"string value undetermined in '{op}': {l.desc} vs {r.desc}"
                 )
             eq = l.value == r.value
@@ -453,6 +427,10 @@ class Solver:
                 continue
             try:
                 result = self.to_z3(rel.ast)
+            except FormulaUndetermined as exc:
+                rel.status = "unverifiable"
+                rel.error = str(exc)
+                continue
             except FormulaError as exc:
                 rel.status = "error"
                 rel.error = str(exc)
