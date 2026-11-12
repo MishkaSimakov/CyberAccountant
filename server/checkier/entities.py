@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
+from html import unescape
 from pathlib import Path
 
 from checkier.bip39 import MnemonicSampler
@@ -30,7 +31,7 @@ MONTHS_RU = {
 
 
 def parse_tag_attrs(attr_str: str) -> dict[str, str]:
-    attrs = dict(ATTR_RE.findall(attr_str))
+    attrs = {key: unescape(value) for key, value in ATTR_RE.findall(attr_str)}
     return attrs
 
 
@@ -73,7 +74,7 @@ def parse_amount(raw: str) -> Decimal | None:
     text = raw.strip()
     # Russian spelled-out amounts
     if any(c.isalpha() for c in text) and any(
-        w in text.lower() for w in ("руб", "копе")
+            w in text.lower() for w in ("руб", "копе")
     ):
         parsed = _parse_ru_amount_words(text)
         if parsed is not None:
@@ -97,13 +98,13 @@ def parse_amount(raw: str) -> Decimal | None:
     elif comma != -1:
         text = text.replace(".", "")
         # comma is decimal separator if followed by 1-2 digits at end
-        frac = text[comma + 1 :]
+        frac = text[comma + 1:]
         if len(frac) <= 2 and frac.isdigit():
             text = text.replace(",", ".")
         else:
             text = text.replace(",", "")
     elif dot != -1:
-        frac = text[dot + 1 :]
+        frac = text[dot + 1:]
         if len(frac) <= 2 and frac.isdigit():
             pass  # already decimal
         else:
@@ -201,16 +202,16 @@ class EntityRegistry:
         self.entities: list[Entity] = []
 
     def add(
-        self,
-        type_: str,
-        raw: str,
-        unit: str,
-        norm: str,
-        file: str,
-        role: str,
-        span: tuple[int, int],
-        loc: str = "body",
-        source_text: str = "",
+            self,
+            type_: str,
+            raw: str,
+            unit: str,
+            norm: str,
+            file: str,
+            role: str,
+            span: tuple[int, int],
+            loc: str = "body",
+            source_text: str = "",
     ) -> Entity:
         num = len(self.entities)
         mnemonic = self._sampler.next()
@@ -243,6 +244,14 @@ class EntityRegistry:
             mult = Decimal(norm)
             return str(v * mult)
         if type_ in ("number", "pct", "ratio"):
+            if type_ == "pct":
+                raw = raw.strip().removesuffix("%").strip()
+            if type_ == "ratio":
+                parts = re.split(r"[:/]", raw)
+                if len(parts) == 2:
+                    numerator, denominator = (parse_amount(part) for part in parts)
+                    if numerator is not None and denominator is not None and denominator != 0:
+                        return str(numerator / denominator)
             v = parse_amount(raw)
             return str(v) if v is not None else raw.strip()
         return raw.strip()
@@ -261,8 +270,8 @@ class EntityRegistry:
 
 
 def build_registry(
-    tagged_docs: dict[str, tuple[str, str]],  # h8 -> (role, tagged_text)
-    seed: int = 0,
+        tagged_docs: dict[str, tuple[str, str]],  # h8 -> (role, tagged_text)
+        seed: int = 0,
 ) -> EntityRegistry:
     """Parse <ent> tags from every tagged doc and build the global registry.
 
@@ -280,9 +289,9 @@ def build_registry(
             # crude filename detection: tag starts before first newline of '# ' line
             line_start = text.rfind("\n", 0, m.start()) + 1
             loc = "body"
-            if text[line_start : line_start + 2] == "# ":
+            if text[line_start: line_start + 2] == "# ":
                 loc = "filename"
-            reg.add(
+            entity = reg.add(
                 type_=t,
                 raw=raw,
                 unit=u,
@@ -293,4 +302,11 @@ def build_registry(
                 loc=loc,
                 source_text=raw,
             )
+            if "value" in attrs:
+                value = attrs["value"]
+                if t == "date":
+                    normalized_date = parse_date(value)
+                    entity.value = normalized_date.toordinal() if normalized_date else None
+                else:
+                    entity.value = value if value else None
     return reg

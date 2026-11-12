@@ -2,7 +2,7 @@
 
 import logging
 
-from checkier import PipelineConfig, tag_document
+from checkier import PipelineConfig, normalize_document, tag_document
 
 from ..database import session_scope
 from ..models import File
@@ -33,6 +33,7 @@ def process_entities(file_revision_id: int) -> None:
         source = artifact_path(file.markdown_path)
         cfg = PipelineConfig(data_dir=source.parent, out_dir=source.parent, tag_workers=1)
         tagged, _retries = tag_document(cfg, file.name, source.read_text(encoding="utf-8"))
+        tagged = normalize_document(cfg, tagged)
         entities_path = save_entities(report_id, file.file_id, file.version, tagged)
     except Exception:
         logger.exception("Entries extraction failed for file revision %s", file_revision_id)

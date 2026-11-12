@@ -21,7 +21,7 @@ SEGMENTS = [
     {"content": "# Сумма\nИтого: ", "wrap": "100,00", "type": "amount", "unit": "RUB"},
     {"content": " руб.\n", "wrap": "", "type": "EOF"},
 ]
-TAGGED = '# Сумма\nИтого: <ent t="amount" u="RUB">100,00</ent> руб.\n'
+TAGGED = '# Сумма\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
 
 
 @pytest.fixture
@@ -127,6 +127,47 @@ def test_extraction_failure_can_be_retried_without_repeating_successes(ready, mo
     monkeypatch.setattr(job, "tag_document", fail)
     job.process_entities(revisions[0])  # Completed jobs are harmless if delivered twice.
     job.process_entities(999999)
+
+
+def test_date_normalization_finishes_before_extraction_is_completed(ready, monkeypatch):
+    report_id, revisions, _ = ready
+    request("POST", f"/reports/{report_id}/run-entity-extraction")
+    monkeypatch.setattr(job, "tag_document", lambda *args, **kwargs: (
+        '<ent t="date">Январь 2026</ent>', 0
+    ))
+
+    def normalize(*args, **kwargs):
+        with database.session_scope() as session:
+            file = session.get(File, revisions[0])
+            assert file.status == "entities_running"
+            assert file.entities_path is None
+        return [{"raw": "Январь 2026", "normalized": "01.01.2026"}]
+
+    monkeypatch.setattr("checkier.stage2_dates.call_llm_json", normalize)
+    job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        file = session.get(File, revisions[0])
+        assert file.status == "completed"
+        assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == (
+            '<ent t="date" value="2026-01-01">Январь 2026</ent>'
+        )
+
+
+def test_normalization_failure_does_not_publish_unnormalized_extraction(ready, monkeypatch):
+    report_id, revisions, _ = ready
+    request("POST", f"/reports/{report_id}/run-entity-extraction")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("Date normalization unavailable")
+
+    monkeypatch.setattr(job, "normalize_document", fail)
+    with pytest.raises(RuntimeError, match="Date normalization unavailable"):
+        job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        file = session.get(File, revisions[0])
+        assert file.status == "failed"
+        assert file.entities_path is None
+        assert storage.artifact_path(file.markdown_path).read_text(encoding="utf-8") == MARKDOWN
 
 
 def test_enqueue_failure_is_persisted_and_retryable(ready, monkeypatch):
