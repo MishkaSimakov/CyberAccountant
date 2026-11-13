@@ -114,7 +114,9 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
     status, result = request("GET", path + "/verification-result")
     assert status == 200
     assert result["requirement_results"][0]["requirement_id"] == definitions[0]["id"]
-    assert result["requirement_results"][0]["verdict"] == "true"
+    assert result["requirement_results"][0]["verdict"] == "false"
+    assert result["relations"][0]["status"] == "false"
+    assert result["summary"]["relations_false_on_card"] == 1
     cell = result["card"]["cells"][0]
     assert cell["status"] == "mismatch"
     assert (cell["num"], cell["stated"], cell["expected"], cell["diff"]) == (0, "110", "100", "10")
@@ -388,7 +390,7 @@ def test_assertions_do_not_constrain_formulas_and_keep_requirement_ids(reviewed,
     result = request("GET", f"/reports/{report_id}/verification-result")[1]
     outcomes = result["requirement_results"]
     assert [item["requirement_id"] for item in outcomes] == [item.id for item in definitions]
-    assert [item["verdict"] for item in outcomes] == ["false", "true", "true", "unverifiable", "error"]
+    assert [item["verdict"] for item in outcomes] == ["false", "false", "true", "unverifiable", "error"]
     assert result["card"]["cells"][0]["expected"] == "100"
     assert definitions[1].text == "Сумма по документам"
     assert outcomes[-1]["error"] == "Unknown entity IDs: [999]"

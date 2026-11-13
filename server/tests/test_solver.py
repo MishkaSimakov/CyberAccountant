@@ -65,7 +65,8 @@ def test_mismatch_detected():
     )
     a, b, c = ents["doc-a"].key, ents["doc-b"].key, ents["card-total"].key
     rels = [{"equation": f"{a} + {b} == {c}"}]
-    _, _, verdicts, _ = solve_system(rels, reg)
+    relations, _, verdicts, _ = solve_system(rels, reg)
+    assert relations[0].status == "false"
     v = next(v for v in verdicts if v.mnemonic == ents["card-total"].mnemonic)
     assert v.status == "mismatch"
     assert v.expected == "1000"
@@ -173,7 +174,8 @@ def test_joint_system_mismatch_detected():
     x, y = ents["card-x"].key, ents["card-y"].key
     rels = [{"equation": f"{x} + {y} == 1000"},
             {"equation": f"{x} - {y} == 200"}]
-    _, _, verdicts, _ = solve_system(rels, reg)
+    relations, _, verdicts, _ = solve_system(rels, reg)
+    assert [relation.status for relation in relations] == ["false", "false"]
     by_mn = {v.mnemonic: v for v in verdicts}
     assert by_mn[ents["card-x"].mnemonic].status == "ok"
     v = by_mn[ents["card-y"].mnemonic]
@@ -190,7 +192,7 @@ def test_bounded_variable_is_unverified_not_pinned():
     d = ents["card-d"].key
     rels = [{"equation": f"01.01.2026 <= {d} && {d} <= 31.05.2026"}]
     relations, _, verdicts, _ = solve_system(rels, reg)
-    assert relations[0].status == "true"  # consistent, accepted
+    assert relations[0].status == "unverifiable"  # no recorded date
     v = next(v for v in verdicts if v.mnemonic == ents["card-d"].mnemonic)
     assert v.status == "unverified"  # bounds don't pin a unique value
 
@@ -207,7 +209,7 @@ def test_and_chain_of_identities_resolves():
     reg.entities[2].value = None  # c ungrounded
     rels = [{"equation": f"{a} == {b} && {b} == {c}"}]
     relations, _, _, _ = solve_system(rels, reg)
-    assert relations[0].status == "true"
+    assert relations[0].status == "unverifiable"
 
 
 def test_non_target_card_cells_become_constants():
