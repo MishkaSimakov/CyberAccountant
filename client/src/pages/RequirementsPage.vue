@@ -131,7 +131,6 @@ export default defineComponent({
               <td class="p-4">
                 <RequirementText :text="`#${field.num}`" :entity-documents="entityDocuments"
                                  @select="selectedEntityId = $event"/>
-                <span class="ml-2 text-slate-500">{{ field.raw }}</span>
               </td>
               <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.stated) }}</td>
               <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.expected) }}</td>
