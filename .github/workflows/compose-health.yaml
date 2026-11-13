@@ -1,0 +1,71 @@
+name: Compose health checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compose-health-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  health:
+    name: Health (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: production
+            compose_file: compose.yaml
+            client_url: http://127.0.0.1:8000
+          - mode: development
+            compose_file: compose.dev.yaml
+            client_url: http://127.0.0.1:5173
+    env:
+      COMPOSE_FILE: ${{ matrix.compose_file }}
+      COMPOSE_PROJECT_NAME: ci-health-${{ matrix.mode }}
+      CLIENT_URL: ${{ matrix.client_url }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start application and wait for every service
+        run: docker compose up --build --wait --wait-timeout 180
+
+      - name: Check application endpoints
+        run: |
+          python3 .github/scripts/check-http.py
+          docker compose exec -T server python -c '
+          import json, os, urllib.request
+          with urllib.request.urlopen(os.environ["OFFICE_SANDBOX_URL"] + "/health", timeout=10) as response:
+              assert json.load(response)["status"] == "ok"
+          print("Office sandbox reachable from the API")
+          '
+
+      - name: Report every component and collect logs
+        if: always()
+        run: |
+          mkdir -p test-results
+          docker compose ps --all > test-results/compose-status.txt
+          docker compose logs --no-color --timestamps > test-results/compose.log 2>&1
+          python3 .github/scripts/compose-summary.py >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload health check logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: compose-health-${{ matrix.mode }}
+          path: test-results/
+          retention-days: 14
+
+      - name: Stop application
+        if: always()
+        run: docker compose down --volumes --remove-orphans
