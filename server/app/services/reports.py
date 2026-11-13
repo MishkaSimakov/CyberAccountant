@@ -1,5 +1,7 @@
 """Persist reports and expose their current document-processing progress."""
 
+from pathlib import Path
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -108,8 +110,17 @@ def create_report(payload: ReportCreate) -> ReportResponse:
         report = Report(**payload.model_dump())
         session.add(report)
         session.flush()
+        report.log_path = storage.create_report_log(report.id)
         result = ReportResponse.model_validate(report, from_attributes=True)
     return result
+
+
+def report_log(report_id: int) -> Path:
+    with session_scope() as session:
+        report = find_report(session, report_id)
+        if not report.log_path or not storage.artifact_path(report.log_path).is_file():
+            raise ServiceError(404, "Журнал отчёта не найден.")
+        return storage.artifact_path(report.log_path)
 
 
 def report_details(report_id: int) -> dict:

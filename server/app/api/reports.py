@@ -1,6 +1,7 @@
 """HTTP controllers for report creation, listing, and processing progress."""
 
 from fastapi import APIRouter
+from fastapi.responses import FileResponse
 
 from ..schemas.reports import Report, ReportCreate
 from ..services import reports as service
@@ -21,3 +22,10 @@ def create_report(payload: ReportCreate):
 @router.get("/reports/{report_id}")
 def report_details(report_id: int):
     return service.report_details(report_id)
+
+
+@router.get("/reports/{report_id}/log")
+def report_log(report_id: int):
+    return FileResponse(service.report_log(report_id), media_type="text/plain; charset=utf-8",
+                        filename=f"report-{report_id}.log", content_disposition_type="inline",
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})

@@ -11,6 +11,8 @@ from rq import Queue, SimpleWorker
 from rq.job import Job
 from sqlalchemy import func, select
 
+from checkier import llm
+
 from app import database, queue, storage, verification
 from app.jobs.verification import process_requirement_generation, process_verification
 from app.models import EntityFile, File, Report, Requirement, VerificationResult
@@ -232,6 +234,83 @@ def test_failed_generation_is_retryable_without_partial_results(reviewed, monkey
     assert pending == [report_id, report_id]
     assert reports.report_details(report_id)["stage"] == "requirements"
     assert reports.report_details(report_id)["processing_status"] == "completed"
+
+
+def test_requirement_model_calls_append_to_one_report_log_across_failed_runs(reviewed, monkeypatch):
+    report_id, revisions, _ = reviewed
+    path = f"/reports/{report_id}"
+    prompts = []
+    outputs = []
+    failing = True
+
+    def respond(payload, timeout):
+        prompts.append(payload["input"])
+        output = ("Некорректный ответ\r\n" * 4_000 if failing
+                  else '[{"equation": "#0 == #1", "tag": "agg"}]')
+        outputs.append(output)
+        return {"output_text": output}
+
+    monkeypatch.setattr(llm, "_post", respond)
+    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", llm.call_llm_json)
+    with database.session_scope() as session:
+        log_path = session.get(Report, report_id).log_path
+        assert log_path
+        assert all(session.get(File, revision).log_path != log_path for revision in revisions)
+    for run in range(1, 3):
+        assert request("POST", path + "/generate-requirements")[0] == 200
+        with pytest.raises(llm.LLMError, match="validation failed after retries"):
+            process_requirement_generation(report_id)
+        details = request("GET", path)[1]
+        assert details["stage"] == "requirements" and details["processing_status"] == "failed"
+        assert details["available_actions"] == ["generate_requirements"]
+        assert "Некорректный ответ" not in json.dumps(details, ensure_ascii=False)
+        status, content = request("GET", path + "/log")
+        assert status == 200
+        assert content.count(b"\nRUN ") == run
+        assert content.count(b"--- MODEL PROMPT |") == run * 3
+        assert content.count(b"--- MODEL OUTPUT |") == run * 3
+        assert content.count(b"ERROR (LLMError):") == run
+        assert all(prompt.encode("utf-8") in content for prompt in prompts)
+        assert all(output.encode("utf-8") in content for output in outputs)
+        with database.session_scope() as session:
+            assert session.scalar(select(func.count()).select_from(Requirement)) == 0
+            assert all(storage.artifact_path(session.get(File, revision).log_path).read_bytes() == b""
+                       for revision in revisions)
+    failed_log = content
+    failing = False
+    assert request("POST", path + "/generate-requirements")[0] == 200
+    process_requirement_generation(report_id)
+    assert request("GET", path)[1]["processing_status"] == "completed"
+    status, content = request("GET", path + "/log")
+    assert status == 200 and content.startswith(failed_log)
+    assert content.count(b"\nRUN ") == 3
+    assert content.count(b"--- MODEL PROMPT |") == len(prompts) == 7
+    assert content.count(b"--- MODEL OUTPUT |") == len(outputs) == 7
+    with database.session_scope() as session:
+        assert session.get(Report, report_id).log_path == log_path
+    _, other = request("POST", "/reports", {"name": "Other report"})
+    assert request("GET", f'/reports/{other["id"]}/log') == (200, b"")
+
+
+def test_report_log_endpoint_serves_plain_text_and_handles_missing_logs(api):
+    from app.api.reports import report_log
+    from checkier.file_log import append_log
+
+    report_id, _ = api
+    path = f"/reports/{report_id}/log"
+    assert request("GET", path) == (200, b"")
+    with database.session_scope() as session:
+        log_path = storage.artifact_path(session.get(Report, report_id).log_path)
+    text = "<script>raw report log</script>\r\nЖурнал отчёта\n"
+    append_log(log_path, text)
+    assert request("GET", path) == (200, text.encode("utf-8"))
+    response = report_log(report_id)
+    assert response.media_type == "text/plain; charset=utf-8"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
+    log_path.unlink()
+    assert request("GET", path)[0] == 404
+    assert request("GET", "/reports/999999/log")[0] == 404
 
 
 def test_enqueue_failure_and_incomplete_documents(reviewed, monkeypatch):
