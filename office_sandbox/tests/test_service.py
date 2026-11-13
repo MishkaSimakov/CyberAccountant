@@ -1,6 +1,8 @@
+import asyncio
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -9,6 +11,11 @@ from office_sandbox import service
 
 
 class OfficeServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.slots = patch.object(service, 'conversion_slots', asyncio.Semaphore(1))
+        self.slots.start()
+        self.addCleanup(self.slots.stop)
+
     async def request(self, path, body=b'', method='POST'):
         messages = []
 
@@ -57,13 +64,54 @@ class OfficeServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await self.request('/convert/docx', b'too big'))[0], 413)
             convert.assert_not_called()
 
-    async def test_busy_worker_is_rejected_and_conversion_failures_are_reported(self):
-        async with service.conversion_lock:
-            self.assertEqual((await self.request('/convert/docx', b'document'))[0], 503)
+    async def test_queue_timeout_and_conversion_failure_release_slots(self):
+        async with service.conversion_slots:
+            with patch.object(service, 'QUEUE_TIMEOUT', .01):
+                self.assertEqual((await self.request('/convert/docx', b'document'))[0], 503)
         with patch.object(service, 'convert_document', side_effect=HTTPException(422, 'Unsafe formula')):
             status, body = await self.request('/convert/xlsx', b'workbook')
         self.assertEqual(status, 422)
         self.assertIn('Unsafe formula', json.loads(body)['detail'])
+        self.assertEqual(service.conversion_slots._value, 1)
+
+    async def test_two_jobs_overlap_third_waits_and_directories_are_isolated(self):
+        started, release = threading.Event(), threading.Event()
+        guard = threading.Lock()
+        active, maximum, directories, bodies = 0, 0, [], []
+
+        def convert(source, directory):
+            nonlocal active, maximum
+            with guard:
+                active += 1
+                maximum = max(maximum, active)
+                directories.append(directory)
+                if active == 2:
+                    started.set()
+            if not release.wait(5):
+                raise RuntimeError('Test barrier timed out')
+            content = source.read_bytes()
+            bodies.append(content)
+            archive = directory / 'result.tar'
+            archive.write_bytes(content)
+            with guard:
+                active -= 1
+            return archive
+
+        with patch.object(service, 'conversion_slots', asyncio.Semaphore(2)), \
+                patch.object(service, 'conversion_threads', service.CapacityLimiter(2)), \
+                patch.object(service, 'convert_document', convert):
+            jobs = [asyncio.create_task(self.request('/convert/xlsx', body)) for body in (b'A', b'B', b'C')]
+            try:
+                self.assertTrue(await asyncio.to_thread(started.wait, 5))
+                self.assertEqual(len(directories), 2)
+            finally:
+                release.set()
+            results = await asyncio.gather(*jobs)
+        self.assertEqual(maximum, 2)
+        self.assertEqual(results, [(200, b'A'), (200, b'B'), (200, b'C')])
+        self.assertCountEqual(bodies, [b'A', b'B', b'C'])
+        self.assertEqual(len(set(directories)), 3)
+        self.assertTrue(all(not directory.exists() for directory in directories))
 
 
 class WorkerProcessTests(unittest.TestCase):

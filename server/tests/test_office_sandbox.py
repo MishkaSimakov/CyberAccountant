@@ -11,6 +11,29 @@ from server.app.ocr import converter as document_ocr
 
 @pytest.mark.skipif(os.environ.get('OCR_SANDBOX_TESTS') != '1',
                     reason='Requires the running Office sandbox service')
+def test_parallel_office_jobs_preserve_each_workbooks_formula_results(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import openpyxl
+    from server.app.ocr.office_client import render
+
+    def convert(index):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        source = directory / 'source.xlsx'
+        book = openpyxl.Workbook()
+        book.active['A1'], book.active['A2'], book.active['A3'] = 10*index, 20*index, '=SUM(A1:A2)'
+        book.save(source)
+        report = render(source, directory / 'preview.pdf')
+        assert report['recalculated'] is True
+        cached = openpyxl.load_workbook(directory / 'recalculated.xlsx', data_only=True)
+        return cached.active['A3'].value
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        assert list(pool.map(convert, range(1, 7))) == [30, 60, 90, 120, 150, 180]
+
+
+@pytest.mark.skipif(os.environ.get('OCR_SANDBOX_TESTS') != '1',
+                    reason='Requires the running Office sandbox service')
 def test_real_sandbox_recalculates_stale_zero_preserves_source_and_geometry(tmp_path):
     import openpyxl
     source = tmp_path / 'stale.xlsx'

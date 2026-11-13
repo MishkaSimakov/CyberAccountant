@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import uuid
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -174,13 +175,13 @@ def process_document(source, work):
         '<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
         '<prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>3</value></prop>'
         '</item></oor:items>', encoding='utf-8')
-    pipe = 'document_ocr_private'
+    pipe = 'document_ocr_' + uuid.uuid4().hex
     engine = subprocess.Popen([
         'soffice', '-env:UserInstallation=' + profile.as_uri(), '--headless', '--nologo',
         '--nodefault', '--norestore', '--nolockcheck',
                    '--accept=pipe,name=' + pipe + ';urp;StarOffice.ComponentContext'],
         stdout=subprocess.DEVNULL, stderr=sys.stderr,
-        env={**os.environ, 'SAL_USE_VCLPLUGIN': 'svp'})
+        env={**os.environ, 'HOME': str(work / 'home'), 'SAL_USE_VCLPLUGIN': 'svp'})
     document = None
     try:
         context = uno.getComponentContext()
