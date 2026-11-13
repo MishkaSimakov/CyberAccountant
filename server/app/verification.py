@@ -4,7 +4,7 @@ import json
 
 from checkier import PipelineConfig
 from checkier.entities import EntityRegistry, build_registry
-from checkier.formula import BinOp, FormulaError, collect_ids, parse
+from processing.common.formula import BinOp, FormulaError, collect_ids, parse
 from checkier.report import build_report
 from checkier.solver import solve_system
 from checkier.stage3_replace import run_replace
@@ -16,7 +16,6 @@ from .generators.scope import generate_scope
 from .models import File, Report
 from .target_row import find_target_row_keys
 from .verification_context import VerificationContext
-
 
 GENERATORS = {"scope": generate_scope, "llm": generate_llm, "insurance": generate_insurance}
 
@@ -30,6 +29,7 @@ def validation_registry(files: list[File]) -> EntityRegistry:
 
 def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
     """Check syntax and references without running the solver or any LLM calls."""
+
     def boolean_expression(node):
         if not isinstance(node, BinOp):
             return False
@@ -45,7 +45,7 @@ def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
         unknown = collect_ids(ast) - known
         if unknown:
             return "Неизвестные сущности: " + ", ".join(f"#{key}" if isinstance(key, int) else key
-                                                      for key in sorted(unknown, key=str))
+                                                        for key in sorted(unknown, key=str))
     except (FormulaError, ValueError, RecursionError) as exc:
         return str(exc)
     return None

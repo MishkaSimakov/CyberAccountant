@@ -13,6 +13,7 @@ WORKDIR /build
 COPY server/pyproject.toml ./
 COPY server/app/ ./app/
 COPY server/checkier/ ./checkier/
+COPY server/processing/ ./processing/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefix=/install .
 

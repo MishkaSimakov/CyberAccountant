@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
-from checkier.formula import (
+from processing.common.formula import (
     BinOp,
     FormulaError,
     Id,
@@ -119,3 +122,26 @@ def test_and_or():
     assert evaluate(ast, {}) is True
     ast = parse("1 > 2 || 3 > 2")
     assert evaluate(ast, {}) is True
+
+
+def test_formula_imports_and_runs_with_only_the_standard_library():
+    server = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", """
+import sys
+from decimal import Decimal
+
+sys.path.insert(0, sys.argv[1])
+from processing.common.formula import collect_ids, evaluate, parse
+
+node = parse('#0 + norm(alpha-beta) == 10 && 01.01.2026 < 02.01.2026')
+assert collect_ids(node) == {0, 'alpha-beta'}
+assert evaluate(node, {0: Decimal('4'), 'alpha-beta': Decimal('6')}) is True
+assert not any(name.split('.')[0] in {
+    'app', 'checkier', 'sqlalchemy', 'fastapi', 'infrastructure', 'requests', 'z3',
+} for name in sys.modules)
+""", str(server)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

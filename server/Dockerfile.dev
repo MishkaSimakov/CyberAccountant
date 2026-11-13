@@ -14,6 +14,7 @@ COPY workers.conf /etc/supervisor/workers.conf
 COPY pyproject.toml ./
 COPY app/ ./app/
 COPY checkier/ ./checkier/
+COPY processing/ ./processing/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install '.[dev]'
 

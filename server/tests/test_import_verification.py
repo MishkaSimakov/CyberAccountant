@@ -13,7 +13,7 @@ import import_verification as importer
 from app import database, storage, verification
 from app.models import EntityFile, File, Report, Requirement
 from app.services import documents, requirements, reports
-from checkier.formula import FormulaError
+from processing.common.formula import FormulaError
 
 
 @pytest.fixture

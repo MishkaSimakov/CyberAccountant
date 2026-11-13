@@ -10,7 +10,7 @@ from app import storage, verification
 from app.generators.insurance import generate_insurance
 from app.generators.llm import generate_llm
 from app.models import File, Report
-from checkier.formula import collect_ids, parse
+from processing.common.formula import collect_ids, parse
 
 
 def tag(kind, value, text=None, unit=None):

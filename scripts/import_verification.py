@@ -34,7 +34,7 @@ from app.services.requirements import verification_result_file
 from app.target_row import find_target_row_keys
 from app.verification import validate_formula
 from checkier.entities import ATTR_RE, ENT_RE, build_registry, parse_tag_attrs
-from checkier.formula import tokenize
+from processing.common.formula import tokenize
 
 REFERENCE_RE = re.compile(r"#\d+|[a-z]+-[a-z]+")
 

@@ -39,7 +39,7 @@ import z3
 
 from checkier.entities import Entity, EntityRegistry, parse_amount
 from checkier.substitutor import Substitutor
-from checkier.formula import (
+from processing.common.formula import (
     BinOp,
     DateLit,
     FormulaError,

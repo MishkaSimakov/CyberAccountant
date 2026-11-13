@@ -65,11 +65,11 @@ def tokenize(src: str) -> list[Token]:
                 j += 1
             if j >= n:
                 raise FormulaError(f"unterminated string at {i}")
-            tokens.append(Token("str", src[i + 1 : j], i))
+            tokens.append(Token("str", src[i + 1: j], i))
             i = j + 1
             continue
         # two-char ops
-        two = src[i : i + 2]
+        two = src[i: i + 2]
         if two in ("==", "!=", "<=", ">=", "&&", "||"):
             tokens.append(Token("op", two, i))
             i += 2
@@ -116,7 +116,7 @@ def tokenize(src: str) -> list[Token]:
                 j += 1
             if j == i + 1:
                 raise FormulaError(f"expected digits after '#' at {i}")
-            tokens.append(Token("id", int(src[i + 1 : j]), i))
+            tokens.append(Token("id", int(src[i + 1: j]), i))
             i = j
             continue
         # function names

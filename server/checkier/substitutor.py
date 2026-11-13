@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
 from checkier.entities import EntityRegistry, parse_amount
-from checkier.formula import (
+from processing.common.formula import (
     BinOp, FormulaError, Id, Node, Num, Str, collect_ids, evaluate, parse,
 )
 

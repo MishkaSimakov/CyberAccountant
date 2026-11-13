@@ -3,7 +3,7 @@
 import warnings
 
 from checkier.bip39 import MnemonicSampler, load_words
-from checkier.formula import tokenize
+from processing.common.formula import tokenize
 
 
 def test_canonical_wordlist_is_bundled():
