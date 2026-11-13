@@ -33,7 +33,7 @@ def test_initialization_preserves_data_and_round_trips_models(db):
         assert report.stage == "documents"
         assert report.created_at.tzinfo is not None
         file = session.scalar(select(File))
-        assert (file.version, file.status, file.hand_edited) == (1, "queued", False)
+        assert (file.version, file.status, file.hand_edited) == (1, "ocr_queued", False)
         assert session.get(EntityFile, (report_id, 0)).file_id == file.file_id
         requirement = session.scalar(select(Requirement))
         assert requirement.json_data["ids_related"] == [0]

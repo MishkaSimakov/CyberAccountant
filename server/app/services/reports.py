@@ -1,5 +1,7 @@
 """Persist reports and expose their current document-processing progress."""
 
+from pathlib import Path
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -31,18 +33,10 @@ def report_documents(session: Session, report_id: int) -> list[File]:
     ))
 
 
-def document_response(file: File, *, extracting: bool = False) -> Document:
-    status = ("running" if file.status == "ocr_running" else "completed" if file.markdown_path
-    else "failed" if file.status == "failed" else "queued")
-    extraction_status = (
-        "completed" if file.entities_path else "running" if file.status == "entities_running"
-        else "failed" if file.status == "failed" and file.markdown_path
-        else "queued" if extracting and file.status == "ocr_completed" else "idle"
-    )
+def document_response(file: File) -> Document:
     return Document(
         id=file.file_id, name=file.name, size=file.size, content_type=file.content_type,
-        role=file.role, content_sha256=file.hash, ocr_status=status,
-        extraction_status=extraction_status,
+        role=file.role, content_sha256=file.hash, status=file.status,
         markdown_revision=file.version if file.markdown_path else 0,
         user_edited=file.hand_edited, error=file.error,
     )
@@ -56,16 +50,17 @@ def duplicate_groups_for(items: list[Document]) -> list[list[int]]:
 
 
 def blockers_for(report: Report, files: list[File], *, extracting: bool = False) -> list[str]:
-    items = [document_response(file, extracting=extracting) for file in files]
+    items = [document_response(file) for file in files]
     blockers = []
     if not any(item.role == "final_report" for item in items):
         blockers.append("Загрузите итоговый отчёт.")
     if not any(item.role == "supporting" for item in items):
         blockers.append("Загрузите подтверждающие документы.")
-    if any(item.ocr_status in {"queued", "running"} for item in items):
+    if any(item.status in {"ocr_queued", "ocr_running"} for item in items):
         blockers.append("Дождитесь обработки всех документов.")
-    if any(item.ocr_status == "failed" for item in items):
-        blockers.append("Удалите документы с ошибками и загрузите их повторно.")
+    if any(item.status == "failed" for item in items):
+        blockers.append("Не удалось извлечь сущности из некоторых документов. Повторите извлечение." if extracting
+                        else "Удалите документы с ошибками и загрузите их повторно.")
     if report.stage == "documents" and report.target_row:
         main = next((file for file in files if file.role == "final_report"), None)
         if main is not None and main.markdown_path:
@@ -75,11 +70,9 @@ def blockers_for(report: Report, files: list[File], *, extracting: bool = False)
                     f"Не удалось найти проверяемую строку «{report.target_row}» в итоговом отчёте. "
                     "Проверьте результат OCR итогового отчёта и при необходимости исправьте распознанный текст."
                 )
-    if extracting and any(item.extraction_status in {"queued", "running"} for item in items):
+    if extracting and any(item.status in {"entities_queued", "entities_running"} for item in items):
         blockers.append("Дождитесь извлечения сущностей из всех документов.")
-    if extracting and any(item.extraction_status == "failed" for item in items):
-        blockers.append("Не удалось извлечь сущности из некоторых документов. Повторите извлечение.")
-    if extracting and any(item.extraction_status == "idle" for item in items):
+    if extracting and any(item.status == "ocr_completed" for item in items):
         blockers.append("Извлеките сущности из всех документов.")
     names = {item.id: item.name for item in items}
     for group in duplicate_groups_for(items):
@@ -95,12 +88,13 @@ def sync_processing_status(session: Session, report: Report) -> None:
     statuses = {file.status for file in report_documents(session, report.id)}
     if report.stage == "entities":
         report.processing_status = (
-            "running" if "entities_running" in statuses else "queued" if "ocr_completed" in statuses
-            else "failed" if "failed" in statuses else "completed" if statuses else "idle"
+            "running" if "entities_running" in statuses else "queued" if "entities_queued" in statuses
+            else "failed" if "failed" in statuses else "idle" if "ocr_completed" in statuses
+            else "completed" if statuses else "idle"
         )
         return
     report.processing_status = (
-        "running" if "ocr_running" in statuses else "queued" if "queued" in statuses
+        "running" if "ocr_running" in statuses else "queued" if "ocr_queued" in statuses
         else "failed" if "failed" in statuses else "completed" if statuses else "idle"
     )
 
@@ -116,8 +110,17 @@ def create_report(payload: ReportCreate) -> ReportResponse:
         report = Report(**payload.model_dump())
         session.add(report)
         session.flush()
+        report.log_path = storage.create_report_log(report.id)
         result = ReportResponse.model_validate(report, from_attributes=True)
     return result
+
+
+def report_log(report_id: int) -> Path:
+    with session_scope() as session:
+        report = find_report(session, report_id)
+        if not report.log_path or not storage.artifact_path(report.log_path).is_file():
+            raise ServiceError(404, "Журнал отчёта не найден.")
+        return storage.artifact_path(report.log_path)
 
 
 def report_details(report_id: int) -> dict:
@@ -125,7 +128,7 @@ def report_details(report_id: int) -> dict:
         report = find_report(session, report_id)
         extracting = report.stage in {"entities", "requirements", "verification"}
         files = report_documents(session, report_id)
-        items = [document_response(file, extracting=extracting) for file in files]
+        items = [document_response(file) for file in files]
         blockers = blockers_for(report, files, extracting=extracting)
         actions = []
         if report.stage == "documents" and not blockers:
@@ -142,7 +145,7 @@ def report_details(report_id: int) -> dict:
             "documents": items,
             "duplicate_groups": duplicate_groups_for(items),
             "progress": {"completed": int(report.processing_status == "completed") if verifying else sum(
-                (item.extraction_status if extracting else item.ocr_status) == "completed" for item in items
+                item.status in ({"completed"} if extracting else {"ocr_completed", "completed"}) for item in items
             ), "total": 1 if verifying else len(items)},
             "blockers": blockers,
             "available_actions": actions,

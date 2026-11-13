@@ -3,7 +3,7 @@ import {defineComponent} from 'vue'
 import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
-import {editRequirements} from '../api'
+import {editRequirements, reportArchiveUrl} from '../api'
 import type {FieldVerdict, Report, ReportDetails, ReportDocument, VerifiedRequirement, VerificationResult} from '../api'
 import ReportHeader from '../components/ReportHeader.vue'
 import RequirementsResults from '../components/RequirementsResults.vue'
@@ -59,6 +59,7 @@ export default defineComponent({
     void this.stop()
   },
   methods: {
+    reportArchiveUrl,
     ...mapActions('requirements', ['start', 'stop', 'load']),
     async edit() {
       if (this.editing || this.$store.state.requirements.saving.length) return
@@ -90,9 +91,9 @@ export default defineComponent({
 <template>
   <main class="mx-auto max-w-6xl p-6">
     <ReportHeader :report="report"/>
-    <div v-if="loading" class="mt-6 rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500"
+    <div v-if="loading" class="mt-6 flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500"
          role="status">
-      <FontAwesomeIcon :icon="faSpinner" class="mr-2 size-4 animate-spin" aria-hidden="true"/>
+      <FontAwesomeIcon :icon="faSpinner" class="size-4 shrink-0 animate-spin" aria-hidden="true"/>
       Загружаем результаты проверки…
     </div>
     <div v-else-if="error" class="mt-6 rounded-lg border border-slate-200 bg-white p-8 text-center">
@@ -100,7 +101,11 @@ export default defineComponent({
       <button class="mt-4 cursor-pointer text-blue-700 hover:underline" @click="load">Повторить загрузку</button>
     </div>
     <template v-else-if="result && requirements !== null">
-      <div class="mt-6 flex justify-end">
+      <div class="mt-6 flex flex-wrap justify-end gap-3">
+        <a :href="reportArchiveUrl(reportId)" :download="`report-${reportId}.zip`"
+           class="rounded border border-slate-300 bg-white px-4 py-2 hover:bg-slate-50 focus-visible:outline-blue-500">
+          Скачать все файлы (ZIP)
+        </a>
         <button type="button" :disabled="editing || $store.state.requirements.saving.length > 0"
                 class="cursor-pointer rounded border border-slate-300 bg-white px-4 py-2 hover:bg-slate-50 disabled:opacity-50"
                 @click="edit">{{ editing ? 'Открываем…' : 'Редактировать требования' }}

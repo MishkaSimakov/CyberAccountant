@@ -16,12 +16,12 @@ def process_ocr(file_revision_id: int) -> None:
     """Recognize a queued document and persist its output or failure status."""
     with session_scope() as session:
         file = session.get(File, file_revision_id)
-        if file is None or file.status != "queued":
+        if file is None or file.status != "ocr_queued":
             return
         report_id = file.report_id
         report = find_report(session, report_id, lock=True)
         session.refresh(file)
-        if file.status != "queued":
+        if file.status != "ocr_queued":
             return
         file.status = "ocr_running"
         sync_processing_status(session, report)

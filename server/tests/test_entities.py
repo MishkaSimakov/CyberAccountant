@@ -10,6 +10,8 @@ from redis import Redis
 from rq import Queue, SimpleWorker
 from rq.job import Job
 
+from checkier import llm
+
 from app import database, queue, storage
 from app.jobs import entities as job
 from app.models import File, Report
@@ -44,7 +46,7 @@ def ready(api, monkeypatch):
     def enqueue(revision_id):
         with database.session_scope() as session:
             file = session.get(File, revision_id)
-            assert file.status == "ocr_completed"
+            assert file.status == "entities_queued"
             assert session.get(Report, report_id).stage == "entities"
             assert storage.artifact_path(file.markdown_path).read_text(encoding="utf-8") == MARKDOWN
         extraction_ids.append(revision_id)
@@ -52,6 +54,70 @@ def ready(api, monkeypatch):
     monkeypatch.setattr(entities, "enqueue_entities", enqueue)
     monkeypatch.setattr("checkier.stage1_tag.call_llm_json", lambda *args, **kwargs: SEGMENTS)
     return report_id, ocr_ids, extraction_ids
+
+
+def test_extraction_preserves_full_model_logs_across_runs(ready, monkeypatch):
+    report_id, revisions, _ = ready
+    path = f"/reports/{report_id}"
+    output = '{"incomplete": "' + "Ответ модели\r\n" * 1_000
+    monkeypatch.setattr(llm, "_post", lambda *args, **kwargs: {"output_text": output})
+    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", llm.call_llm_json)
+    for run in range(1, 3):
+        assert request("POST", path + "/run-entity-extraction")[0] == 200
+        for revision_id in revisions:
+            with pytest.raises(RuntimeError, match="tagging failed"):
+                job.process_entities(revision_id)
+        details = request("GET", path)[1]
+        assert details["processing_status"] == "failed"
+        assert all(document["status"] == "failed" for document in details["documents"])
+        assert all(document["error"] == "Не удалось извлечь сущности из документа. Повторите извлечение."
+                   for document in details["documents"])
+        for document in details["documents"]:
+            assert request("GET", path + f'/documents/{document["id"]}')[1]["error"] == document["error"]
+            status, content = request("GET", path + f'/documents/{document["id"]}/log')
+            assert status == 200
+            log = content.decode("utf-8")
+            assert log.count("\nRUN ") == run
+            assert log.count("--- MODEL PROMPT |") == run * 9
+            assert f"Filename: {document['name']}" in log
+            assert MARKDOWN in log
+            assert content.count(output.encode("utf-8")) == run * 9
+            assert log.count("ERROR (RuntimeError): tagging failed") == run
+        with database.session_scope() as session:
+            for revision_id in revisions:
+                file = session.get(File, revision_id)
+                assert file.entities_path is None
+                assert storage.artifact_path(file.markdown_path).read_text(encoding="utf-8") == MARKDOWN
+
+
+def test_all_nested_model_retries_append_to_the_document_log(ready, monkeypatch):
+    report_id, revisions, _ = ready
+    path = f"/reports/{report_id}"
+    request("POST", path + "/run-entity-extraction")
+    outputs = []
+
+    def respond(*args, **kwargs):
+        output = f"Attempt {len(outputs) + 1}: " + "Некорректный ответ\r\n" * 4_000
+        outputs.append(output)
+        return {"output_text": output}
+
+    monkeypatch.setattr(llm, "_post", respond)
+    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", llm.call_llm_json)
+    with pytest.raises(RuntimeError, match="tagging failed"):
+        job.process_entities(revisions[0])
+    assert len(outputs) == 9
+    with database.session_scope() as session:
+        file = session.get(File, revisions[0])
+        document_id = file.file_id
+        assert file.error == "Не удалось извлечь сущности из документа. Повторите извлечение."
+        other = session.get(File, revisions[1])
+        assert storage.artifact_path(other.log_path).read_bytes() == b""
+    status, content = request("GET", path + f"/documents/{document_id}/log")
+    assert status == 200
+    assert content.count(b"--- MODEL OUTPUT |") == 9
+    assert content.count(b"\nRUN ") == 1
+    for output in outputs:
+        assert output.encode("utf-8") in content
 
 
 def test_extraction_requires_ready_documents_and_rejects_duplicates(api):
@@ -70,6 +136,25 @@ def test_extraction_requires_ready_documents_and_rejects_duplicates(api):
     assert "Одинаковые файлы" in response["detail"]
 
 
+def test_completed_ocr_is_not_an_extraction_queue_entry(ready, monkeypatch):
+    report_id, revisions, pending = ready
+    with database.session_scope() as session:
+        session.get(Report, report_id).stage = "entities"
+        reports.sync_processing_status(session, session.get(Report, report_id))
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Extraction must not start before the document is queued")
+
+    monkeypatch.setattr(job, "tag_document", unexpected)
+    job.process_entities(revisions[0])
+    details = request("GET", f"/reports/{report_id}")[1]
+    assert details["processing_status"] == "idle"
+    assert {file["status"] for file in details["documents"]} == {"ocr_completed"}
+    assert details["blockers"] == ["Извлеките сущности из всех документов."]
+    assert details["available_actions"] == []
+    assert pending == []
+
+
 def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     report_id, revisions, pending = ready
     path = f"/reports/{report_id}"
@@ -79,7 +164,9 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     assert response["stage"] == "entities"
     assert response["processing_status"] == "queued"
     assert response["progress"] == {"completed": 0, "total": 2}
-    assert {file["extraction_status"] for file in response["documents"]} == {"queued"}
+    assert {file["status"] for file in response["documents"]} == {"entities_queued"}
+    assert response["blockers"] == ["Дождитесь извлечения сущностей из всех документов."]
+    assert response["available_actions"] == []
     assert pending == revisions
     assert request("POST", path + "/run-entity-extraction")[0] == 200
     assert pending == revisions  # Repeated requests must not duplicate jobs.
@@ -91,9 +178,9 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     assert details["available_actions"] == ["generate_requirements"]
     assert not details["blockers"]
     for document in details["documents"]:
-        assert document["extraction_status"] == "completed"
+        assert document["status"] == "completed"
         assert request("GET", path + f'/documents/{document["id"]}/markdown')[1]["content"] == TAGGED
-        assert request("GET", path + f'/documents/{document["id"]}')[1]["extraction_status"] == "completed"
+        assert request("GET", path + f'/documents/{document["id"]}')[1]["status"] == "completed"
     with database.session_scope() as session:
         for revision_id in revisions:
             file = session.get(File, revision_id)
@@ -117,9 +204,11 @@ def test_extraction_failure_can_be_retried_without_repeating_successes(ready, mo
         job.process_entities(revisions[1])
     response = request("GET", path)[1]
     assert response["processing_status"] == "failed"
-    assert response["documents"][1]["ocr_status"] == "completed"
-    assert response["documents"][1]["extraction_status"] == "failed"
+    assert response["documents"][1]["status"] == "failed"
     assert response["documents"][1]["error"]
+    assert response["blockers"] == [
+        "Не удалось извлечь сущности из некоторых документов. Повторите извлечение."
+    ]
     retry_path = path + (f'/documents/{response["documents"][1]["id"]}' if per_document else "")
     assert request("POST", retry_path + "/run-entity-extraction")[0] == 200
     assert pending == revisions + [revisions[1]]
@@ -147,16 +236,16 @@ def test_document_retry_leaves_other_failed_documents_untouched(ready):
     status, response = request("POST", retry_path)
     assert status == 200
     assert pending == revisions + [revisions[0]]
-    assert response["documents"][0]["extraction_status"] == "queued"
+    assert response["documents"][0]["status"] == "entities_queued"
     assert response["documents"][0]["error"] is None
-    assert response["documents"][1]["extraction_status"] == "failed"
+    assert response["documents"][1]["status"] == "failed"
     assert response["documents"][1]["error"] == "Extraction failed"
     assert request("POST", retry_path)[0] == 200
     assert pending == revisions + [revisions[0]]
     job.process_entities(revisions[0])
     assert request("POST", retry_path)[0] == 200
     assert pending == revisions + [revisions[0]]
-    assert request("GET", path)[1]["documents"][0]["extraction_status"] == "completed"
+    assert request("GET", path)[1]["documents"][0]["status"] == "completed"
 
 
 def test_document_retry_requires_entities_stage_and_report_ownership(ready):
@@ -227,7 +316,7 @@ def test_enqueue_failure_is_persisted_and_retryable(ready, monkeypatch):
     assert request("POST", path + "/run-entity-extraction")[0] == 503
     response = request("GET", path)[1]
     assert response["processing_status"] == "failed"
-    assert all(file["extraction_status"] == "failed" for file in response["documents"])
+    assert all(file["status"] == "failed" for file in response["documents"])
     queued = []
     monkeypatch.setattr(entities, "enqueue_entities", queued.append)
     assert request("POST", path + "/run-entity-extraction")[0] == 200
@@ -322,6 +411,7 @@ def test_review_edits_preserve_revisions_and_checkier_fields(ready):
         assert edited.version == 2 and edited.status == "completed"
         assert "/edited/" in edited.entities_path
         assert edited.markdown_path == original.markdown_path
+        assert edited.log_path == original.log_path
 
 
 def test_edit_requires_finished_processing_and_editable_stage(ready):
@@ -353,6 +443,7 @@ def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
         edited = reports.report_documents(session, report_id)[0]
         assert edited.entities_path is None
         assert edited.status == "ocr_completed"
+        assert edited.log_path == session.get(File, revisions[0]).log_path
         edited_id = edited.id
         assert storage.artifact_path(session.get(File, revisions[0]).markdown_path).read_text(
             encoding="utf-8") == MARKDOWN
