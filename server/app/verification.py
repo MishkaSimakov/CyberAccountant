@@ -9,11 +9,11 @@ from checkier.formula import collect_ids
 from checkier.report import build_report
 from checkier.solver import solve_system
 from checkier.stage3_replace import run_replace
-from checkier.stage4_scope import run_scope
 from checkier.stage5_relations import generate_relations
 
 from . import storage
 from .generators.insurance import generate_insurance
+from .generators.scope import generate_scope
 from .models import File, Report
 from .target_row import find_target_row_keys
 
@@ -25,13 +25,18 @@ class VerificationContext:
     registry: EntityRegistry
     scope: dict
     mapping: dict
+    report: Report
 
 
 def generate_llm(context: VerificationContext) -> list[dict]:
-    return generate_relations(context.config, context.documents, context.registry, context.scope)
+    report = context.report
+    settings = dict(context.scope, contract_number=report.contract_number,
+                    period_start=report.period_start.isoformat() if report.period_start else None,
+                    period_end=report.period_end.isoformat() if report.period_end else None)
+    return generate_relations(context.config, context.documents, context.registry, settings)
 
 
-GENERATORS = {"llm": generate_llm, "insurance": generate_insurance}
+GENERATORS = {"scope": generate_scope, "llm": generate_llm, "insurance": generate_insurance}
 
 
 def prepare_verification(report: Report, files: list[File]) -> VerificationContext:
@@ -49,19 +54,17 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
         (cfg.tagged_dir / f"{key}.md").write_text(text, encoding="utf-8")
     registry = build_registry(tagged, seed=cfg.seed)
     registry.save(cfg.entities_path)
-    period = [report.period_start.toordinal(), report.period_end.toordinal()] if report.period_start else None
     target_row = find_target_row_keys(tagged, registry, report.target_row)
-    scope = run_scope(cfg, registry, mapping, target_contract=report.contract_number,
-                      target_period=period, target_label=report.target_row, target_row=target_row)
-    if report.target_row and not scope["target_row"]:
+    if report.target_row and not target_row:
         raise ValueError("Не удалось найти проверяемую строку в итоговом отчёте.")
+    scope = {"target_row": sorted(target_row) if target_row else None, "target_label": report.target_row}
     documents = run_replace(cfg, tagged, registry)
-    return VerificationContext(cfg, documents, registry, scope, mapping)
+    return VerificationContext(cfg, documents, registry, scope, mapping, report)
 
 
 def generate_requirements(context: VerificationContext) -> list[dict]:
     """Every generator receives the same prepared documents, IDs, and scope."""
-    generated = list(context.scope["scope_relations"])
+    generated = []
     for name, generate in GENERATORS.items():
         generated.extend(dict(requirement, source=name) for requirement in generate(context))
     by_key = {key: entity.num for entity in context.registry.entities

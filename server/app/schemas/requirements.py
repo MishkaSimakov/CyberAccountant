@@ -18,7 +18,7 @@ class RequirementMetadata(BaseModel):
 class FormulaRequirement(RequirementMetadata):
     kind: Literal["formula"]
     equation: str
-    tag: Literal["contract", "period", "agg", "ref"] | None = None
+    tag: Literal["scope", "agg", "ref"] | None = None
 
 
 class AssertionRequirement(RequirementMetadata):

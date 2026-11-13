@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 
 DEFAULT_TAG_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
 # DEFAULT_REL_MODEL = "~deepseek/deepseek-pro-latest"
-DEFAULT_REL_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
+# DEFAULT_REL_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
+DEFAULT_REL_MODEL = "deepseek/deepseek-v4-pro-20260813"
 
 #: folder name -> role
 ROLE_DIRS = {"данные": "data", "card": "card", "request": "request"}
@@ -60,10 +61,6 @@ class PipelineConfig:
     @property
     def entities_path(self) -> Path:
         return self.out_dir / "entities.json"
-
-    @property
-    def scope_path(self) -> Path:
-        return self.out_dir / "scope.json"
 
     @property
     def relations_path(self) -> Path:

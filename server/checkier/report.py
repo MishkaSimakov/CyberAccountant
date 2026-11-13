@@ -15,14 +15,14 @@ def _entity_id(cfg: PipelineConfig, e) -> str:
 
 
 def build_report(
-    cfg: PipelineConfig,
-    mapping: dict,
-    registry: EntityRegistry,
-    relations: list[Relation],
-    fishy: list[Fishy],
-    verdicts: list[Verdict],
-    dangling: list[str],
-    scope: dict,
+        cfg: PipelineConfig,
+        mapping: dict,
+        registry: EntityRegistry,
+        relations: list[Relation],
+        fishy: list[Fishy],
+        verdicts: list[Verdict],
+        dangling: list[str],
+        scope: dict,
 ) -> dict:
     """Assemble the final report dict and write out/report.json."""
     by_key = {}
@@ -54,7 +54,15 @@ def build_report(
         for h8, entry in mapping.items()
         if entry.get("duplicate_of")
     }
-    oos_files = {h8: info["reasons"] for h8, info in scope.get("oos", {}).items()}
+    oos_files: dict[str, list[str]] = {}
+    for relation in relations:
+        if relation.tag != "scope" or relation.status != "false":
+            continue
+        for file in relation.involved_files:
+            if mapping[file]["role"] == "data":
+                reasons = oos_files.setdefault(file, [])
+                if relation.equation not in reasons:
+                    reasons.append(relation.equation)
 
     rel_summary = [
         {
@@ -130,6 +138,7 @@ def format_report_text(report: dict, mapping: dict | None = None) -> str:
     errored or stayed unverifiable (i.e. the formulas that were checked and
     the ones the system couldn't nail down).
     """
+
     def orig(h8: str) -> str:
         entry = (mapping or {}).get(h8)
         return entry.get("original", h8) if entry else h8

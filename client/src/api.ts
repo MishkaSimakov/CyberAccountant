@@ -104,7 +104,7 @@ interface RequirementMetadata {
 }
 
 export type Requirement = RequirementMetadata & (
-    { kind: 'formula'; equation: string; tag: 'contract' | 'period' | 'agg' | 'ref' | null }
+    { kind: 'formula'; equation: string; tag: 'scope' | 'agg' | 'ref' | null }
     | { kind: 'assertion'; condition: boolean | null; ids_related: (number | string)[] }
     )
 

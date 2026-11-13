@@ -2,6 +2,7 @@
 
 import os
 import json
+from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -163,6 +164,33 @@ def test_generators_share_context_and_all_requirements_reach_one_solver(reviewed
     assert {item["source"] for item in calls[0]} == {"first", "second"}
     cells = request("GET", f"/reports/{report_id}/verification-result")[1]["card"]["cells"]
     assert len(cells) == 2 and all(item["status"] == "ok" for item in cells)
+
+
+def test_scope_requirements_are_published_and_failures_exclude_files(reviewed):
+    report_id, revisions, _ = reviewed
+    with database.session_scope() as session:
+        report = session.get(Report, report_id)
+        report.contract_number = "TARGET"
+        report.period_start, report.period_end = date(2026, 1, 1), date(2026, 5, 31)
+        file = session.get(File, revisions[1])
+        document_id = str(file.file_id)
+        storage.artifact_path(file.entities_path).write_text(
+            'Сумма: <ent t="amount" value="100">100</ent> '
+            'Договор: <ent t="contract">OTHER</ent> '
+            'Дата: <ent t="date">03.06.2026</ent>', encoding="utf-8")
+
+    requirements.run_verification(report_id)
+    process_verification(report_id)
+    definitions = request("GET", f"/reports/{report_id}/requirements")[1]["requirements"]
+    checks = [item for item in definitions if item["tag"] == "scope"]
+    assert len(checks) == 2
+    assert all(item["kind"] == "formula" and item["source"] == "scope" for item in checks)
+    result = request("GET", f"/reports/{report_id}/verification-result")[1]
+    outcomes = {item["requirement_id"]: item["verdict"] for item in result["requirement_results"]}
+    assert all(outcomes[item["id"]] == "false" for item in checks)
+    assert result["files"]["out_of_scope"] == {document_id: [item["equation"] for item in checks]}
+    assert result["summary"]["out_of_scope"] == 1
+    assert result["scope"] == {"target_row": [0], "target_label": "Итого"}
 
 
 def test_failed_generation_is_retryable_without_partial_results(reviewed, monkeypatch):
