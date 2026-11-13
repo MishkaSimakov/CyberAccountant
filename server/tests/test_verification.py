@@ -396,7 +396,7 @@ def test_requirement_editor_crud_validation_and_rerun_publish_new_path(reviewed,
     def forbidden(_context):
         pytest.fail("Verification must not regenerate requirements")
 
-    monkeypatch.setattr(verification, "generate_llm", forbidden)
+    monkeypatch.setattr("app.generators.llm.generate_relations", forbidden)
     monkeypatch.setattr(verification, "GENERATORS", {"llm": forbidden})
     assert request("POST", path + "/run-verification")[0] == 200
     assert request("PUT", formula_path, {"kind": "formula", "equation": "#0 == 10"})[0] == 409

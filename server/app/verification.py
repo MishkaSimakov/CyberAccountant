@@ -1,7 +1,6 @@
 """Prepare one corpus, collect generator outputs, and evaluate them together."""
 
 import json
-from dataclasses import dataclass
 
 from checkier import PipelineConfig
 from checkier.entities import EntityRegistry, build_registry
@@ -9,35 +8,18 @@ from checkier.formula import BinOp, FormulaError, collect_ids, parse
 from checkier.report import build_report
 from checkier.solver import solve_system
 from checkier.stage3_replace import run_replace
-from checkier.stage5_relations import generate_relations
 
 from . import storage
 from .generators.insurance import generate_insurance
+from .generators.llm import generate_llm
 from .generators.scope import generate_scope
 from .models import File, Report
 from .target_row import find_target_row_keys
+from .verification_context import VerificationContext
 
 
-@dataclass
-class VerificationContext:
-    config: PipelineConfig
-    documents: dict[str, str]
-    registry: EntityRegistry
-    scope: dict
-    mapping: dict
-    report: Report
+GENERATORS = {"scope": generate_scope, "llm": generate_llm, "insurance": generate_insurance}
 
-
-def generate_llm(context: VerificationContext) -> list[dict]:
-    report = context.report
-    settings = dict(context.scope, contract_number=report.contract_number,
-                    period_start=report.period_start.isoformat() if report.period_start else None,
-                    period_end=report.period_end.isoformat() if report.period_end else None)
-    return generate_relations(context.config, context.documents, context.registry, settings)
-
-
-GENERATORS = {"scope": generate_scope, "insurance": generate_insurance}
-# "llm": generate_llm
 
 def validation_registry(files: list[File]) -> EntityRegistry:
     return build_registry({str(file.file_id): (
