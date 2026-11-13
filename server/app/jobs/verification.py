@@ -6,6 +6,7 @@ from sqlalchemy import delete, select
 
 from ..database import session_scope
 from .. import storage
+from ..llm import create_model_client
 from ..logging import create_report_log, file_log_run
 from ..models import EntityFile, Report, Requirement, VerificationResult
 from ..services.requirements import requirement_response
@@ -42,7 +43,7 @@ def _process(report_id: int, stage: str) -> None:
             run_logger.info("Preparing %d reviewed documents", len(files))
             context = prepare_verification(report, files)
             if stage == "requirements":
-                generated = generate_requirements(context, logger=run_logger)
+                generated = generate_requirements(context, client=create_model_client(), logger=run_logger)
                 with session_scope() as session:
                     report = find_report(session, report_id, lock=True)
                     if report.stage != stage or report.processing_status != "running":

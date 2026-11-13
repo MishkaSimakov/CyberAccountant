@@ -7,6 +7,7 @@ from datetime import date
 from html import escape
 
 from checkier.config import PipelineConfig
+from processing.common.llm import ModelClient
 from checkier.entities import ENT_RE, EntityRegistry, build_registry, parse_tag_attrs
 from checkier.stage2_dates import run_date_normalization
 
@@ -19,7 +20,7 @@ def run_registry(
     return reg
 
 
-def normalize_document(cfg: PipelineConfig, tagged: str, *,
+def normalize_document(cfg: PipelineConfig, tagged: str, *, client: ModelClient,
                        logger: logging.Logger | logging.LoggerAdapter | None = None) -> str:
     """Add normalized values to extracted tags for review, without saving files.
 
@@ -27,7 +28,7 @@ def normalize_document(cfg: PipelineConfig, tagged: str, *,
     Unresolved values are empty, and original document text stays unchanged.
     """
     registry = build_registry({"document": ("data", tagged)}, seed=cfg.seed)
-    run_date_normalization(cfg, registry, logger=logger)
+    run_date_normalization(cfg, registry, client=client, logger=logger)
     entries = iter(registry.entities)
 
     def replace(match):

@@ -11,7 +11,8 @@ from rq import Queue, SimpleWorker
 from rq.job import Job
 from sqlalchemy import func, select
 
-from checkier import llm
+from processing.common import llm
+from processing.common.llm import ModelClient
 
 from app import database, queue, storage, verification
 from app.jobs.verification import process_requirement_generation, process_verification
@@ -38,7 +39,7 @@ def test_prepare_verification_uses_exact_report_target(tmp_path, monkeypatch, la
 
 
 @pytest.fixture
-def reviewed(api, monkeypatch):
+def reviewed(api, monkeypatch, llm_client):
     report_id, revisions = api
     upload(report_id, role="final_report", content=b"report")
     upload(report_id, content=b"supporting")
@@ -58,7 +59,7 @@ def reviewed(api, monkeypatch):
     pending = []
     monkeypatch.setattr(requirements, "enqueue_verification", pending.append)
     monkeypatch.setattr(requirements, "enqueue_requirement_generation", pending.append)
-    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", lambda *args, **kwargs: [
+    monkeypatch.setattr(llm_client, "call_llm_json", lambda *args, **kwargs: [
         {"equation": "#0 == #1", "tag": "agg"},
     ])
     return report_id, revisions, pending
@@ -69,7 +70,7 @@ def generate(report_id):
     process_requirement_generation(report_id)
 
 
-def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch):
+def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch, llm_client):
     report_id, revisions, pending = reviewed
     path = f"/reports/{report_id}"
     prompts = []
@@ -81,7 +82,7 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
             assert session.scalar(select(func.count()).select_from(Requirement)) == 0
         return [{"equation": "#0 == #1", "tag": "agg"}]
 
-    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", generate)
+    monkeypatch.setattr(llm_client, "call_llm_json", generate)
     assert request("GET", path)[1]["available_actions"] == ["generate_requirements"]
     assert request("GET", path + "/requirements")[1] == {"requirements": [], "entity_documents": {}}
     assert request("GET", path + "/verification-result")[0] == 409
@@ -218,7 +219,7 @@ def test_failed_generation_is_retryable_without_partial_results(reviewed, monkey
     report_id, _, pending = reviewed
     original = verification.GENERATORS
 
-    def fail(_context, *, logger):
+    def fail(_context, *, client, logger):
         raise RuntimeError("LLM unavailable")
 
     monkeypatch.setattr(verification, "GENERATORS", {"llm": fail})
@@ -238,22 +239,22 @@ def test_failed_generation_is_retryable_without_partial_results(reviewed, monkey
     assert reports.report_details(report_id)["processing_status"] == "completed"
 
 
-def test_requirement_model_calls_append_to_one_report_log_across_failed_runs(reviewed, monkeypatch):
+def test_requirement_model_calls_append_to_one_report_log_across_failed_runs(reviewed, monkeypatch, llm_client):
     report_id, revisions, _ = reviewed
     path = f"/reports/{report_id}"
     prompts = []
     outputs = []
     failing = True
 
-    def respond(payload, timeout):
-        prompts.append(payload["input"])
+    def respond(prompt, options, **kwargs):
+        prompts.append(prompt)
         output = ("Некорректный ответ\r\n" * 4_000 if failing
                   else '[{"equation": "#0 == #1", "tag": "agg"}]')
         outputs.append(output)
-        return {"output_text": output}
+        return output
 
-    monkeypatch.setattr(llm, "_post", respond)
-    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", llm.call_llm_json)
+    monkeypatch.setattr(llm_client.adapter, "generate", respond)
+    monkeypatch.setattr(llm_client, "call_llm_json", ModelClient.call_llm_json.__get__(llm_client))
     with database.session_scope() as session:
         log_path = session.get(Report, report_id).log_path
         assert log_path
@@ -350,9 +351,9 @@ def test_requirement_annotations_are_partial_and_scoped(reviewed):
     assert request("POST", f'/reports/{other["id"]}/run-verification')[0] == 409
 
 
-def test_invalid_generated_formulas_require_correction_before_verification(reviewed, monkeypatch):
+def test_invalid_generated_formulas_require_correction_before_verification(reviewed, monkeypatch, llm_client):
     report_id, _, _ = reviewed
-    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", lambda *args, **kwargs: [
+    monkeypatch.setattr(llm_client, "call_llm_json", lambda *args, **kwargs: [
         {"equation": "#999 == #0"},
         {"equation": "#0 + #1"},
         {"equation": "32.01.2026 == #0"},

@@ -4,6 +4,7 @@ import json
 import logging
 
 from checkier import PipelineConfig
+from processing.common.llm import ModelClient
 from checkier.entities import EntityRegistry, build_registry
 from processing.common.formula import BinOp, FormulaError, collect_ids, parse
 from checkier.report import build_report
@@ -75,14 +76,15 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
     return VerificationContext(cfg, documents, registry, scope, mapping, report)
 
 
-def generate_requirements(context: VerificationContext, *,
+def generate_requirements(context: VerificationContext, *, client: ModelClient,
                           logger: logging.Logger | logging.LoggerAdapter | None = None) -> list[dict]:
     """Every generator receives the same prepared documents, IDs, and scope."""
     logger = logger if logger is not None else logging.getLogger(__name__)
     generated = []
     for name, generate in GENERATORS.items():
         logger.info("Generating requirements with %s", name)
-        generated.extend(dict(requirement, source=name) for requirement in generate(context, logger=logger))
+        options = {"client": client} if name == "llm" else {}
+        generated.extend(dict(requirement, source=name) for requirement in generate(context, logger=logger, **options))
         logger.info("Generator %s completed", name)
     by_key = {key: entity.num for entity in context.registry.entities
               for key in (entity.num, str(entity.num), f"#{entity.num}", entity.mnemonic)}

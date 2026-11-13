@@ -10,7 +10,7 @@ from redis import Redis
 from rq import Queue, SimpleWorker
 from rq.job import Job
 
-from checkier import llm
+from processing.common.llm import ModelClient
 
 from app import database, queue, storage
 from app.jobs import entities as job
@@ -27,7 +27,7 @@ TAGGED = '# Сумма\nИтого: <ent t="amount" u="RUB" value="100.00">100,0
 
 
 @pytest.fixture
-def ready(api, monkeypatch):
+def ready(api, monkeypatch, llm_client):
     report_id, ocr_ids = api
     upload(report_id, role="final_report", content=b"report")
     upload(report_id, content=b"invoice")
@@ -52,16 +52,16 @@ def ready(api, monkeypatch):
         extraction_ids.append(revision_id)
 
     monkeypatch.setattr(entities, "enqueue_entities", enqueue)
-    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", lambda *args, **kwargs: SEGMENTS)
+    monkeypatch.setattr(llm_client, "call_llm_json", lambda *args, **kwargs: SEGMENTS)
     return report_id, ocr_ids, extraction_ids
 
 
-def test_extraction_preserves_full_model_logs_across_runs(ready, monkeypatch):
+def test_extraction_preserves_full_model_logs_across_runs(ready, monkeypatch, llm_client):
     report_id, revisions, _ = ready
     path = f"/reports/{report_id}"
     output = '{"incomplete": "' + "Ответ модели\r\n" * 1_000
-    monkeypatch.setattr(llm, "_post", lambda *args, **kwargs: {"output_text": output})
-    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", llm.call_llm_json)
+    monkeypatch.setattr(llm_client.adapter, "generate", lambda *args, **kwargs: output)
+    monkeypatch.setattr(llm_client, "call_llm_json", ModelClient.call_llm_json.__get__(llm_client))
     for run in range(1, 3):
         assert request("POST", path + "/run-entity-extraction")[0] == 200
         for revision_id in revisions:
@@ -94,7 +94,7 @@ def test_extraction_preserves_full_model_logs_across_runs(ready, monkeypatch):
                 assert storage.artifact_path(file.markdown_path).read_text(encoding="utf-8") == MARKDOWN
 
 
-def test_all_nested_model_retries_append_to_the_document_log(ready, monkeypatch):
+def test_all_nested_model_retries_append_to_the_document_log(ready, monkeypatch, llm_client):
     report_id, revisions, _ = ready
     path = f"/reports/{report_id}"
     request("POST", path + "/run-entity-extraction")
@@ -103,10 +103,10 @@ def test_all_nested_model_retries_append_to_the_document_log(ready, monkeypatch)
     def respond(*args, **kwargs):
         output = f"Attempt {len(outputs) + 1}: " + "Некорректный ответ\r\n" * 4_000
         outputs.append(output)
-        return {"output_text": output}
+        return output
 
-    monkeypatch.setattr(llm, "_post", respond)
-    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", llm.call_llm_json)
+    monkeypatch.setattr(llm_client.adapter, "generate", respond)
+    monkeypatch.setattr(llm_client, "call_llm_json", ModelClient.call_llm_json.__get__(llm_client))
     with pytest.raises(RuntimeError, match="tagging failed"):
         job.process_entities(revisions[0])
     assert len(outputs) == 9
@@ -268,7 +268,7 @@ def test_document_retry_requires_entities_stage_and_report_ownership(ready):
     assert pending == revisions
 
 
-def test_date_normalization_finishes_before_extraction_is_completed(ready, monkeypatch):
+def test_date_normalization_finishes_before_extraction_is_completed(ready, monkeypatch, llm_client):
     report_id, revisions, _ = ready
     request("POST", f"/reports/{report_id}/run-entity-extraction")
     monkeypatch.setattr(job, "tag_document", lambda *args, **kwargs: (
@@ -282,7 +282,7 @@ def test_date_normalization_finishes_before_extraction_is_completed(ready, monke
             assert file.entities_path is None
         return [{"raw": "Январь 2026", "normalized": "01.01.2026"}]
 
-    monkeypatch.setattr("checkier.stage2_dates.call_llm_json", normalize)
+    monkeypatch.setattr(llm_client, "call_llm_json", normalize)
     job.process_entities(revisions[0])
     with database.session_scope() as session:
         file = session.get(File, revisions[0])

@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 
 from checkier.config import PipelineConfig
-from checkier.llm import call_llm_json
+from processing.common.llm import ModelClient, ModelRequestOptions
 from checkier.schemas import TAGGING_SCHEMA
 
 
@@ -255,11 +255,12 @@ def _tag_one(
         h8: str,
         original_name: str,
         on_token: Callable[[str], None] | None = None,
+        *, client: ModelClient,
         logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> tuple[str, int]:
     """Tag one file. Returns (tagged_text, retries_used)."""
     src = cfg.files_dir / f"{h8}.md"
-    return tag_document(cfg, original_name, src.read_text(encoding="utf-8"), on_token, logger=logger)
+    return tag_document(cfg, original_name, src.read_text(encoding="utf-8"), on_token, client=client, logger=logger)
 
 
 def tag_document(
@@ -267,6 +268,7 @@ def tag_document(
         filename: str,
         markdown: str,
         on_token: Callable[[str], None] | None = None,
+        *, client: ModelClient,
         logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> tuple[str, int]:
     """Extract entries from one document without filesystem access.
@@ -280,14 +282,16 @@ def tag_document(
     last_err: Exception | None = None
     for attempt in range(cfg.max_retries + 1):
         try:
-            data = call_llm_json(
+            data = client.call_llm_json(
                 prompt,
-                model=cfg.tag_model,
-                schema=TAGGING_SCHEMA,
-                schema_name="tagged_document",
-                timeout=cfg.request_timeout,
+                options=ModelRequestOptions(
+                    model=cfg.tag_model,
+                    schema=TAGGING_SCHEMA,
+                    schema_name="tagged_document",
+                    timeout=cfg.request_timeout,
+                    reasoning=cfg.reasoning,
+                ),
                 on_token=on_token,
-                reasoning=cfg.reasoning,
                 logger=logger,
             )
             segments = _coerce_segments(data)
@@ -320,6 +324,7 @@ def run_tag(
         mapping: dict,
         on_progress: TagCallback | None = None,
         on_token: Callable[[str, str], None] | None = None,
+        *, client: ModelClient,
         logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> dict[str, tuple[str, str]]:
     """Tag all non-duplicate files. Returns {h8: (role, tagged_text)}.
@@ -343,7 +348,7 @@ def run_tag(
             if on_token:
                 on_token(_h8, tok)
 
-        tagged, retries = _tag_one(cfg, h8, name, on_token=_tok, logger=logger)
+        tagged, retries = _tag_one(cfg, h8, name, on_token=_tok, client=client, logger=logger)
         return h8, role, tagged, retries, name
 
     with ThreadPoolExecutor(max_workers=cfg.tag_workers) as pool:

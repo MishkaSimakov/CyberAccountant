@@ -6,6 +6,10 @@
 !app/**
 !checkier/
 !checkier/**
+!processing/
+!processing/**
+!infrastructure/
+!infrastructure/**
 !Dockerfile.dev
 **/__pycache__/
 **/*.py[cod]

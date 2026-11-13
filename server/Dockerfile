@@ -14,6 +14,7 @@ COPY server/pyproject.toml ./
 COPY server/app/ ./app/
 COPY server/checkier/ ./checkier/
 COPY server/processing/ ./processing/
+COPY server/infrastructure/ ./infrastructure/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefix=/install .
 

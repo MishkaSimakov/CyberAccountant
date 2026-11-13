@@ -19,7 +19,7 @@ from typing import Callable
 
 from checkier.config import PipelineConfig
 from checkier.entities import Entity, EntityRegistry, parse_date
-from checkier.llm import call_llm_json
+from processing.common.llm import ModelClient, ModelRequestOptions
 from checkier.schemas import DATE_NORM_SCHEMA
 
 DATE_NORM_PROMPT = """\
@@ -49,6 +49,7 @@ def run_date_normalization(
         cfg: PipelineConfig,
         registry: EntityRegistry,
         on_token: Callable[[str], None] | None = None,
+        *, client: ModelClient,
         logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> list[Entity]:
     """Normalize date entities whose raw text the deterministic parser could
@@ -56,19 +57,22 @@ def run_date_normalization(
     returns the list of changed entities. Persists nothing — the caller
     saves the registry if it wants to keep the result.
     """
+    logger = logger if logger is not None else logging.getLogger(__name__)
     cands = [e for e in registry.entities if e.type == "date" and e.value is None]
     if not cands:
         return []
     raws = sorted({e.raw for e in cands})
-    data = call_llm_json(
+    data = client.call_llm_json(
         _build_prompt(raws),
-        model=cfg.tag_model,
-        schema=DATE_NORM_SCHEMA,
-        schema_name="date_normalizations",
-        timeout=cfg.request_timeout,
-        max_retries=cfg.max_retries,
+        options=ModelRequestOptions(
+            model=cfg.tag_model,
+            schema=DATE_NORM_SCHEMA,
+            schema_name="date_normalizations",
+            timeout=cfg.request_timeout,
+            max_retries=cfg.max_retries,
+            reasoning=cfg.reasoning,
+        ),
         on_token=on_token,
-        reasoning=cfg.reasoning,
         logger=logger,
     )
     entries = data if isinstance(data, list) else data.get("normalizations", [])

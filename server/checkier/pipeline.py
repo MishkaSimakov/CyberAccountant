@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 
 from checkier.config import PipelineConfig
+from processing.common.llm import ModelClient
 from checkier.entities import EntityRegistry
 from checkier.report import build_report
 from checkier.solver import solve_system
@@ -26,6 +27,7 @@ class Pipeline:
             self,
             cfg: PipelineConfig,
             *,
+            client: ModelClient,
             logger: logging.Logger | logging.LoggerAdapter | None = None,
             mapping: dict | None = None,
             tagged: dict[str, tuple[str, str]] | None = None,
@@ -35,6 +37,7 @@ class Pipeline:
         Supplied documents are saved in the usual stage layout so scope
         detection can read them without ingesting or tagging again.
         """
+        self.client = client
         self.cfg = cfg
         self.logger = logger if logger is not None else logging.getLogger(__name__)
         self._mapping = mapping
@@ -68,7 +71,7 @@ class Pipeline:
         ):
             return self._tagged
         self._tagged = run_tag(
-            self.cfg, mapping, on_progress=on_progress, on_token=on_token, logger=self.logger
+            self.cfg, mapping, on_progress=on_progress, on_token=on_token, client=self.client, logger=self.logger
         )
         return self._tagged
 
@@ -84,7 +87,7 @@ class Pipeline:
         01.01.2026) for date entities the deterministic parser could not
         handle. Saves the registry; call after ``registry()``."""
         reg = self._registry or self.registry()
-        changed = run_date_normalization(self.cfg, reg, on_token=on_token, logger=self.logger)
+        changed = run_date_normalization(self.cfg, reg, on_token=on_token, client=self.client, logger=self.logger)
         if changed:
             reg.save(self.cfg.entities_path)
         return changed
@@ -107,7 +110,7 @@ class Pipeline:
         replaced = self._replaced or self.replace()
         reg = self._registry or self.registry()
         scope = self._scope or self.scope()
-        self._relations_raw = run_relations(self.cfg, replaced, reg, scope, logger=self.logger)
+        self._relations_raw = run_relations(self.cfg, replaced, reg, scope, client=self.client, logger=self.logger)
         return self._relations_raw
 
     def solve(self):

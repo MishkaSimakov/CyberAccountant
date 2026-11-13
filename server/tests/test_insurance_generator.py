@@ -48,7 +48,7 @@ def documents():
 
 
 @pytest.fixture
-def context_factory(tmp_path, monkeypatch):
+def context_factory(tmp_path, monkeypatch, llm_client):
     monkeypatch.setenv('STORAGE_ROOT', str(tmp_path))
     monkeypatch.setattr(verification, 'GENERATORS', {'insurance': generate_insurance})
 
@@ -56,7 +56,7 @@ def context_factory(tmp_path, monkeypatch):
         pytest.fail('Insurance-only verification must not call an LLM')
 
     monkeypatch.setattr('app.generators.llm.generate_relations', forbidden)
-    monkeypatch.setattr('checkier.stage5_relations.call_llm_json', forbidden)
+    monkeypatch.setattr(llm_client, "call_llm_json", forbidden)
 
     def prepare(documents, *, start=date(2026, 1, 1), end=date(2026, 2, 28), style='numeric', row='3 этап, 2026 г.'):
         report = Report(id=1, name='Insurance test', contract_number='24/03/15-01',
@@ -78,8 +78,8 @@ def context_factory(tmp_path, monkeypatch):
     return prepare
 
 
-def run(context):
-    relations = verification.generate_requirements(context)
+def run(context, llm_client):
+    relations = verification.generate_requirements(context, client=llm_client)
     definitions = [dict(requirement, id=i) for i, requirement in enumerate(relations, 1)]
     return generate_insurance(context), verification.evaluate_requirements(context, definitions)
 
@@ -90,7 +90,8 @@ def test_registered_alongside_existing_llm_generator():
 
 
 @pytest.mark.parametrize('style', ['numeric', 'mnemonic'])
-def test_only_algorithm_uses_real_registry_and_single_shared_solver(documents, context_factory, monkeypatch, style):
+def test_only_algorithm_uses_real_registry_and_single_shared_solver(documents, context_factory, monkeypatch, style,
+                                                                    llm_client):
     context = context_factory(documents, style=style)
     calls = []
     solve = verification.solve_system
@@ -100,7 +101,7 @@ def test_only_algorithm_uses_real_registry_and_single_shared_solver(documents, c
         return solve(requirements, registry, **kwargs)
 
     monkeypatch.setattr(verification, 'solve_system', counted)
-    own, results = run(context)
+    own, results = run(context, llm_client)
     assert len(calls) == len(own) == 1
     assert own[0]['tag'] == 'agg'
     assert all(r['source'] != 'llm' for r in calls[0])
@@ -113,10 +114,10 @@ def test_only_algorithm_uses_real_registry_and_single_shared_solver(documents, c
     assert any(r['status'] == 'unverified' for r in results['card']['cells'])
 
 
-def test_stated_mismatch_is_found_without_changing_generated_formula(documents, context_factory):
-    original, _ = run(context_factory(documents))
+def test_stated_mismatch_is_found_without_changing_generated_formula(documents, context_factory, llm_client):
+    original, _ = run(context_factory(documents), llm_client)
     documents['card.md'] = documents['card.md'].replace('value="15.00"', 'value="16.00"')
-    own, results = run(context_factory(documents))
+    own, results = run(context_factory(documents), llm_client)
     assert original == own
     assert results['requirement_results'][0]['verdict'] == 'false'
     assert results['relations'][0]['status'] == 'false'
@@ -125,34 +126,34 @@ def test_stated_mismatch_is_found_without_changing_generated_formula(documents, 
     assert Decimal(cell['expected']) == 15 and Decimal(cell['diff']) == 1
 
 
-def test_missing_month_is_unverifiable_not_partial_equality(documents, context_factory):
+def test_missing_month_is_unverifiable_not_partial_equality(documents, context_factory, llm_client):
     del documents['feb.md']
-    own, results = run(context_factory(documents))
+    own, results = run(context_factory(documents), llm_client)
     assert own[0]['verdict'] == 'unverifiable'
     assert '2026-02' in own[0]['evidence']
     assert 'equation' not in own[0]
     assert not any(r.get('expected') is not None for r in results['card']['cells'])
 
 
-def test_duplicate_is_counted_once_and_foreign_documents_are_excluded(documents, context_factory):
+def test_duplicate_is_counted_once_and_foreign_documents_are_excluded(documents, context_factory, llm_client):
     documents['jan-copy.md'] = documents['jan.md']
     documents['foreign.md'] = calculation('2026-01', '1111', contract='OTHER')
     documents['march.md'] = calculation('2026-03', '2222')
-    own, results = run(context_factory(documents))
+    own, results = run(context_factory(documents), llm_client)
     assert len(collect_ids(parse(own[0]['equation']))) == 3
     cell = next(r for r in results['card']['cells'] if r.get('expected') is not None)
     assert Decimal(cell['expected']) == 15 and cell['status'] == 'ok'
 
 
 @pytest.mark.parametrize('number', [None, 'ANOTHER'])
-def test_conflicting_versions_or_monthly_summaries_are_unverifiable(documents, context_factory, number):
+def test_conflicting_versions_or_monthly_summaries_are_unverifiable(documents, context_factory, number, llm_client):
     documents['another.md'] = calculation('2026-01', '9.00', number=number)
-    own, _ = run(context_factory(documents))
+    own, _ = run(context_factory(documents), llm_client)
     assert own[0]['verdict'] == 'unverifiable' and 'конфликт' in own[0]['evidence']
 
 
 @pytest.mark.parametrize('change', ['unknown_value', 'currency', 'missing_amount', 'wrong_article'])
-def test_invalid_calculation_never_becomes_a_zero_or_base_amount(documents, context_factory, change):
+def test_invalid_calculation_never_becomes_a_zero_or_base_amount(documents, context_factory, change, llm_client):
     text = documents['jan.md']
     text = {
         'unknown_value': text.replace('value="7.00"', 'value=""'),
@@ -161,22 +162,22 @@ def test_invalid_calculation_never_becomes_a_zero_or_base_amount(documents, cont
         'wrong_article': text.replace('| 0300 |', '| 0200 |'),
     }[change]
     documents['jan.md'] = text
-    own, _ = run(context_factory(documents))
+    own, _ = run(context_factory(documents), llm_client)
     assert own[0]['verdict'] == 'unverifiable' and 'equation' not in own[0]
 
 
-def test_partial_month_and_year_intersection(documents, context_factory):
-    own, _ = run(context_factory(documents, start=date(2026, 1, 15)))
+def test_partial_month_and_year_intersection(documents, context_factory, llm_client):
+    own, _ = run(context_factory(documents, start=date(2026, 1, 15)), llm_client)
     assert own[0]['verdict'] == 'unverifiable'
-    own, results = run(context_factory(documents, start=date(2025, 8, 1)))
+    own, results = run(context_factory(documents, start=date(2025, 8, 1)), llm_client)
     assert 'equation' in own[0]  # The requested 2026 row excludes the previous year.
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
 
 
-def test_other_reports_are_ignored_and_reordered_columns_work(documents, context_factory):
+def test_other_reports_are_ignored_and_reordered_columns_work(documents, context_factory, llm_client):
     original = documents['card.md']
     documents['card.md'] = original.replace('0300', '9999')
-    own, _ = run(context_factory(documents))
+    own, _ = run(context_factory(documents), llm_client)
     assert own == []
     documents['card.md'] = original
     for name in ('card.md', 'jan.md', 'feb.md'):
@@ -188,29 +189,29 @@ def test_other_reports_are_ignored_and_reordered_columns_work(documents, context
                 line = '|' + '|'.join(cells) + '|'
             lines.append(line)
         documents[name] = '\n'.join(lines)
-    own, results = run(context_factory(documents))
+    own, results = run(context_factory(documents), llm_client)
     assert 'equation' in own[0]
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
 
 
-def test_normalized_thousands_are_not_multiplied_a_second_time(documents, context_factory):
+def test_normalized_thousands_are_not_multiplied_a_second_time(documents, context_factory, llm_client):
     documents['jan.md'] = documents['jan.md'].replace(tag('amount', '7.00', unit='RUB'),
                                                       tag('amount', '7.00', text='0.007', unit='RUB_K'))
-    _, results = run(context_factory(documents))
+    _, results = run(context_factory(documents), llm_client)
     cell = next(r for r in results['card']['cells'] if r.get('expected') is not None)
     assert Decimal(cell['expected']) == 15 and cell['status'] == 'ok'
 
 
-def test_untagged_insurance_document_cannot_be_silently_ignored(documents, context_factory):
+def test_untagged_insurance_document_cannot_be_silently_ignored(documents, context_factory, llm_client):
     documents['unreadable.md'] = 'РАСЧЁТ СТРАХОВЫХ ВЗНОСОВ\nРеквизиты не распознаны'
-    own, _ = run(context_factory(documents))
+    own, _ = run(context_factory(documents), llm_client)
     assert own[0]['verdict'] == 'unverifiable' and 'equation' not in own[0]
 
 
-def test_non_ruble_target_is_unverifiable(documents, context_factory):
+def test_non_ruble_target_is_unverifiable(documents, context_factory, llm_client):
     documents['card.md'] = documents['card.md'].replace(tag('amount', '15.00', unit='RUB'),
                                                         tag('amount', '15.00', unit='USD'))
-    own, _ = run(context_factory(documents))
+    own, _ = run(context_factory(documents), llm_client)
     assert own[0]['verdict'] == 'unverifiable' and 'рублях' in own[0]['evidence']
 
 
@@ -223,20 +224,20 @@ def test_missing_or_invalid_report_period_cannot_generate_empty_sum(documents, c
 
 
 @pytest.mark.parametrize('style', ['numeric', 'mnemonic'])
-def test_row_label_keeps_report_year(documents, context_factory, style):
-    named, _ = run(context_factory(documents, style=style))
+def test_row_label_keeps_report_year(documents, context_factory, style, llm_client):
+    named, _ = run(context_factory(documents, style=style), llm_client)
     context = context_factory(documents, row='3 этап, 2026 г.', style=style, start=date(2025, 8, 1))
     assert context.scope['target_label'] == '3 этап, 2026 г.'
-    own, results = run(context)
+    own, results = run(context, llm_client)
     assert own == named
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
 
 
-def test_row_label_ignores_multirow_header_and_column_numbers(documents, context_factory):
+def test_row_label_ignores_multirow_header_and_column_numbers(documents, context_factory, llm_client):
     documents['card.md'] = documents['card.md'].replace('| 3 этап, 2025 г.',
                                                         '| Уточняющая шапка | Взносы, всего | Другие затраты |\n| 1 | 2 | 3 |\n| 3 этап, 2025 г.',
                                                         1)
-    own, _ = run(context_factory(documents, row='3 этап, 2026 г.'))
+    own, _ = run(context_factory(documents, row='3 этап, 2026 г.'), llm_client)
     assert 'equation' in own[0]
 
 
@@ -245,18 +246,18 @@ def test_unknown_row_label_fails_instead_of_selecting_all_card_cells(documents, 
         context_factory(documents, row='Несуществующая строка')
 
 
-def test_row_label_works_with_multiple_monetary_tables(documents, context_factory):
+def test_row_label_works_with_multiple_monetary_tables(documents, context_factory, llm_client):
     documents[
         'card.md'] += f'\n| Другая таблица | Сумма |\n| --- | --- |\n| Расходы | {tag("amount", "1", unit="RUB")} |\n'
-    own, results = run(context_factory(documents, row='3 этап, 2026 г.'))
+    own, results = run(context_factory(documents, row='3 этап, 2026 г.'), llm_client)
     assert 'equation' in own[0]
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
 
 
-def test_numeric_text_is_not_interpreted_as_row_position(documents, context_factory):
+def test_numeric_text_is_not_interpreted_as_row_position(documents, context_factory, llm_client):
     documents['card.md'] = documents['card.md'].replace('999.00', '888.00').replace('3 этап, 2026 г.', '99')
     context = context_factory(documents, row='99')
     assert context.scope['target_label'] == '99'
-    own, results = run(context)
+    own, results = run(context, llm_client)
     assert 'equation' in own[0]
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'

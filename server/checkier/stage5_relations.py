@@ -8,7 +8,7 @@ import json
 
 from checkier.config import PipelineConfig
 from checkier.entities import EntityRegistry
-from checkier.llm import call_llm_json
+from processing.common.llm import ModelClient, ModelRequestOptions
 from checkier.schemas import RELATIONS_SCHEMA
 
 REL_PROMPT = """\
@@ -64,9 +64,11 @@ def generate_relations(
         replaced_docs: dict[str, str],
         registry: EntityRegistry,
         scope: dict,
+        *, client: ModelClient,
         logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> list[dict]:
     """Generate relations from the supplied corpus without filtering or saving it."""
+    logger = logger if logger is not None else logging.getLogger(__name__)
     documents = [f"--- file {key} ---\n{text}" for key, text in sorted(replaced_docs.items())]
     reg_lines = []
     for e in registry.entities:
@@ -84,14 +86,16 @@ def generate_relations(
         example_equation="#0 + #1 == #2" if cfg.id_style == "numeric" else "crumble-wink + able-fog == rapid-castle",
         id_description="# followed by a numeric ID, such as #0" if cfg.id_style == "numeric" else "mnemonic word pairs, such as crumble-wink",
     )
-    relations = call_llm_json(
+    relations = client.call_llm_json(
         prompt,
-        model=cfg.rel_model,
-        schema=RELATIONS_SCHEMA,
-        schema_name="relations",
-        timeout=cfg.request_timeout,
-        max_retries=cfg.max_retries,
-        reasoning=cfg.reasoning,
+        options=ModelRequestOptions(
+            model=cfg.rel_model,
+            schema=RELATIONS_SCHEMA,
+            schema_name="relations",
+            timeout=cfg.request_timeout,
+            max_retries=cfg.max_retries,
+            reasoning=cfg.reasoning,
+        ),
         logger=logger,
     )
     if isinstance(relations, dict):
@@ -104,10 +108,11 @@ def run_relations(
         replaced_docs: dict[str, str],
         registry: EntityRegistry,
         scope: dict,
+        *, client: ModelClient,
         logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> list[dict]:
     """Notebook pipeline wrapper: generate requirements and save the result."""
-    all_relations = generate_relations(cfg, replaced_docs, registry, scope, logger=logger)
+    all_relations = generate_relations(cfg, replaced_docs, registry, scope, client=client, logger=logger)
     cfg.relations_path.write_text(
         json.dumps(all_relations, ensure_ascii=False, indent=2), encoding="utf-8"
     )

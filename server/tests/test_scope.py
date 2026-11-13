@@ -14,7 +14,7 @@ from checkier.entities import build_registry
 
 
 @pytest.mark.parametrize("style", ["numeric", "mnemonic"])
-def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, monkeypatch, style):
+def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, monkeypatch, style, llm_client):
     tagged = {
         "1": ("data", '# <ent t="date">01.01.2025</ent>\n'
                       '<ent t="contract">TARGET</ent> '
@@ -36,7 +36,7 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
     assert verification.GENERATORS["scope"] is generate_scope
     monkeypatch.setattr(verification, "GENERATORS", {"scope": generate_scope})
 
-    requirements = verification.generate_requirements(context)
+    requirements = verification.generate_requirements(context, client=llm_client)
     assert len(requirements) == 8
     assert all(requirement["source"] == requirement["tag"] == "scope" for requirement in requirements)
     assert scope == {"target_row": None, "target_label": None}
@@ -55,7 +55,7 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
 
     # Removing all scope requirements also removes all inferred exclusions.
     monkeypatch.setattr(verification, "GENERATORS", {})
-    assert verification.generate_requirements(context) == []
+    assert verification.generate_requirements(context, client=llm_client) == []
     assert verification.evaluate_requirements(context, [])["files"]["out_of_scope"] == {}
 
 

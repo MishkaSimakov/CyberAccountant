@@ -15,6 +15,7 @@ COPY pyproject.toml ./
 COPY app/ ./app/
 COPY checkier/ ./checkier/
 COPY processing/ ./processing/
+COPY infrastructure/ ./infrastructure/
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install '.[dev]'
 

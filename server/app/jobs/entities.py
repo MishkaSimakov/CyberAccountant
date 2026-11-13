@@ -5,6 +5,7 @@ import logging
 from checkier import PipelineConfig, normalize_document, tag_document
 
 from ..database import session_scope
+from ..llm import create_model_client
 from ..logging import create_file_log, create_report_log, file_log_run
 from ..models import File
 from ..services.documents import find_document
@@ -39,8 +40,10 @@ def process_entities(file_revision_id: int) -> None:
                           report_log_path=report_log_path) as run_logger:
             source = artifact_path(file.markdown_path)
             cfg = PipelineConfig(data_dir=source.parent, out_dir=source.parent, tag_workers=1)
-            tagged, _retries = tag_document(cfg, file.name, source.read_text(encoding="utf-8"), logger=run_logger)
-            tagged = normalize_document(cfg, tagged, logger=run_logger)
+            client = create_model_client()
+            tagged, _retries = tag_document(cfg, file.name, source.read_text(encoding="utf-8"), client=client,
+                                            logger=run_logger)
+            tagged = normalize_document(cfg, tagged, client=client, logger=run_logger)
             entities_path = save_entities(report_id, file.file_id, file.version, tagged)
 
             with session_scope() as session:

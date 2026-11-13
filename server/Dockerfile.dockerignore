@@ -7,6 +7,10 @@
 !server/app/**
 !server/checkier/
 !server/checkier/**
+!server/processing/
+!server/processing/**
+!server/infrastructure/
+!server/infrastructure/**
 !server/pyproject.toml
 !server/workers.conf
 !server/Dockerfile
