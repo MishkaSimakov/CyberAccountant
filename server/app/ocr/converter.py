@@ -16,6 +16,7 @@ from difflib import SequenceMatcher
 import hashlib
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -44,7 +45,8 @@ class ParsedDocument:
 
 
 @contextmanager
-def parse_document(original: Path) -> Iterator[ParsedDocument]:
+def parse_document(original: Path, *, logger: logging.Logger | logging.LoggerAdapter | None = None) -> Iterator[
+    ParsedDocument]:
     """Parse one file; returned paths exist only inside the caller's with block.
 
     Raises ConversionError with a description if conversion fails.
@@ -54,7 +56,7 @@ def parse_document(original: Path) -> Iterator[ParsedDocument]:
         output = Path(temporary) / "document.md"
         try:
             args = parser().parse_args([str(original), str(output)])
-            manifest = convert(original, output, args)
+            manifest = convert(original, output, args, logger=logger)
         except ConversionError:
             raise
         except Exception as exc:
@@ -555,7 +557,9 @@ def write_page(writer: MarkdownWriter, words, tables, page_number, page_size):
             writer.write('\n')
 
 
-def convert(source: Path, output: Path, args) -> dict:
+def convert(source: Path, output: Path, args, *, logger: logging.Logger | logging.LoggerAdapter | None = None) -> dict:
+    logger = logger if logger is not None else logging.getLogger(__name__)
+    logger.info("Converting %s", source.name)
     source, output = source.resolve(), output.resolve()
     if not source.is_file():
         raise ConversionError(f'Input file does not exist: {source}')
@@ -608,9 +612,10 @@ def convert(source: Path, output: Path, args) -> dict:
                 tables, clean = raster_tables(image, sx, sy) if args.tables and not spreadsheet else ([], image)
                 use_ocr = not spreadsheet and (args.ocr == 'always' or (args.ocr == 'auto' and not native))
                 if use_ocr:
-                    print(f'Page {number}/{len(doc)}: OCR', file=sys.stderr)
+                    logger.info("Page %d/%d: OCR", number, len(doc))
                     words = ocr_with_tables(image, clean, tables, size, args, temporary)
                 else:
+                    logger.info("Page %d/%d: native text", number, len(doc))
                     words = native
                     for word in words:
                         word.bbox = list(fitz.Rect(word.bbox) * page.rotation_matrix)
@@ -740,6 +745,9 @@ def convert(source: Path, output: Path, args) -> dict:
                 'pages': pages, 'characters': writer.characters, 'warnings': warnings}
     output.write_text(markdown, encoding='utf-8', newline='')
     sidecar.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+    for warning in warnings:
+        logger.warning("%s", warning)
+    logger.info("Converted %s: %d pages", source.name, len(pages))
     return manifest
 
 

@@ -8,6 +8,7 @@ from typing import BinaryIO
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from ..logging import create_file_log
 from .. import storage
 from ..database import session_scope
 from ..entities import prepare_entities
@@ -56,7 +57,7 @@ def upload_document(report_id: int, filename: str, stream: BinaryIO, role: str) 
             session.flush()
             file.path = storage.save_original(staged, report_id, file.file_id, suffix)
             original = storage.artifact_path(file.path)
-            file.log_path = storage.create_file_log(report_id, file.file_id)
+            file.log_path = create_file_log(report_id, file.file_id)
             sync_processing_status(session, report)
             result = document_response(file)
             revision_id = file.id

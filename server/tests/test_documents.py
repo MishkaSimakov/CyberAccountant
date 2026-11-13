@@ -170,6 +170,13 @@ def test_real_ocr_preserves_artifacts_and_updates_progress(api):
     ocr.process_ocr(pending[0])
     details = request("GET", f"/reports/{report_id}")[1]
     assert details["documents"][0]["status"] == "ocr_completed"
+    _, document_log = request("GET", f'/reports/{report_id}/documents/{uploaded["id"]}/log')
+    assert b"Converting original.pdf" in document_log
+    assert b"Page 1/1: native text" in document_log
+    _, report_log = request("GET", f"/reports/{report_id}/log")
+    assert b"Document job started" in report_log and b"Document job completed" in report_log
+    assert b"Converting" not in report_log
+    assert f"report={report_id} | document={uploaded['id']} | revision_id={pending[0]} | revision=1 | stage=ocr".encode() in report_log
     assert details["progress"] == {"completed": 1, "total": 1}
     assert details["processing_status"] == "completed"
     assert "Invoice total 12345.67" in request("GET", f'/reports/{report_id}/documents/{uploaded["id"]}/markdown')[1][
@@ -245,7 +252,7 @@ def test_pdf_endpoint_serves_converted_artifact_across_revisions(api, monkeypatc
         preview = pdf.tobytes()
 
     @contextmanager
-    def parse(source):
+    def parse(source, *, logger):
         assert source.read_bytes() == original
         output = tmp_path / "converted"
         output.mkdir()
@@ -283,7 +290,7 @@ def test_ocr_failure_is_persisted(api, monkeypatch):
     report_id, pending = api
     upload(report_id)
 
-    def fail(_):
+    def fail(_, **kwargs):
         raise ConversionError("broken document")
 
     monkeypatch.setattr(ocr, "parse_document", fail)
@@ -293,6 +300,11 @@ def test_ocr_failure_is_persisted(api, monkeypatch):
     assert details["processing_status"] == "failed"
     assert details["documents"][0]["status"] == "failed"
     assert details["documents"][0]["error"]
+    _, report_log = request("GET", f"/reports/{report_id}/log")
+    assert b"Document job failed (ConversionError)" in report_log
+    assert b"broken document" not in report_log
+    _, document_log = request("GET", f'/reports/{report_id}/documents/{details["documents"][0]["id"]}/log')
+    assert b"ERROR (ConversionError): broken document" in document_log
 
 
 def test_queue_failure_keeps_original_and_marks_failed(api, monkeypatch):
@@ -321,7 +333,7 @@ def test_real_rq_processes_bundle_in_fifo_order(api, monkeypatch, tmp_path):
     events = []
 
     @contextmanager
-    def parse(source):
+    def parse(source, *, logger):
         with database.session_scope() as session:
             files = reports.report_documents(session, report_id)
             assert sum(file.status == "ocr_running" for file in files) == 1

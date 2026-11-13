@@ -14,6 +14,7 @@ Every normalized entity records provenance in ``Entity.normalized_from``.
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 from checkier.config import PipelineConfig
@@ -48,6 +49,7 @@ def run_date_normalization(
         cfg: PipelineConfig,
         registry: EntityRegistry,
         on_token: Callable[[str], None] | None = None,
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> list[Entity]:
     """Normalize date entities whose raw text the deterministic parser could
     not handle. Mutates the registry (sets ``value`` + ``normalized_from``);
@@ -67,6 +69,7 @@ def run_date_normalization(
         max_retries=cfg.max_retries,
         on_token=on_token,
         reasoning=cfg.reasoning,
+        logger=logger,
     )
     entries = data if isinstance(data, list) else data.get("normalizations", [])
     by_raw: dict[str, str] = {}

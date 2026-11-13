@@ -1,11 +1,14 @@
 """Generate contract and period requirements without evaluating them."""
 
+import logging
+
 import json
 
 from ..verification_context import VerificationContext
 
 
-def generate_scope(context: VerificationContext) -> list[dict]:
+def generate_scope(context: VerificationContext, *,
+                   logger: logging.Logger | logging.LoggerAdapter | None = None) -> list[dict]:
     """Check each supporting document against the report's contract and period."""
     report = context.report
     requirements = []

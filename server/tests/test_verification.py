@@ -158,11 +158,11 @@ def test_generators_share_context_and_all_requirements_reach_one_solver(reviewed
             storage.artifact_path(file.entities_path).write_text(text, encoding="utf-8")
     contexts = []
 
-    def first(context):
+    def first(context, *, logger):
         contexts.append(context)
         return [{"equation": "#0 + #1 == #2"}]
 
-    def second(context):
+    def second(context, *, logger):
         contexts.append(context)
         return [{"equation": "#0 - #1 == #3"}]
 
@@ -218,7 +218,7 @@ def test_failed_generation_is_retryable_without_partial_results(reviewed, monkey
     report_id, _, pending = reviewed
     original = verification.GENERATORS
 
-    def fail(_context):
+    def fail(_context, *, logger):
         raise RuntimeError("LLM unavailable")
 
     monkeypatch.setattr(verification, "GENERATORS", {"llm": fail})
@@ -296,7 +296,7 @@ def test_requirement_model_calls_append_to_one_report_log_across_failed_runs(rev
 
 def test_report_log_endpoint_serves_plain_text_and_handles_missing_logs(api):
     from app.api.reports import report_log
-    from checkier.file_log import append_log
+    from app.logging import append_log
 
     report_id, _ = api
     path = f"/reports/{report_id}/log"
@@ -376,7 +376,7 @@ def test_invalid_generated_formulas_require_correction_before_verification(revie
 
 def test_assertions_do_not_constrain_formulas_and_keep_requirement_ids(reviewed, monkeypatch):
     report_id, _, _ = reviewed
-    monkeypatch.setattr(verification, "GENERATORS", {"mixed": lambda context: [
+    monkeypatch.setattr(verification, "GENERATORS", {"mixed": lambda context, **kwargs: [
         {"kind": "assertion", "condition": False, "text": "Missing signature", "ids_related": [1]},
         {"equation": "#0 == #1", "text": "Сумма по документам", "tag": "agg"},
         {"kind": "assertion", "condition": True, "text": "Signature present", "ids_related": [0]},

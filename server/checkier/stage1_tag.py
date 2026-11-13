@@ -25,6 +25,7 @@ A progress callback receives :class:`TagProgress` after every file.
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -254,10 +255,11 @@ def _tag_one(
         h8: str,
         original_name: str,
         on_token: Callable[[str], None] | None = None,
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> tuple[str, int]:
     """Tag one file. Returns (tagged_text, retries_used)."""
     src = cfg.files_dir / f"{h8}.md"
-    return tag_document(cfg, original_name, src.read_text(encoding="utf-8"), on_token)
+    return tag_document(cfg, original_name, src.read_text(encoding="utf-8"), on_token, logger=logger)
 
 
 def tag_document(
@@ -265,12 +267,14 @@ def tag_document(
         filename: str,
         markdown: str,
         on_token: Callable[[str], None] | None = None,
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> tuple[str, int]:
     """Extract entries from one document without filesystem access.
 
     Return (tagged_markdown, retries_used), or raise when extraction fails.
     The caller owns persistence and scheduling.
     """
+    logger = logger if logger is not None else logging.getLogger(__name__)
     content = markdown
     prompt = _build_prompt(filename, content)
     last_err: Exception | None = None
@@ -284,6 +288,7 @@ def tag_document(
                 timeout=cfg.request_timeout,
                 on_token=on_token,
                 reasoning=cfg.reasoning,
+                logger=logger,
             )
             segments = _coerce_segments(data)
             problems = _validate_segments(content, segments)
@@ -292,6 +297,7 @@ def tag_document(
             return _segments_to_tagged(segments), attempt
         except Exception as exc:  # noqa: BLE001
             last_err = exc
+            logger.warning("Tagging failed for %s (attempt %d/%d): %s", filename, attempt + 1, cfg.max_retries + 1, exc)
             if attempt < cfg.max_retries and _is_transient(exc):
                 continue
             if attempt < cfg.max_retries:
@@ -314,6 +320,7 @@ def run_tag(
         mapping: dict,
         on_progress: TagCallback | None = None,
         on_token: Callable[[str, str], None] | None = None,
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> dict[str, tuple[str, str]]:
     """Tag all non-duplicate files. Returns {h8: (role, tagged_text)}.
 
@@ -321,6 +328,7 @@ def run_tag(
     on_token: called with (file, token) for every streamed LLM token so the
     caller can show live output while a file is being generated.
     """
+    logger = logger if logger is not None else logging.getLogger(__name__)
     cfg.tagged_dir.mkdir(parents=True, exist_ok=True)
     todo = [
         (h8, entry["role"], Path(entry["original"]).name)
@@ -335,7 +343,7 @@ def run_tag(
             if on_token:
                 on_token(_h8, tok)
 
-        tagged, retries = _tag_one(cfg, h8, name, on_token=_tok)
+        tagged, retries = _tag_one(cfg, h8, name, on_token=_tok, logger=logger)
         return h8, role, tagged, retries, name
 
     with ThreadPoolExecutor(max_workers=cfg.tag_workers) as pool:
@@ -356,6 +364,7 @@ def run_tag(
                 stats.entities += ent_count
                 stats.retries += retries
             except Exception as exc:  # noqa: BLE001
+                logger.exception("Tagging failed for document %s", h8)
                 name = next(n for hh, _, n in todo if hh == h8)
                 prog = TagProgress(
                     file=h8, original=name, ok=False,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 
 from checkier.config import PipelineConfig
@@ -62,6 +64,7 @@ def generate_relations(
         replaced_docs: dict[str, str],
         registry: EntityRegistry,
         scope: dict,
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> list[dict]:
     """Generate relations from the supplied corpus without filtering or saving it."""
     documents = [f"--- file {key} ---\n{text}" for key, text in sorted(replaced_docs.items())]
@@ -89,6 +92,7 @@ def generate_relations(
         timeout=cfg.request_timeout,
         max_retries=cfg.max_retries,
         reasoning=cfg.reasoning,
+        logger=logger,
     )
     if isinstance(relations, dict):
         relations = [relations]
@@ -100,9 +104,10 @@ def run_relations(
         replaced_docs: dict[str, str],
         registry: EntityRegistry,
         scope: dict,
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> list[dict]:
     """Notebook pipeline wrapper: generate requirements and save the result."""
-    all_relations = generate_relations(cfg, replaced_docs, registry, scope)
+    all_relations = generate_relations(cfg, replaced_docs, registry, scope, logger=logger)
     cfg.relations_path.write_text(
         json.dumps(all_relations, ensure_ascii=False, indent=2), encoding="utf-8"
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from html import escape
 
@@ -18,14 +19,15 @@ def run_registry(
     return reg
 
 
-def normalize_document(cfg: PipelineConfig, tagged: str) -> str:
+def normalize_document(cfg: PipelineConfig, tagged: str, *,
+                       logger: logging.Logger | logging.LoggerAdapter | None = None) -> str:
     """Add normalized values to extracted tags for review, without saving files.
 
     Dates use ISO format for review; registries retain their ordinal values.
     Unresolved values are empty, and original document text stays unchanged.
     """
     registry = build_registry({"document": ("data", tagged)}, seed=cfg.seed)
-    run_date_normalization(cfg, registry)
+    run_date_normalization(cfg, registry, logger=logger)
     entries = iter(registry.entities)
 
     def replace(match):

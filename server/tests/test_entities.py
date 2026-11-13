@@ -72,6 +72,10 @@ def test_extraction_preserves_full_model_logs_across_runs(ready, monkeypatch):
         assert all(document["status"] == "failed" for document in details["documents"])
         assert all(document["error"] == "Не удалось извлечь сущности из документа. Повторите извлечение."
                    for document in details["documents"])
+        _, report_log = request("GET", path + "/log")
+        assert report_log.count(b"Document job started") == run * len(revisions)
+        assert report_log.count(b"Document job failed (RuntimeError)") == run * len(revisions)
+        assert b"MODEL PROMPT" not in report_log and b"MODEL OUTPUT" not in report_log
         for document in details["documents"]:
             assert request("GET", path + f'/documents/{document["id"]}')[1]["error"] == document["error"]
             status, content = request("GET", path + f'/documents/{document["id"]}/log')

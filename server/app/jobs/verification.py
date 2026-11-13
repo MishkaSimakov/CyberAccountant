@@ -2,11 +2,11 @@
 
 import logging
 
-from checkier.file_log import file_log_run
 from sqlalchemy import delete, select
 
 from ..database import session_scope
 from .. import storage
+from ..logging import create_report_log, file_log_run
 from ..models import EntityFile, Report, Requirement, VerificationResult
 from ..services.requirements import requirement_response
 from ..services.reports import find_report, report_documents
@@ -30,7 +30,7 @@ def _process(report_id: int, stage: str) -> None:
         report = find_report(session, report_id, lock=True)
         if report.stage != stage or report.processing_status != "queued":
             return
-        report.log_path = storage.create_report_log(report_id)
+        report.log_path = create_report_log(report_id)
         report.processing_status = "running"
         files = report_documents(session, report_id)
         definitions = [requirement_response(requirement).model_dump() for requirement in session.scalars(
@@ -38,10 +38,11 @@ def _process(report_id: int, stage: str) -> None:
         )]
 
     try:
-        with file_log_run(storage.artifact_path(report.log_path), stage):
+        with file_log_run(storage.artifact_path(report.log_path), stage, report_id=report_id) as run_logger:
+            run_logger.info("Preparing %d reviewed documents", len(files))
             context = prepare_verification(report, files)
             if stage == "requirements":
-                generated = generate_requirements(context)
+                generated = generate_requirements(context, logger=run_logger)
                 with session_scope() as session:
                     report = find_report(session, report_id, lock=True)
                     if report.stage != stage or report.processing_status != "running":
@@ -57,7 +58,7 @@ def _process(report_id: int, stage: str) -> None:
                     report.processing_status = "completed"
                 return
 
-            result = evaluate_requirements(context, definitions)
+            result = evaluate_requirements(context, definitions, logger=run_logger)
             result_path = storage.save_verification_result(report_id, result)
             with session_scope() as session:
                 report = find_report(session, report_id, lock=True)

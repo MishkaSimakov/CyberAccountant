@@ -1,5 +1,7 @@
 """Aggregate article 0300 from one consolidated insurance calculation per month."""
 
+import logging
+
 import calendar
 import re
 from datetime import date
@@ -29,7 +31,8 @@ def _tables(text):
             rows = []
 
 
-def generate_insurance(context: VerificationContext) -> list[dict]:
+def generate_insurance(context: VerificationContext, *,
+                       logger: logging.Logger | logging.LoggerAdapter | None = None) -> list[dict]:
     """Use existing IDs, normalized values and scope; emit only 0300 relations."""
     numeric = context.config.id_style == "numeric"
     entities = context.registry.entities

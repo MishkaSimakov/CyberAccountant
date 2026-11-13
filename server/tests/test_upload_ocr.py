@@ -17,7 +17,7 @@ def test_ocr_bundle_is_preserved_before_temporary_files_are_removed(fails, tmp_p
     source.write_bytes(b"uploaded bytes")
     paths = []
 
-    def convert(source, output, args):
+    def convert(source, output, args, *, logger):
         paths.append(output.parent)
         assert source.suffix == ".pdf"
         assert source.read_bytes() == b"uploaded bytes"

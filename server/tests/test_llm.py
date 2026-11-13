@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from checkier import llm
-from checkier.file_log import append_log, file_log_run
+from app.logging import append_log, file_log_run
 from checkier.schemas import RELATIONS_SCHEMA
 
 
@@ -44,16 +44,19 @@ def test_invalid_outer_json_is_not_replaced_with_a_nested_object(text):
 
 
 def test_logs_every_retry_before_validation(tmp_path, monkeypatch):
+    path = tmp_path / "processing.log"
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     outputs = ["```json\r\nnot JSON: Привет\r\n", '```json\n[{"equation": "#1 == #2"}]']
     remaining = iter(outputs)
     monkeypatch.setattr(llm, "_post", lambda *args: {"output_text": next(remaining)})
 
-    assert llm.call_llm_json("prompt", "test-model", schema=RELATIONS_SCHEMA, max_retries=1) == [
-        {"equation": "#1 == #2"},
-    ]
-    files = sorted((tmp_path / "llm_outputs").glob("*.txt"))
-    assert [path.read_bytes() for path in files] == [output.encode("utf-8") for output in outputs]
+    with file_log_run(path, "relations") as logger:
+        assert llm.call_llm_json("prompt", "test-model", schema=RELATIONS_SCHEMA, max_retries=1, logger=logger) == [
+            {"equation": "#1 == #2"},
+        ]
+    content = path.read_bytes()
+    assert content.count(b"--- MODEL OUTPUT |") == 2
+    assert all(output.encode("utf-8") in content for output in outputs)
 
 
 def test_final_validation_failure_still_logs_output(tmp_path, monkeypatch):
@@ -61,11 +64,11 @@ def test_final_validation_failure_still_logs_output(tmp_path, monkeypatch):
     output = '{"equation": "#1 == #2"}'
     monkeypatch.setattr(llm, "_post", lambda *args: {"output_text": output})
 
+    path = tmp_path / "processing.log"
     with pytest.raises(llm.LLMError, match="validation failed after retries"):
-        llm.call_llm_json("prompt", "test-model", schema=RELATIONS_SCHEMA, max_retries=0)
-    files = list((tmp_path / "llm_outputs").glob("*.txt"))
-    assert len(files) == 1
-    assert files[0].read_bytes() == output.encode("utf-8")
+        with file_log_run(path, "relations") as logger:
+            llm.call_llm_json("prompt", "test-model", schema=RELATIONS_SCHEMA, max_retries=0, logger=logger)
+    assert output.encode("utf-8") in path.read_bytes()
 
 
 def test_streaming_output_is_logged(tmp_path, monkeypatch):
@@ -73,10 +76,10 @@ def test_streaming_output_is_logged(tmp_path, monkeypatch):
     output = "```json\n[]"
     monkeypatch.setattr(llm, "_post_streaming", lambda *args: output)
 
-    assert llm.call_llm("prompt", "test-model", on_token=lambda token: None) == output
-    files = list((tmp_path / "llm_outputs").glob("*.txt"))
-    assert len(files) == 1
-    assert files[0].read_bytes() == output.encode("utf-8")
+    path = tmp_path / "processing.log"
+    with file_log_run(path, "extraction") as logger:
+        assert llm.call_llm("prompt", "test-model", on_token=lambda token: None, logger=logger) == output
+    assert output.encode("utf-8") in path.read_bytes()
 
 
 def test_schema_rejection_is_not_retried_without_schema(tmp_path, monkeypatch):
@@ -131,27 +134,27 @@ def test_schema_uses_responses_text_format(tmp_path, monkeypatch):
     fmt = payloads[0]["text"]["format"]
     assert fmt["type"] == "json_schema"
     assert fmt["schema"] == RELATIONS_SCHEMA
-    files = list((tmp_path / "llm_outputs").glob("*.txt"))
-    assert len(files) == 1
-    assert files[0].read_bytes() == b"[]"
+    assert not (tmp_path / "llm_outputs").exists()
 
 
-def test_file_log_appends_across_stages_and_restores_the_context(tmp_path, monkeypatch):
+def test_file_log_appends_across_stages_without_implicit_routing(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     monkeypatch.setattr(llm, "_post", lambda payload, timeout: {"output_text": payload["input"]})
     path = tmp_path / "processing.log"
     append_log(path, "Earlier stage output\n")
     for stage in ("entity_extraction", "date_normalization"):
-        with file_log_run(path, stage):
-            assert llm.call_llm(stage, "test-model") == stage
+        with file_log_run(path, stage) as logger:
+            assert llm.call_llm(stage, "test-model", logger=logger) == stage
+            llm.call_llm("unbound nested call", "test-model")
     content = path.read_text()
     assert content.startswith("Earlier stage output\n")
     assert content.count("\nRUN ") == 2
     assert content.count("--- MODEL OUTPUT |") == 2
     assert content.index("entity_extraction") < content.index("date_normalization")
+    assert "unbound nested call" not in content
     assert not (tmp_path / "llm_outputs").exists()
     llm.call_llm("outside the file run", "test-model")
-    assert len(list((tmp_path / "llm_outputs").glob("*.txt"))) == 1
+    assert not (tmp_path / "llm_outputs").exists()
     assert path.read_text() == content
 
 
@@ -166,8 +169,8 @@ def test_parallel_file_logs_keep_model_outputs_isolated(tmp_path, monkeypatch):
 
     def run(name):
         path = tmp_path / f"{name}.log"
-        with file_log_run(path, "extraction"):
-            llm.call_llm(name, "test-model")
+        with file_log_run(path, "extraction") as logger:
+            llm.call_llm(name, "test-model", logger=logger)
         return path.read_text()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -186,8 +189,8 @@ def test_interrupted_stream_keeps_partial_output_in_the_file_log(tmp_path, monke
     monkeypatch.setattr(llm, "_post_streaming", stream)
     path = tmp_path / "processing.log"
     with pytest.raises(llm.LLMError, match="Stream interrupted"):
-        with file_log_run(path, "extraction"):
-            llm.call_llm("prompt", "test-model", on_token=lambda token: None)
+        with file_log_run(path, "extraction") as logger:
+            llm.call_llm("prompt", "test-model", on_token=lambda token: None, logger=logger)
     content = path.read_bytes()
     assert output.encode("utf-8") in content
     assert content.count(b"--- MODEL OUTPUT |") == 1
@@ -209,9 +212,9 @@ def test_file_log_preserves_full_prompts_before_each_retry(tmp_path, monkeypatch
         return output if streaming else {"output_text": output}
 
     monkeypatch.setattr(llm, "_post_streaming" if streaming else "_post", respond)
-    with file_log_run(path, "extraction"):
+    with file_log_run(path, "extraction") as logger:
         assert llm.call_llm_json(prompt, "test-model", schema=RELATIONS_SCHEMA, max_retries=1,
-                                 on_token=(lambda token: None) if streaming else None) == []
+                                 on_token=(lambda token: None) if streaming else None, logger=logger) == []
     assert prompts[0] == prompt
     assert "Your previous answer failed validation" in prompts[1]
     content = path.read_bytes()
@@ -237,13 +240,48 @@ def test_file_log_keeps_prompts_when_requests_fail_or_use_schema_fallback(tmp_pa
 
     monkeypatch.setattr(llm, "_post", respond)
     if fallback:
-        with file_log_run(path, "extraction"):
-            assert llm.call_llm_json(prompt, "test-model", schema=RELATIONS_SCHEMA) == []
+        with file_log_run(path, "extraction") as logger:
+            assert llm.call_llm_json(prompt, "test-model", schema=RELATIONS_SCHEMA, logger=logger) == []
     else:
         with pytest.raises(llm.LLMError, match="API unavailable"):
-            with file_log_run(path, "extraction"):
-                llm.call_llm(prompt, "test-model")
+            with file_log_run(path, "extraction") as logger:
+                llm.call_llm(prompt, "test-model", logger=logger)
     assert calls == (2 if fallback else 1)
     content = path.read_bytes()
     assert content.count(b"--- MODEL PROMPT |") == calls
     assert content.count(prompt.encode("utf-8")) == calls
+
+
+@pytest.mark.parametrize("chat", [False, True])
+def test_truncated_nonstreaming_response_preserves_exact_partial_text(tmp_path, monkeypatch, chat):
+    partial = "Частичный ответ\r\n" * 4_000
+    response = ({"choices": [{"finish_reason": "length", "message": {"content": partial}}]} if chat else
+                {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+                 "output_text": partial})
+    monkeypatch.setattr(llm, "_post", lambda *args: response)
+    path = tmp_path / "processing.log"
+    with pytest.raises(llm.LLMError, match="truncated"):
+        with file_log_run(path, "extraction") as logger:
+            llm.call_llm("prompt", "test-model", logger=logger)
+    assert partial.encode("utf-8") in path.read_bytes()
+    assert path.read_bytes().count(b"--- MODEL OUTPUT |") == 1
+
+
+def test_transport_retry_warnings_use_the_supplied_logger(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm.time, "sleep", lambda seconds: None)
+    calls = 0
+
+    def post(payload, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise requests.Timeout("transport timeout")
+        return {"output_text": "success"}
+
+    monkeypatch.setattr(llm, "_post", post)
+    path = tmp_path / "processing.log"
+    with file_log_run(path, "extraction") as logger:
+        assert llm.call_llm("prompt", "test-model", logger=logger) == "success"
+    content = path.read_text()
+    assert "transport timeout" in content and "retrying in 1s" in content
+    assert content.count("--- MODEL PROMPT |") == 2

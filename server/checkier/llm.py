@@ -4,48 +4,28 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
-from uuid import uuid4
 
 import jsonschema
 import requests
 
 from checkier.config import load_api_credentials
-from checkier.file_log import append_log, current_log_path
-
-logger = logging.getLogger(__name__)
 
 
-def log_model_prompt(prompt: str, model: str, schema_name: str) -> None:
-    """Append the exact prompt before sending each request, including retries."""
-    if path := current_log_path.get():
-        timestamp = datetime.now(timezone.utc).isoformat()
-        append_log(path, f"\n--- MODEL PROMPT | {timestamp} | model={model} | schema={schema_name} ---\n{prompt}\n")
+def log_model_prompt(prompt: str, model: str, schema_name: str, logger: logging.Logger | logging.LoggerAdapter) -> None:
+    """Record the exact prompt before every request, including retries."""
+    logger.info("\n--- MODEL PROMPT | %s | model=%s | schema=%s ---\n%s",
+                datetime.now(timezone.utc).isoformat(), model, schema_name, prompt)
 
 
-def log_model_output(text: str, model: str, schema_name: str) -> None:
-    """Keep the exact model text, including invalid JSON and Markdown fences."""
-    if path := current_log_path.get():
-        timestamp = datetime.now(timezone.utc).isoformat()
-        append_log(path, f"\n--- MODEL OUTPUT | {timestamp} | model={model} | schema={schema_name} ---\n{text}\n")
-        return
-    root = Path(os.environ.get("STORAGE_ROOT", Path(__file__).resolve().parents[2] / "storage"))
-    directory = root / "llm_outputs"
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    path = directory / f"{timestamp}-{uuid4().hex}.txt"
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8", newline="")
-    except OSError:
-        logger.exception("Could not save raw LLM output to %s", path)
-    else:
-        logger.info("Saved raw LLM output to %s (model=%s, schema=%s)", path, model, schema_name)
+def log_model_output(text: str, model: str, schema_name: str, logger: logging.Logger | logging.LoggerAdapter) -> None:
+    """Record exact model text, including invalid JSON and Markdown fences."""
+    logger.info("\n--- MODEL OUTPUT | %s | model=%s | schema=%s ---\n%s",
+                datetime.now(timezone.utc).isoformat(), model, schema_name, text)
 
 
 class LLMError(RuntimeError):
@@ -72,6 +52,11 @@ def _extract_text(data: dict) -> str:
     Reasoning/thinking blocks are skipped: only ``output_text`` / message
     content is returned, never chain-of-thought."""
     _raise_if_incomplete(data)
+    return _message_text(data)
+
+
+def _message_text(data: dict) -> str:
+    """Extract surfaced text even from a truncated reply, for failure logging."""
     if isinstance(data.get("output_text"), str):
         return data["output_text"]
     # OpenAI Responses API: {"output": [{"type": "message", "content": [...]}]}
@@ -187,6 +172,7 @@ def call_llm(
         timeout: float = 300.0,
         on_token: Callable[[str], None] | None = None,
         reasoning: str = "disabled",
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> str:
     """Single LLM call with optional strict JSON Schema structured output.
 
@@ -197,6 +183,7 @@ def call_llm(
     reasoning: "disabled" requests minimum effort ("low"), "enabled" uses
     the model default, and "exclude" hides reasoning from parsed output.
     """
+    logger = logger if logger is not None else logging.getLogger(__name__)
     payload: dict = {"model": model, "input": prompt}
     # Portable APIs do not guarantee that reasoning can be fully disabled.
     if reasoning == "disabled":
@@ -212,9 +199,18 @@ def call_llm(
         }
 
     def request_text() -> str:
-        log_model_prompt(prompt, model, schema_name)
+        log_model_prompt(prompt, model, schema_name, logger)
         if on_token is None:
-            return _extract_text(_post(payload, timeout))
+            data = _post(payload, timeout)
+            try:
+                return _extract_text(data)
+            except LLMError:
+                try:
+                    partial = _message_text(data)
+                except LLMError:
+                    partial = json.dumps(data, ensure_ascii=False)
+                log_model_output(partial, model, schema_name, logger)
+                raise
         chunks: list[str] = []
 
         def track(token: str) -> None:
@@ -225,7 +221,7 @@ def call_llm(
             return _post_streaming(payload, timeout, track)
         except Exception:
             if chunks:
-                log_model_output("".join(chunks), model, schema_name)
+                log_model_output("".join(chunks), model, schema_name, logger)
             raise
 
     def request_text_resilient() -> str:
@@ -257,9 +253,10 @@ def call_llm(
         # Some endpoints/models reject response_format; retry without it.
         if schema is None or "response_format" not in str(exc):
             raise
+        logger.warning("Schema rejected; retrying without text.format: %s", exc)
         payload.pop("text", None)
         text = request_text_resilient()
-    log_model_output(text, model, schema_name)
+    log_model_output(text, model, schema_name, logger)
     return text
 
 
@@ -297,15 +294,17 @@ def call_llm_json(
         max_retries: int = 2,
         on_token: Callable[[str], None] | None = None,
         reasoning: str = "disabled",
+        logger: logging.Logger | logging.LoggerAdapter | None = None,
 ) -> dict | list:
     """Call the LLM and validate the result against *schema* (if given),
     retrying with the validation error fed back."""
+    logger = logger if logger is not None else logging.getLogger(__name__)
     attempt_prompt = prompt
     last_error: Exception | None = None
     for attempt in range(max_retries + 1):
         text = call_llm(
             attempt_prompt, model, schema=schema, schema_name=schema_name,
-            timeout=timeout, on_token=on_token, reasoning=reasoning,
+            timeout=timeout, on_token=on_token, reasoning=reasoning, logger=logger,
         )
         try:
             data = _json_from_text(text)
@@ -314,6 +313,7 @@ def call_llm_json(
             return data
         except (LLMError, jsonschema.ValidationError) as exc:
             last_error = exc
+            logger.warning("JSON validation failed (attempt %d/%d): %s", attempt + 1, max_retries + 1, exc)
             if attempt < max_retries:
                 attempt_prompt = (
                         prompt

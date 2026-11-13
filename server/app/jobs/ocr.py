@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from ..database import session_scope
+from ..logging import create_file_log, create_report_log, file_log_run
 from ..models import File
 from ..ocr import parse_document
 from ..services.reports import find_report, sync_processing_status
@@ -23,13 +24,29 @@ def process_ocr(file_revision_id: int) -> None:
         session.refresh(file)
         if file.status != "ocr_queued":
             return
+        file.log_path = create_file_log(report_id, file.file_id)
+        report.log_path = create_report_log(report_id)
+        report_log_path = artifact_path(report.log_path)
         file.status = "ocr_running"
         sync_processing_status(session, report)
 
     try:
-        with parse_document(artifact_path(file.path)) as parsed:
-            markdown_path = save_ocr(report_id, file.file_id, file.version, parsed.markdown)
-            pdf_path = (Path(markdown_path).parent / parsed.pdf.relative_to(parsed.markdown.parent)).as_posix()
+        with file_log_run(artifact_path(file.log_path), "ocr", report_id=report_id,
+                          document_id=file.file_id, revision_id=file.id, revision=file.version,
+                          report_log_path=report_log_path) as run_logger:
+            with parse_document(artifact_path(file.path), logger=run_logger) as parsed:
+                markdown_path = save_ocr(report_id, file.file_id, file.version, parsed.markdown)
+                pdf_path = (Path(markdown_path).parent / parsed.pdf.relative_to(parsed.markdown.parent)).as_posix()
+
+            with session_scope() as session:
+                report = find_report(session, report_id, lock=True)
+                file = session.get(File, file_revision_id)
+                if file is not None:
+                    file.pdf_path = pdf_path
+                    file.markdown_path = markdown_path
+                    file.status = "ocr_completed"
+                    file.error = None
+                    sync_processing_status(session, report)
     except Exception:
         logger.exception("OCR failed for file revision %s", file_revision_id)
         with session_scope() as session:
@@ -40,13 +57,3 @@ def process_ocr(file_revision_id: int) -> None:
                 file.error = "Не удалось распознать документ. Удалите его и загрузите исправленный файл."
                 sync_processing_status(session, report)
         raise
-
-    with session_scope() as session:
-        report = find_report(session, report_id, lock=True)
-        file = session.get(File, file_revision_id)
-        if file is not None:
-            file.pdf_path = pdf_path
-            file.markdown_path = markdown_path
-            file.status = "ocr_completed"
-            file.error = None
-            sync_processing_status(session, report)

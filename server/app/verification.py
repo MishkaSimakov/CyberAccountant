@@ -1,6 +1,7 @@
 """Prepare one corpus, collect generator outputs, and evaluate them together."""
 
 import json
+import logging
 
 from checkier import PipelineConfig
 from checkier.entities import EntityRegistry, build_registry
@@ -74,11 +75,15 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
     return VerificationContext(cfg, documents, registry, scope, mapping, report)
 
 
-def generate_requirements(context: VerificationContext) -> list[dict]:
+def generate_requirements(context: VerificationContext, *,
+                          logger: logging.Logger | logging.LoggerAdapter | None = None) -> list[dict]:
     """Every generator receives the same prepared documents, IDs, and scope."""
+    logger = logger if logger is not None else logging.getLogger(__name__)
     generated = []
     for name, generate in GENERATORS.items():
-        generated.extend(dict(requirement, source=name) for requirement in generate(context))
+        logger.info("Generating requirements with %s", name)
+        generated.extend(dict(requirement, source=name) for requirement in generate(context, logger=logger))
+        logger.info("Generator %s completed", name)
     by_key = {key: entity.num for entity in context.registry.entities
               for key in (entity.num, str(entity.num), f"#{entity.num}", entity.mnemonic)}
     requirements = []
@@ -95,8 +100,11 @@ def generate_requirements(context: VerificationContext) -> list[dict]:
     return requirements
 
 
-def evaluate_requirements(context: VerificationContext, requirements: list[dict]) -> dict:
+def evaluate_requirements(context: VerificationContext, requirements: list[dict], *,
+                          logger: logging.Logger | logging.LoggerAdapter | None = None) -> dict:
     """Evaluate saved definitions once and keep requirement and field outcomes separate."""
+    logger = logger if logger is not None else logging.getLogger(__name__)
+    logger.info("Evaluating %d requirements", len(requirements))
     inputs = []
     for requirement in requirements:
         if requirement["kind"] == "formula":
@@ -137,4 +145,5 @@ def evaluate_requirements(context: VerificationContext, requirements: list[dict]
     by_num = {entity.num: entity for entity in context.registry.entities}
     for cell in result["card"]["cells"] + result["constants"]:
         cell["unit"] = by_num[cell["num"]].unit
+    logger.info("Verification completed: %d requirement results", len(results))
     return result
