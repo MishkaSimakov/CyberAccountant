@@ -16,11 +16,22 @@ class LLMError(RuntimeError):
     pass
 
 
+def _raise_if_incomplete(data: dict) -> None:
+    """Reject truncated responses before their partial text reaches the parser."""
+    if data.get("status") == "incomplete" or data.get("incomplete_details"):
+        details = data.get("incomplete_details") or {}
+        raise LLMError(f"model output is incomplete/truncated: {details}")
+    for choice in data.get("choices") or []:
+        if choice.get("finish_reason") == "length":
+            raise LLMError("model output is truncated: finish_reason='length'")
+
+
 def _extract_text(data: dict) -> str:
     """Tolerantly pull the assistant text out of Responses- or Chat-shaped replies.
 
     Reasoning/thinking blocks are skipped: only ``output_text`` / message
     content is returned, never chain-of-thought."""
+    _raise_if_incomplete(data)
     if isinstance(data.get("output_text"), str):
         return data["output_text"]
     # OpenAI Responses API: {"output": [{"type": "message", "content": [...]}]}
@@ -76,6 +87,7 @@ def _post_streaming(
         raise LLMError(f"API {resp.status_code}: {resp.text[:500]}")
     resp.encoding = "utf-8"  # force UTF-8; default guess mangles Cyrillic
     chunks: list[str] = []
+    incomplete: str | None = None
     for raw in resp.iter_lines(decode_unicode=True):
         if not raw or not raw.startswith("data:"):
             continue
@@ -88,6 +100,9 @@ def _post_streaming(
             continue
         # Skip reasoning/thinking deltas — only surface final answer text.
         etype = event.get("type", "")
+        response = event.get("response") or {}
+        if etype == "response.incomplete" or response.get("status") == "incomplete":
+            incomplete = str(response.get("incomplete_details") or event.get("error") or {})
         if "reasoning" in etype:
             continue
         # Responses API streaming delta
@@ -98,11 +113,15 @@ def _post_streaming(
                 on_token(delta)
         # Chat completions streaming delta
         for choice in event.get("choices", []):
+            if choice.get("finish_reason") == "length":
+                incomplete = "finish_reason='length'"
             d = (choice.get("delta") or {}).get("content")
             if isinstance(d, str):
                 chunks.append(d)
                 if on_token:
                     on_token(d)
+    if incomplete is not None:
+        raise LLMError(f"model output is incomplete/truncated: {incomplete}")
     return "".join(chunks)
 
 
@@ -115,10 +134,11 @@ def call_llm(
     on_token: Callable[[str], None] | None = None,
     reasoning: str = "disabled",
 ) -> str:
-    """Single LLM call. If *schema* is given, request structured JSON output
-    with strict mode; transparently falls back to plain prompting when the
-    endpoint rejects the structured-output field. Streams tokens to on_token
-    when provided.
+    """Single LLM call with optional strict Responses API JSON Schema output.
+
+    Schema rejection is surfaced to the caller; silently switching to an
+    unconstrained request would make structured-output guarantees meaningless.
+    Streams tokens to on_token when provided.
 
     reasoning: "disabled" (default, no thinking tokens — fast/cheap),
     "enabled" (model may reason), or "exclude" (reason but strip from output).
@@ -131,24 +151,18 @@ def call_llm(
     elif reasoning == "exclude":
         payload["reasoning"] = {"exclude": True}
     if schema is not None:
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+        payload["text"] = {
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "schema": schema,
+                "strict": True,
+            }
         }
-    try:
-        if on_token is not None:
-            return _post_streaming(payload, timeout, on_token)
-        data = _post(payload, timeout)
-        return _extract_text(data)
-    except LLMError as exc:
-        # Some endpoints/models reject response_format; retry without it.
-        if schema is None or "response_format" not in str(exc):
-            raise
-        payload.pop("response_format")
-        if on_token is not None:
-            return _post_streaming(payload, timeout, on_token)
-        data = _post(payload, timeout)
-        return _extract_text(data)
+    if on_token is not None:
+        return _post_streaming(payload, timeout, on_token)
+    data = _post(payload, timeout)
+    return _extract_text(data)
 
 
 def _json_from_text(text: str) -> dict | list:
@@ -158,6 +172,11 @@ def _json_from_text(text: str) -> dict | list:
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if m:
         text = m.group(1).strip()
+    else:
+        # A model may emit an opening fence but omit the closing one. Strip only
+        # the wrapper; genuinely incomplete JSON still fails json.loads below.
+        text = re.sub(r"^```(?:json)?\s*", "", text, count=1)
+        text = re.sub(r"\s*```$", "", text, count=1).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:

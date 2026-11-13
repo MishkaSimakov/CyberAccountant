@@ -67,7 +67,18 @@ class TagStats:
 
 TagCallback = Callable[[TagProgress, TagStats], None]
 
-TAG_PROMPT = """\
+DATE_FORMAT_EXAMPLES = [
+    "10.05.2026 or 10.05.26",
+    "2026-05-10",
+    "10 мая 2026 or 10 мая 2026 г.",
+    '"10" мая 2026 or «10» мая 2026 (including the quotation marks)',
+    "Май 2026 or мая 2026",
+    "2 квартал 2026",
+    "2026 год when it is used as a period label",
+]
+DATE_FORMAT_EXAMPLES_TEXT = "\n".join(f"- {example}" for example in DATE_FORMAT_EXAMPLES)
+
+TAG_PROMPT = f"""\
 You extract numerical entities from accounting documents.
 
 Entity types:
@@ -79,6 +90,14 @@ Entity types:
 - pct       - percentages: "30%"
 - ratio     - dimensionless ratios / fractions
 
+DATE / PERIOD FORMATS
+Wrap each complete expression as ONE date entity:
+{DATE_FORMAT_EXAMPLES_TEXT}
+
+A quoted day + month + year + optional "г." is ONE date, never a separate
+number and month/year entity. For a range such as 01.05.2026–10.05.2026,
+wrap the two dates separately and leave the dash outside the tags.
+
 Optional attributes for amount/date/docid entries:
 - unit  - RUB (default), RUB_K (thousand rubles), USD, EUR, person_month, ...
 - norm  - multiplier to base unit (1000 for RUB_K), default 1
@@ -88,11 +107,11 @@ Read the document at the bottom and output a JSON array of segments that
 rebuilds it exactly.
 
 REQUIRED OUTPUT FORMAT (no other text, no markdown fence, no commentary):
-[{"content":"...","wrap":"...","type":"..."}, ..., {"content":"...","wrap":"","type":"EOF"}]
+[{{"content":"...","wrap":"...","type":"..."}}, ..., {{"content":"...","wrap":"","type":"EOF"}}]
 
-Each WRAP entry: {"content": "text before the entity", "wrap": "ENTITY TEXT",
-"type": "TYPE"} with optional "unit" / "norm". The final entry is
-{"content": "remaining text", "wrap": "", "type": "EOF"}.
+Each WRAP entry: {{"content": "text before the entity", "wrap": "ENTITY TEXT",
+"type": "TYPE"}} with optional "unit" / "norm". The final entry is
+{{"content": "remaining text", "wrap": "", "type": "EOF"}}.
 
 Concatenating every "content" then its "wrap" (in array order) MUST give back
 the document character-for-character.
