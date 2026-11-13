@@ -16,6 +16,7 @@ import type {RootState} from './index'
 interface LocalUpload {
     id: number
     name: string
+    size: number
     role: DocumentRole
     error: string
 }
@@ -129,7 +130,7 @@ export const report: Module<ReportState, RootState> = {
                 return
             }
             await Promise.all(files.map(async file => {
-                const local: LocalUpload = {id: ++uploadId, name: file.name, role, error: ''}
+                const local: LocalUpload = {id: ++uploadId, name: file.name, size: file.size, role, error: ''}
                 commit('addUpload', local)
                 const fail = (error: string) => {
                     if (state.session === session) commit('failUpload', {id: local.id, error})
