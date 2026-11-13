@@ -5,7 +5,7 @@ import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import {faFloppyDisk} from '@fortawesome/free-solid-svg-icons/faFloppyDisk'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
-import type {ReportDocument} from '../api'
+import {pdfUrl, type ReportDocument} from '../api'
 import DocumentViewer from './viewers/DocumentViewer.vue'
 import MarkdownViewer from './viewers/MarkdownViewer.vue'
 import EntityPdfPreview from './viewers/EntityPdfPreview.vue'
@@ -30,7 +30,10 @@ export default defineComponent({
   },
   computed: {
     ...mapState('editor', ['loading', 'saving', 'error', 'revision']),
-    ...mapGetters('editor', {dirty: 'dirty', url: 'pdfUrl'}),
+    ...mapGetters('editor', ['dirty']),
+    url(): string {
+      return pdfUrl(this.reportId, this.document.id)
+    },
     content: {
       get(): string {
         return this.$store.state.editor.content
@@ -106,6 +109,7 @@ export default defineComponent({
         <h2 id="editor-heading" class="line-clamp-2 break-all text-lg font-semibold">{{ document.name }}</h2>
       </div>
       <div class="flex shrink-0 items-center gap-2">
+        <a :href="url" target="_blank" rel="noopener" class="text-blue-700 hover:underline">Открыть PDF ↗</a>
         <button v-if="!readonly" type="button"
                 class="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded bg-blue-600 px-3 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 :aria-label="saving ? 'Сохраняем…' : 'Сохранить изменения'"
@@ -116,14 +120,15 @@ export default defineComponent({
           <span>{{ saving ? 'Сохраняем…' : 'Сохранить' }}</span>
         </button>
         <button type="button"
-                class="inline-flex size-9 cursor-pointer items-center justify-center rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+                class="ml-16 inline-flex size-9 cursor-pointer items-center justify-center rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
                 aria-label="Закрыть" title="Закрыть" :disabled="saving" @click="close">
           <FontAwesomeIcon :icon="faXmark" class="size-4" aria-hidden="true"/>
         </button>
       </div>
     </div>
 
-    <p v-if="error && !pdfEntities" class="mb-4 max-h-[20dvh] shrink-0 overflow-auto rounded bg-red-50 p-3 text-red-700" role="alert">
+    <p v-if="error && !pdfEntities" class="mb-4 max-h-[20dvh] shrink-0 overflow-auto rounded bg-red-50 p-3 text-red-700"
+       role="alert">
       {{ error }}</p>
 
     <EntityPdfPreview v-if="pdfEntities" :report-id="reportId" :document-id="document.id"
