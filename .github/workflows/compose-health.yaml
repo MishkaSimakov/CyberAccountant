@@ -37,6 +37,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Create fake env file
+        run: cp .env.example .env
+
       - name: Start application and wait for every service
         run: docker compose up --build --wait --wait-timeout 180
 
