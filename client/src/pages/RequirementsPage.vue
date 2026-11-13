@@ -91,9 +91,9 @@ export default defineComponent({
 <template>
   <main class="mx-auto max-w-6xl p-6">
     <ReportHeader :report="report"/>
-    <div v-if="loading" class="mt-6 rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500"
+    <div v-if="loading" class="mt-6 flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500"
          role="status">
-      <FontAwesomeIcon :icon="faSpinner" class="mr-2 size-4 animate-spin" aria-hidden="true"/>
+      <FontAwesomeIcon :icon="faSpinner" class="size-4 shrink-0 animate-spin" aria-hidden="true"/>
       Загружаем результаты проверки…
     </div>
     <div v-else-if="error" class="mt-6 rounded-lg border border-slate-200 bg-white p-8 text-center">
