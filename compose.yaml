@@ -55,6 +55,13 @@ services:
     networks:
       - default
       - office
+    healthcheck:
+      test: [ "CMD", "supervisorctl", "-c", "/etc/supervisor/workers.conf", "status", "all" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   postgres:
     image: postgres:18-alpine
     environment:
