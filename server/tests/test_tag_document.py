@@ -3,7 +3,15 @@
 import pytest
 
 from checkier import Pipeline, PipelineConfig, tag_document
-from checkier.stage1_tag import _tag_one
+from checkier.stage1_tag import TAG_PROMPT, _tag_one
+
+
+def test_prompt_wraps_quoted_dates_as_single_entities():
+    assert '"10" мая 2026' in TAG_PROMPT
+    assert '«10» мая 2026' in TAG_PROMPT
+    assert "ONE date, never a separate" in TAG_PROMPT
+    assert "2 квартал 2026" in TAG_PROMPT
+
 
 
 def test_tag_document_needs_no_directories(tmp_path, monkeypatch):

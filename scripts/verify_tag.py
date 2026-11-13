@@ -21,7 +21,7 @@ def main() -> None:
 
     # 1. connectivity
     try:
-        r = requests.get(url.replace("/responses", "/models"),
+        r = requests.get(f"{url.rstrip('/')}/models",
                          headers={"Authorization": f"Bearer {key}"},
                          timeout=15)
         print(f"connectivity: HTTP {r.status_code}")

@@ -13,6 +13,12 @@ DEFAULT_TAG_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
 # DEFAULT_REL_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
 DEFAULT_REL_MODEL = "deepseek/deepseek-v4-pro-20260813"
 
+
+def _model_from_env(name: str, default: str) -> str:
+    load_dotenv()
+    return os.environ.get(name, default)
+
+
 #: folder name -> role
 ROLE_DIRS = {"данные": "data", "card": "card", "request": "request"}
 
@@ -24,14 +30,14 @@ class PipelineConfig:
     data_dir: Path
     out_dir: Path
     id_style: str = "mnemonic"
-    tag_model: str = DEFAULT_TAG_MODEL
-    rel_model: str = DEFAULT_REL_MODEL
+    tag_model: str = field(default_factory=lambda: _model_from_env("AI_TAG_MODEL", DEFAULT_TAG_MODEL))
+    rel_model: str = field(default_factory=lambda: _model_from_env("AI_REL_MODEL", DEFAULT_REL_MODEL))
     seed: int = 20261112
     max_retries: int = 2
     request_timeout: float = 300.0
     tag_workers: int = 8
-    # LLM reasoning control: "disabled" (fast, no thinking tokens), "enabled",
-    # or "exclude" (reason but strip from output). See OpenRouter reasoning docs.
+    # "disabled" requests low/minimum effort; "enabled" uses the model default.
+    # "exclude" relies on the client always filtering reasoning from output.
     reasoning: str = "disabled"
     extra: dict = field(default_factory=dict)
 
@@ -76,7 +82,7 @@ class PipelineConfig:
 
 
 def load_api_credentials(env_file: str | os.PathLike | None = None) -> tuple[str, str]:
-    """Return (AI_API_URL, AI_API_KEY) from environment / .env file."""
+    """Return (AI_API_URL base URL, AI_API_KEY) from environment / .env file."""
     load_dotenv(env_file)
     url = os.environ.get("AI_API_URL")
     key = os.environ.get("AI_API_KEY")
