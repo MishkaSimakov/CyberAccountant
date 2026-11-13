@@ -41,8 +41,7 @@ export interface ReportDocument {
     size: number
     content_type: string
     role: DocumentRole
-    ocr_status: 'queued' | 'running' | 'completed' | 'failed'
-    extraction_status: 'idle' | 'queued' | 'running' | 'completed' | 'failed'
+    status: 'ocr_queued' | 'ocr_running' | 'ocr_completed' | 'entities_queued' | 'entities_running' | 'completed' | 'failed'
     markdown_revision: number
     user_edited: boolean
     error: string | null
@@ -64,6 +63,10 @@ export interface MarkdownRevision {
 
 export const getReport = (id: number) => request<ReportDetails>(`/reports/${id}`)
 
+export const reportLogUrl = (reportId: number) => `/api/v1/reports/${reportId}/log`
+
+export const reportArchiveUrl = (reportId: number) => `/api/v1/reports/${reportId}/archive`
+
 export const uploadDocument = (reportId: number, file: File, role: DocumentRole) => {
     const body = new FormData()
     body.append('file', file)
@@ -76,6 +79,9 @@ export const deleteDocument = (reportId: number, documentId: number) =>
 
 export const pdfUrl = (reportId: number, documentId: number) =>
     `/api/v1/reports/${reportId}/documents/${documentId}/pdf`
+
+export const documentLogUrl = (reportId: number, documentId: number) =>
+    `/api/v1/reports/${reportId}/documents/${documentId}/log`
 
 export const getMarkdown = (reportId: number, documentId: number) =>
     request<MarkdownRevision>(`/reports/${reportId}/documents/${documentId}/markdown`)

@@ -54,6 +54,14 @@ def document_markdown(report_id: int, document_id: int):
     return service.document_markdown(report_id, document_id)
 
 
+@router.get("/reports/{report_id}/documents/{document_id}/log")
+def document_log(report_id: int, document_id: int):
+    file = service.document_log(report_id, document_id)
+    return FileResponse(artifact_path(file.log_path), media_type="text/plain; charset=utf-8",
+                        filename=f"document-{document_id}.log", content_disposition_type="inline",
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+
+
 @router.post("/reports/{report_id}/documents/{document_id}/markdown", response_model=MarkdownRevision)
 def edit_markdown(report_id: int, document_id: int, payload: MarkdownEdit):
     return service.edit_markdown(report_id, document_id, payload)

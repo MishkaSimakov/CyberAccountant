@@ -34,7 +34,7 @@ def run_entity_extraction(report_id: int, document_id: int | None = None) -> Non
         else:
             raise ServiceError(409, "Извлечение сущностей на этом этапе недоступно.")
         for file in pending:
-            file.status = "ocr_completed"
+            file.status = "entities_queued"
             file.error = None
         sync_processing_status(session, report)
         revision_ids = [file.id for file in pending]
@@ -49,7 +49,7 @@ def run_entity_extraction(report_id: int, document_id: int | None = None) -> Non
             with session_scope() as session:
                 report = find_report(session, report_id, lock=True)
                 file = session.get(File, revision_id)
-                if file is not None and file.status == "ocr_completed":
+                if file is not None and file.status == "entities_queued":
                     file.status = "failed"
                     file.error = "Не удалось поставить документ в очередь извлечения сущностей. Повторите извлечение."
                     sync_processing_status(session, report)

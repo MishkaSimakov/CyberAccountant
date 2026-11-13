@@ -48,7 +48,7 @@ def request(method, path, payload=None, *, body=None, content_type="application/
         return messages[0]["status"], content
 
     status, content = asyncio.run(run())
-    return status, json.loads(content) if content and not path.endswith(("/original", "/pdf")) else content
+    return status, json.loads(content) if content and not path.endswith(("/original", "/pdf", "/log")) else content
 
 
 def upload(report_id, name="invoice.pdf", role="supporting", content=b"%PDF-1.4\ninvoice\n%%EOF"):
@@ -70,7 +70,7 @@ def api(db, tmp_path, monkeypatch):
         # A separate session must see the committed row and its saved original.
         with database.session_scope() as session:
             file = session.get(File, revision_id)
-            assert file is not None and file.status == "queued"
+            assert file is not None and file.status == "ocr_queued"
             assert storage.artifact_path(file.path).is_file()
         pending.append(revision_id)
 
@@ -87,7 +87,9 @@ def test_report_and_uploads_survive_across_requests(api):
     assert request("GET", "/reports")[1][0]["id"] == report_id
     status, main = upload(report_id, role="final_report")
     assert status == 201
-    assert main["ocr_status"] == "queued"
+    assert main["status"] == "ocr_queued"
+    assert "ocr_status" not in main
+    assert "extraction_status" not in main
     assert upload(report_id, role="final_report")[0] == 409
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda i: upload(report_id, name=f"invoice-{i}.pdf",
@@ -98,7 +100,7 @@ def test_report_and_uploads_survive_across_requests(api):
     with database.session_scope() as session:
         files = list(session.scalars(select(File)))
         assert len(files) == 26
-        assert all(file.status == "queued" and file.version == 1 for file in files)
+        assert all(file.status == "ocr_queued" and file.version == 1 for file in files)
     details = request("GET", f"/reports/{report_id}")[1]
     assert details["progress"] == {"completed": 0, "total": 26}
     assert details["processing_status"] == "queued"
@@ -126,7 +128,7 @@ def test_documents_are_scoped_and_can_be_deleted_while_queued(api):
     _, uploaded = upload(report_id, name="../../invoice.pdf")
     assert uploaded["name"] == "invoice.pdf"
     document_id = uploaded["id"]
-    for suffix in ("", "/original", "/pdf", "/markdown"):
+    for suffix in ("", "/original", "/pdf", "/markdown", "/log"):
         assert request("GET", f'/reports/{other["id"]}/documents/{document_id}{suffix}')[0] == 404
     assert request("GET", f"/reports/{report_id}/documents/{document_id}/markdown")[0] == 409
     assert request("GET", f"/reports/{report_id}/documents/{document_id}/pdf")[0] == 409
@@ -134,6 +136,29 @@ def test_documents_are_scoped_and_can_be_deleted_while_queued(api):
     ocr.process_ocr(pending[0])
     assert request("GET", f"/reports/{report_id}")[1]["documents"] == []
     assert not (storage.storage_root() / str(report_id) / str(document_id)).exists()
+
+
+def test_document_log_is_separate_from_metadata_and_served_as_plain_text(api):
+    report_id, pending = api
+    status, document = upload(report_id)
+    assert status == 201
+    path = f'/reports/{report_id}/documents/{document["id"]}'
+    assert request("GET", path + "/log") == (200, b"")
+    content = "<script>raw log</script>\r\nСтрока журнала\n".encode("utf-8")
+    with database.session_scope() as session:
+        file = session.get(File, pending[0])
+        log_path = storage.artifact_path(file.log_path)
+        with log_path.open("ab") as output:
+            output.write(content)
+    assert request("GET", path + "/log") == (200, content)
+    assert "raw log" not in json.dumps(request("GET", path)[1])
+    from app.api.documents import document_log
+    response = document_log(report_id, document["id"])
+    assert response.media_type == "text/plain; charset=utf-8"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
+    log_path.unlink()
+    assert request("GET", path + "/log")[0] == 404
 
 
 def test_real_ocr_preserves_artifacts_and_updates_progress(api):
@@ -144,7 +169,7 @@ def test_real_ocr_preserves_artifacts_and_updates_progress(api):
     _, uploaded = upload(report_id, content=original)
     ocr.process_ocr(pending[0])
     details = request("GET", f"/reports/{report_id}")[1]
-    assert details["documents"][0]["ocr_status"] == "completed"
+    assert details["documents"][0]["status"] == "ocr_completed"
     assert details["progress"] == {"completed": 1, "total": 1}
     assert details["processing_status"] == "completed"
     assert "Invoice total 12345.67" in request("GET", f'/reports/{report_id}/documents/{uploaded["id"]}/markdown')[1][
@@ -266,7 +291,7 @@ def test_ocr_failure_is_persisted(api, monkeypatch):
         ocr.process_ocr(pending[0])
     details = request("GET", f"/reports/{report_id}")[1]
     assert details["processing_status"] == "failed"
-    assert details["documents"][0]["ocr_status"] == "failed"
+    assert details["documents"][0]["status"] == "failed"
     assert details["documents"][0]["error"]
 
 
@@ -279,7 +304,7 @@ def test_queue_failure_keeps_original_and_marks_failed(api, monkeypatch):
     monkeypatch.setattr(documents, "enqueue_ocr", fail)
     assert upload(report_id)[0] == 503
     details = request("GET", f"/reports/{report_id}")[1]
-    assert details["documents"][0]["ocr_status"] == "failed"
+    assert details["documents"][0]["status"] == "failed"
     with database.session_scope() as session:
         assert storage.artifact_path(session.scalar(select(File)).path).is_file()
 

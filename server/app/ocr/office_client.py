@@ -12,6 +12,8 @@ from urllib.request import ProxyHandler, Request, build_opener
 DEFAULT_URL = 'http://office_sandbox:8001'
 MAX_INPUT = 50 * 1024 * 1024
 MAX_OUTPUT = 128 * 1024 * 1024
+# Match the service's maximum slot wait, in addition to conversion time.
+QUEUE_TIMEOUT = 180
 
 
 class SandboxError(RuntimeError):
@@ -69,7 +71,7 @@ def render(source, destination, *, url=None, timeout=180):
     # Internal document traffic must not pass through an HTTP proxy.
     opener = build_opener(ProxyHandler({}))
     try:
-        with opener.open(request, timeout=timeout) as response:
+        with opener.open(request, timeout=timeout + QUEUE_TIMEOUT) as response:
             if response.headers.get_content_type() != 'application/x-tar':
                 raise SandboxError('Office sandbox returned an unexpected content type.')
             with tempfile.TemporaryDirectory(prefix='office-response-') as temporary:

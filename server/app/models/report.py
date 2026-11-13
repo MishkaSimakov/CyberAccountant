@@ -32,5 +32,6 @@ class Report(Timestamps, Base):
     period_start: Mapped[date | None]
     period_end: Mapped[date | None]
     target_row: Mapped[str | None] = mapped_column(String(200))
+    log_path: Mapped[str | None]
     stage: Mapped[str] = mapped_column(String(32), server_default=text("'documents'"))
     processing_status: Mapped[str] = mapped_column(String(32), server_default=text("'idle'"))

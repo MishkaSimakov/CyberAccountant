@@ -23,7 +23,7 @@ class File(Timestamps, Base):
         CheckConstraint("size >= 0", name="file_nonnegative_size"),
         CheckConstraint("role IN ('final_report', 'supporting')", name="file_valid_role"),
         CheckConstraint(
-            "status IN ('queued', 'ocr_running', 'ocr_completed', 'entities_running', 'completed', 'failed')",
+            "status IN ('ocr_queued', 'ocr_running', 'ocr_completed', 'entities_queued', 'entities_running', 'completed', 'failed')",
             name="file_valid_status",
         ),
     )
@@ -38,8 +38,9 @@ class File(Timestamps, Base):
     pdf_path: Mapped[str | None]
     markdown_path: Mapped[str | None]
     entities_path: Mapped[str | None]
+    log_path: Mapped[str | None]
     role: Mapped[str] = mapped_column(String(32))
-    status: Mapped[str] = mapped_column(String(32), server_default=text("'queued'"))
+    status: Mapped[str] = mapped_column(String(32), server_default=text("'ocr_queued'"))
     error: Mapped[str | None]
     size: Mapped[int] = mapped_column(BigInteger)
     content_type: Mapped[str]

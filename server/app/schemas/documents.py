@@ -12,8 +12,8 @@ class Document(BaseModel):
     content_type: str
     role: Literal["final_report", "supporting"]
     content_sha256: str = Field(exclude=True)
-    ocr_status: Literal["queued", "running", "completed", "failed"] = "queued"
-    extraction_status: Literal["idle", "queued", "running", "completed", "failed"] = "idle"
+    status: Literal[
+        "ocr_queued", "ocr_running", "ocr_completed", "entities_queued", "entities_running", "completed", "failed"]
     markdown_revision: int = 0
     user_edited: bool = False
     error: str | None = None

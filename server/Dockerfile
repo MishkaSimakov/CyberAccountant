@@ -20,6 +20,7 @@ FROM python:3.13-slim AS production
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    OCR_WORKERS=1 \
     CLIENT_DIST_DIR=/app/client/dist
 
 WORKDIR /app

@@ -15,12 +15,24 @@ import jsonschema
 import requests
 
 from checkier.config import load_api_credentials
+from checkier.file_log import append_log, current_log_path
 
 logger = logging.getLogger(__name__)
 
 
-def _log_output(text: str, model: str, schema_name: str) -> None:
+def log_model_prompt(prompt: str, model: str, schema_name: str) -> None:
+    """Append the exact prompt before sending each request, including retries."""
+    if path := current_log_path.get():
+        timestamp = datetime.now(timezone.utc).isoformat()
+        append_log(path, f"\n--- MODEL PROMPT | {timestamp} | model={model} | schema={schema_name} ---\n{prompt}\n")
+
+
+def log_model_output(text: str, model: str, schema_name: str) -> None:
     """Keep the exact model text, including invalid JSON and Markdown fences."""
+    if path := current_log_path.get():
+        timestamp = datetime.now(timezone.utc).isoformat()
+        append_log(path, f"\n--- MODEL OUTPUT | {timestamp} | model={model} | schema={schema_name} ---\n{text}\n")
+        return
     root = Path(os.environ.get("STORAGE_ROOT", Path(__file__).resolve().parents[2] / "storage"))
     directory = root / "llm_outputs"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -86,9 +98,9 @@ def _post(payload: dict, timeout: float) -> dict:
 
 
 def _post_streaming(
-    payload: dict,
-    timeout: float,
-    on_token: Callable[[str], None] | None = None,
+        payload: dict,
+        timeout: float,
+        on_token: Callable[[str], None] | None = None,
 ) -> str:
     """POST with stream=true; accumulate text deltas; optionally report each.
 
@@ -148,13 +160,13 @@ def _post_streaming(
 
 
 def call_llm(
-    prompt: str,
-    model: str,
-    schema: dict | None = None,
-    schema_name: str = "response",
-    timeout: float = 300.0,
-    on_token: Callable[[str], None] | None = None,
-    reasoning: str = "disabled",
+        prompt: str,
+        model: str,
+        schema: dict | None = None,
+        schema_name: str = "response",
+        timeout: float = 300.0,
+        on_token: Callable[[str], None] | None = None,
+        reasoning: str = "disabled",
 ) -> str:
     """Single LLM call with optional strict Responses API JSON Schema output.
 
@@ -181,11 +193,33 @@ def call_llm(
                 "strict": True,
             }
         }
-    if on_token is not None:
-        text = _post_streaming(payload, timeout, on_token)
-    else:
-        text = _extract_text(_post(payload, timeout))
-    _log_output(text, model, schema_name)
+
+    def request_text() -> str:
+        log_model_prompt(prompt, model, schema_name)
+        if on_token is None:
+            return _extract_text(_post(payload, timeout))
+        chunks: list[str] = []
+
+        def track(token: str) -> None:
+            chunks.append(token)
+            on_token(token)
+
+        try:
+            return _post_streaming(payload, timeout, track)
+        except Exception:
+            if chunks:
+                log_model_output("".join(chunks), model, schema_name)
+            raise
+
+    try:
+        text = request_text()
+    except LLMError as exc:
+        # Some endpoints/models reject response_format; retry without it.
+        if schema is None or "response_format" not in str(exc):
+            raise
+        payload.pop("response_format")
+        text = request_text()
+    log_model_output(text, model, schema_name)
     return text
 
 
@@ -215,14 +249,14 @@ def _json_from_text(text: str) -> dict | list:
 
 
 def call_llm_json(
-    prompt: str,
-    model: str,
-    schema: dict | None = None,
-    schema_name: str = "response",
-    timeout: float = 300.0,
-    max_retries: int = 2,
-    on_token: Callable[[str], None] | None = None,
-    reasoning: str = "disabled",
+        prompt: str,
+        model: str,
+        schema: dict | None = None,
+        schema_name: str = "response",
+        timeout: float = 300.0,
+        max_retries: int = 2,
+        on_token: Callable[[str], None] | None = None,
+        reasoning: str = "disabled",
 ) -> dict | list:
     """Call the LLM and validate the result against *schema* (if given),
     retrying with the validation error fed back."""
@@ -242,9 +276,9 @@ def call_llm_json(
             last_error = exc
             if attempt < max_retries:
                 attempt_prompt = (
-                    prompt
-                    + "\n\nYour previous answer failed validation:\n"
-                    + str(exc)[:2000]
-                    + "\nReturn ONLY corrected JSON."
+                        prompt
+                        + "\n\nYour previous answer failed validation:\n"
+                        + str(exc)[:2000]
+                        + "\nReturn ONLY corrected JSON."
                 )
     raise LLMError(f"LLM JSON validation failed after retries: {last_error}")

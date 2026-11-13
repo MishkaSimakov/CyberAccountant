@@ -16,6 +16,7 @@ import type {RootState} from './index'
 interface LocalUpload {
     id: number
     name: string
+    size: number
     role: DocumentRole
     error: string
 }
@@ -57,7 +58,6 @@ export const report: Module<ReportState, RootState> = {
             || state.uploads.some(item => item.role === 'final_report')),
         canAdvance: state => Boolean(!state.advancing && !state.pollError && !state.uploads.length
             && !state.deleting.length && !state.retrying.length
-            && state.current?.documents.every(item => item.ocr_status === 'completed')
             && state.current?.available_actions.some(action => ['run_entity_extraction', 'generate_requirements', 'run_verification'].includes(action))),
     },
     mutations: {
@@ -130,7 +130,7 @@ export const report: Module<ReportState, RootState> = {
                 return
             }
             await Promise.all(files.map(async file => {
-                const local: LocalUpload = {id: ++uploadId, name: file.name, role, error: ''}
+                const local: LocalUpload = {id: ++uploadId, name: file.name, size: file.size, role, error: ''}
                 commit('addUpload', local)
                 const fail = (error: string) => {
                     if (state.session === session) commit('failUpload', {id: local.id, error})
@@ -195,7 +195,7 @@ export const report: Module<ReportState, RootState> = {
             if (state.id === null || state.advancing || state.retrying.includes(documentId)
                 || state.current?.stage !== 'entities'
                 || !state.current.documents.some(document => document.id === documentId
-                    && document.extraction_status === 'failed')) return
+                    && document.status === 'failed')) return
             const session = state.session
             commit('patch', {retrying: [...state.retrying, documentId], actionError: '', request: state.request + 1})
             try {

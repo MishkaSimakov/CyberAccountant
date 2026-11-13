@@ -41,6 +41,7 @@ services:
     env_file:
       - .env
     environment:
+      OCR_WORKERS: ${OCR_WORKERS:-1}
       OFFICE_SANDBOX_URL: http://office_sandbox:8001
       DATABASE_URL: postgresql+psycopg://cyberaccountant:cyberaccountant@postgres:5432/cyberaccountant
       REDIS_URL: redis://redis:6379/0
@@ -89,6 +90,8 @@ services:
 
   office_sandbox:
     build: ./office_sandbox
+    environment:
+      OFFICE_WORKERS: ${OFFICE_WORKERS:-1}
     init: true
     expose:
       - "8001"
