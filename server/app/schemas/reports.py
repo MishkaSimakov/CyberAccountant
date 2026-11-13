@@ -1,10 +1,9 @@
 """Report request and response schemas."""
 
-import re
 from datetime import date
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ReportCreate(BaseModel):
@@ -14,21 +13,7 @@ class ReportCreate(BaseModel):
     contract_number: str | None = Field(default=None, max_length=100)
     period_start: date | None = None
     period_end: date | None = None
-    target_row: str | None = Field(default=None, max_length=200,
-                                  description="Подпись строки либо её номер с 1 среди строк данных таблицы")
-
-    @field_validator("target_row", mode="before", json_schema_input_type=str | int | None)
-    @classmethod
-    def normalize_target_row(cls, value):
-        if isinstance(value, bool):
-            raise ValueError("Номер строки должен быть положительным целым числом.")
-        if isinstance(value, int):
-            value = str(value)
-        if isinstance(value, str) and re.fullmatch(r"[+-]?\d+(?:[.,]\d+)?", value.strip()):
-            if not value.strip().isdecimal() or int(value) < 1:
-                raise ValueError("Номер строки должен быть положительным целым числом.")
-            return str(int(value))
-        return value
+    target_row: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def validate_period(self) -> Self:

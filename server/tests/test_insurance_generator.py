@@ -220,28 +220,38 @@ def test_missing_or_invalid_scope_cannot_generate_empty_sum(documents, context_f
 
 
 @pytest.mark.parametrize('style', ['numeric', 'mnemonic'])
-def test_row_number_selects_same_entities_as_label_and_keeps_report_year(documents, context_factory, style):
+def test_row_label_keeps_report_year(documents, context_factory, style):
     named, _ = run(context_factory(documents, style=style))
-    context = context_factory(documents, row='2', style=style, start=date(2025, 8, 1))
+    context = context_factory(documents, row='3 этап, 2026 г.', style=style, start=date(2025, 8, 1))
     assert context.scope['target_label'] == '3 этап, 2026 г.'
     own, results = run(context)
     assert own == named
     assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'
 
 
-def test_row_number_ignores_multirow_header_and_column_numbers(documents, context_factory):
+def test_row_label_ignores_multirow_header_and_column_numbers(documents, context_factory):
     documents['card.md'] = documents['card.md'].replace('| 3 этап, 2025 г.',
         '| Уточняющая шапка | Взносы, всего | Другие затраты |\n| 1 | 2 | 3 |\n| 3 этап, 2025 г.', 1)
-    own, _ = run(context_factory(documents, row='2'))
+    own, _ = run(context_factory(documents, row='3 этап, 2026 г.'))
     assert 'equation' in own[0]
 
 
-def test_unknown_row_number_fails_instead_of_selecting_all_card_cells(documents, context_factory):
-    with pytest.raises(ValueError, match='Строка №99 не найдена'):
-        context_factory(documents, row='99')
+def test_unknown_row_label_fails_instead_of_selecting_all_card_cells(documents, context_factory):
+    with pytest.raises(ValueError, match='Не удалось найти проверяемую строку'):
+        context_factory(documents, row='Несуществующая строка')
 
 
-def test_row_number_rejects_ambiguous_monetary_tables(documents, context_factory):
+def test_row_label_works_with_multiple_monetary_tables(documents, context_factory):
     documents['card.md'] += f'\n| Другая таблица | Сумма |\n| --- | --- |\n| Расходы | {tag("amount", "1", unit="RUB")} |\n'
-    with pytest.raises(ValueError, match='одна таблица'):
-        context_factory(documents, row='2')
+    own, results = run(context_factory(documents, row='3 этап, 2026 г.'))
+    assert 'equation' in own[0]
+    assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'
+
+
+def test_numeric_text_is_not_interpreted_as_row_position(documents, context_factory):
+    documents['card.md'] = documents['card.md'].replace('999.00', '888.00').replace('3 этап, 2026 г.', '99')
+    context = context_factory(documents, row='99')
+    assert context.scope['target_label'] == '99'
+    own, results = run(context)
+    assert 'equation' in own[0]
+    assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'

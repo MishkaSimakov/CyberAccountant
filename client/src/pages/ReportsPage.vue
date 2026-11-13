@@ -207,10 +207,9 @@ export default defineComponent({
         </div>
 
         <div>
-          <label class="mb-1 block" for="target-row">Проверяемая строка: номер или подпись</label>
+          <label class="mb-1 block" for="target-row">Проверяемая строка отчёта</label>
           <input id="target-row" v-model="form.target_row" class="w-full rounded border border-slate-300 p-2"
-                 name="target_row" maxlength="200" placeholder="Например, 3 или 3 этап, 2026 г." aria-describedby="target-row-help"/>
-          <p id="target-row-help" class="mt-1 text-xs text-slate-500">Номер с 1 среди строк данных таблицы. Шапка и номера граф не считаются.</p>
+                 name="target_row" maxlength="200" placeholder="Например, 3 этап, 2026 г."/>
         </div>
       </fieldset>
       <p v-if="createError" class="rounded bg-red-50 p-3 text-red-700" role="alert">{{ createError }}</p>
