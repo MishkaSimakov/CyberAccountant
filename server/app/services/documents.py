@@ -111,7 +111,8 @@ def document_markdown(report_id: int, file_id: int) -> MarkdownRevision:
         if not file.markdown_path:
             raise ServiceError(409, "Распознавание документа ещё не завершено.")
         source = storage.artifact_path(file.entities_path or file.markdown_path)
-        if report.stage == "verification" and report.processing_status == "completed":
+        if report.stage in {"requirements", "verification"} and storage.artifact_path(
+                f"{report_id}/verification/replaced/{file_id}.md").is_file():
             source = storage.artifact_path(f"{report_id}/verification/replaced/{file_id}.md")
         return MarkdownRevision(content=source.read_text(encoding="utf-8"),
                                 revision=file.version)

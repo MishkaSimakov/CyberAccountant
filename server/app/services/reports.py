@@ -89,7 +89,7 @@ def blockers_for(report: Report, files: list[File], *, extracting: bool = False)
 
 
 def sync_processing_status(session: Session, report: Report) -> None:
-    if report.stage == "verification":
+    if report.stage in {"requirements", "verification"}:
         return
     session.flush()
     statuses = {file.status for file in report_documents(session, report.id)}
@@ -123,7 +123,7 @@ def create_report(payload: ReportCreate) -> ReportResponse:
 def report_details(report_id: int) -> dict:
     with session_scope() as session:
         report = find_report(session, report_id)
-        extracting = report.stage in {"entities", "verification"}
+        extracting = report.stage in {"entities", "requirements", "verification"}
         files = report_documents(session, report_id)
         items = [document_response(file, extracting=extracting) for file in files]
         blockers = blockers_for(report, files, extracting=extracting)
@@ -131,9 +131,12 @@ def report_details(report_id: int) -> dict:
         if report.stage == "documents" and not blockers:
             actions = ["run_entity_extraction"]
         elif not blockers and (report.stage == "entities" or
+                               report.stage == "requirements" and report.processing_status == "failed"):
+            actions = ["generate_requirements"]
+        elif not blockers and (report.stage == "requirements" and report.processing_status == "completed" or
                                report.stage == "verification" and report.processing_status == "failed"):
             actions = ["run_verification"]
-        verifying = report.stage == "verification"
+        verifying = report.stage in {"requirements", "verification"}
         return {
             **ReportResponse.model_validate(report, from_attributes=True).model_dump(),
             "documents": items,
@@ -143,5 +146,5 @@ def report_details(report_id: int) -> dict:
             ), "total": 1 if verifying else len(items)},
             "blockers": blockers,
             "available_actions": actions,
-            "processing_mode": "verification" if verifying else "entities" if extracting else "ocr",
+            "processing_mode": report.stage if verifying else "entities" if extracting else "ocr",
         }

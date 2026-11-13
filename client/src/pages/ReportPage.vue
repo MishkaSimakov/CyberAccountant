@@ -20,6 +20,7 @@ export default defineComponent({
       steps: [
         {stage: 'documents', title: 'Загрузка документов'},
         {stage: 'entities', title: 'Разметка сущностей'},
+        {stage: 'requirements', title: 'Редактирование требований'},
         {stage: 'verification', title: 'Проверка требований'},
       ],
     }
@@ -36,11 +37,17 @@ export default defineComponent({
     stageIndex(): number {
       return this.steps.findIndex(step => step.stage === this.report?.stage)
     },
+    editing(): boolean {
+      return this.report?.stage === 'requirements' && this.report.processing_status === 'completed'
+    },
     completed(): boolean {
       return this.report?.stage === 'verification' && this.report.processing_status === 'completed'
     },
   },
   watch: {
+    editing(editing: boolean) {
+      if (editing) void this.$router.replace({name: 'requirements-edit', params: {reportId: this.reportId}})
+    },
     completed(completed: boolean) {
       if (completed) void this.$router.replace({name: 'requirements', params: {reportId: this.reportId}})
     },
@@ -76,7 +83,7 @@ export default defineComponent({
     <template v-if="report && !completed">
       <nav class="my-6 overflow-hidden rounded-lg border border-slate-200 bg-white"
            aria-label="Этапы проверки отчёта">
-        <ol class="grid divide-y divide-slate-200 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        <ol class="grid divide-y divide-slate-200 sm:grid-cols-4 sm:divide-x sm:divide-y-0">
           <li v-for="(step, index) in steps" :key="step.stage" class="flex items-center gap-3 p-4"
               :class="index === stageIndex ? 'bg-blue-50' : ''"
               :aria-current="index === stageIndex ? 'step' : undefined">
@@ -95,14 +102,16 @@ export default defineComponent({
 
       <DocumentsStage v-if="report.stage === 'documents'" :report="report" @select="selected = $event"/>
       <EntitiesStage v-else-if="report.stage === 'entities'" :report="report" @select="selected = $event"/>
-      <VerificationStage v-else-if="report.stage === 'verification'" :report="report"/>
+      <VerificationStage v-else-if="report.stage === 'verification' || report.stage === 'requirements'"
+                         :report="report"/>
 
-      <div v-if="report.stage !== 'verification'" class="mt-6 flex flex-wrap items-start justify-end gap-4">
+      <div v-if="report.stage === 'documents' || report.stage === 'entities'"
+           class="mt-6 flex flex-wrap items-start justify-end gap-4">
         <div class="sm:text-right" :class="{'cursor-not-allowed': !canAdvance}">
           <button
               class="cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-50"
               :disabled="!canAdvance" @click="advance">{{
-              advancing ? 'Переходим…' : report.stage === 'documents' ? 'К разметке сущностей →' : 'Проверить требования →'
+              advancing ? 'Переходим…' : report.stage === 'documents' ? 'К разметке сущностей →' : 'К требованиям →'
             }}
           </button>
         </div>
@@ -110,7 +119,7 @@ export default defineComponent({
     </template>
 
     <MarkdownEditor v-if="selectedDocument" :report-id="reportId" :document="selectedDocument"
-                    :readonly="advancing || report?.stage === 'verification'"
+                    :readonly="advancing || report?.stage === 'verification' || report?.stage === 'requirements'"
                     :entities="report?.stage !== 'documents'"
                     @close="selected = null" @saved="refresh"/>
   </main>

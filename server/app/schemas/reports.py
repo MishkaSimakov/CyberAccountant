@@ -26,5 +26,5 @@ class ReportCreate(BaseModel):
 
 class Report(ReportCreate):
     id: int
-    stage: Literal["documents", "entities", "verification"] = "documents"
+    stage: Literal["documents", "entities", "requirements", "verification"] = "documents"
     processing_status: Literal["idle", "queued", "running", "completed", "failed"] = "idle"

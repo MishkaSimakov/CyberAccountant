@@ -88,7 +88,7 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
         details = request("GET", path)[1]
         assert details["progress"] == {"completed": index + 1, "total": 2}
     assert details["processing_status"] == "completed"
-    assert details["available_actions"] == ["run_verification"]
+    assert details["available_actions"] == ["generate_requirements"]
     assert not details["blockers"]
     for document in details["documents"]:
         assert document["extraction_status"] == "completed"

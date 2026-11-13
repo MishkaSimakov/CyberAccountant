@@ -19,6 +19,7 @@ export default defineComponent({
       stages: {
         documents: 'Загрузка документов',
         entities: 'Разметка сущностей',
+        requirements: 'Редактирование требований',
         verification: 'Проверка требований',
       },
       statuses: {

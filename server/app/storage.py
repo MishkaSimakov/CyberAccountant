@@ -7,6 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import BinaryIO
+from uuid import uuid4
 
 from .services import ServiceError
 
@@ -30,7 +31,7 @@ def artifact_path(relative_path: str) -> Path:
 
 
 def save_verification_result(report_id: int, result: dict) -> str:
-    relative = f"{report_id}/verification/report.json"
+    relative = f"{report_id}/verification/report-{uuid4().hex}.json"
     destination = artifact_path(relative)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent, delete=False) as output:

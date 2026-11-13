@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from checkier import PipelineConfig
 from checkier.entities import EntityRegistry, build_registry
-from checkier.formula import collect_ids
+from checkier.formula import BinOp, FormulaError, collect_ids, parse
 from checkier.report import build_report
 from checkier.solver import solve_system
 from checkier.stage3_replace import run_replace
@@ -36,7 +36,37 @@ def generate_llm(context: VerificationContext) -> list[dict]:
     return generate_relations(context.config, context.documents, context.registry, settings)
 
 
-GENERATORS = {"scope": generate_scope, "llm": generate_llm, "insurance": generate_insurance}
+GENERATORS = {"scope": generate_scope, "insurance": generate_insurance}
+# "llm": generate_llm
+
+def validation_registry(files: list[File]) -> EntityRegistry:
+    return build_registry({str(file.file_id): (
+        "card" if file.role == "final_report" else "data",
+        storage.artifact_path(file.entities_path).read_text(encoding="utf-8"),
+    ) for file in files})
+
+
+def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
+    """Check syntax and references without running the solver or any LLM calls."""
+    def boolean_expression(node):
+        if not isinstance(node, BinOp):
+            return False
+        if node.op in {"&&", "||"}:
+            return boolean_expression(node.left) and boolean_expression(node.right)
+        return node.op in {"==", "!=", "<", "<=", ">", ">="}
+
+    try:
+        ast = parse(equation)
+        if not boolean_expression(ast):
+            return "Формула должна содержать сравнение, например #0 == #1 + #2."
+        known = {key for entity in registry.entities for key in (entity.num, entity.mnemonic)}
+        unknown = collect_ids(ast) - known
+        if unknown:
+            return "Неизвестные сущности: " + ", ".join(f"#{key}" if isinstance(key, int) else key
+                                                      for key in sorted(unknown, key=str))
+    except (FormulaError, ValueError, RecursionError) as exc:
+        return str(exc)
+    return None
 
 
 def prepare_verification(report: Report, files: list[File]) -> VerificationContext:
