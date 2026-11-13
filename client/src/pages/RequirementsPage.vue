@@ -8,9 +8,10 @@ import ReportHeader from '../components/ReportHeader.vue'
 import RequirementsResults from '../components/RequirementsResults.vue'
 import MarkdownEditor from '../components/MarkdownEditor.vue'
 import RequirementText from '../components/RequirementText.vue'
+import FileProblems from '../components/FileProblems.vue'
 
 export default defineComponent({
-  components: {FontAwesomeIcon, ReportHeader, RequirementsResults, MarkdownEditor, RequirementText},
+  components: {FontAwesomeIcon, ReportHeader, RequirementsResults, MarkdownEditor, RequirementText, FileProblems},
   props: {reportId: {type: Number, required: true}},
   data() {
     return {faSpinner, selectedEntityId: undefined as number | undefined}
@@ -119,6 +120,8 @@ export default defineComponent({
           </table>
         </div>
       </section>
+      <FileProblems :key="reportId" :files="result.files" :documents="report?.documents ?? []"
+                    :entity-documents="entityDocuments" @select="selectedEntityId = $event"/>
       <RequirementsResults :key="reportId" :requirements="requirements" :entity-documents="entityDocuments"
                            @select="selectedEntityId = $event"/>
     </template>
