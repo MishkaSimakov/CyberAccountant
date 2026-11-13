@@ -38,6 +38,7 @@ from fractions import Fraction
 import z3
 
 from checkier.entities import Entity, EntityRegistry, parse_amount
+from checkier.substitutor import Substitutor
 from checkier.formula import (
     BinOp,
     DateLit,
@@ -587,12 +588,13 @@ def solve_system(
         registry: EntityRegistry,
         variable_keys: set | list | None = None,
 ) -> tuple[list[Relation], list[Fishy], list[Verdict], list[str]]:
-    """Top-level entry: build relations, solve against the registry.
+    """Infer expected field values, then check requirements by substitution.
 
     *relations_raw* items either have an ``equation`` key (Relation) or an
     ``evidence`` key (Fishy). *variable_keys* (entity mnemonics/nums of the
     requested card row) selects which card entities are treated as variables;
     ``None`` treats all card entities as variables.
+    Relation outcomes use recorded values, independently of inferred fields.
     Returns (relations, fishy, verdicts, dangling).
     """
     rels: list[Relation] = []
@@ -618,4 +620,5 @@ def solve_system(
             )
     solver = Solver(rels, registry, variable_keys=variable_keys)
     solver.solve()
+    Substitutor(registry).check(rels)
     return rels, fishy, solver.verdicts(), solver.dangling_files()

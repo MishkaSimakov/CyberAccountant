@@ -364,7 +364,15 @@ def evaluate(node: Node, env: dict[str | int, Value]) -> Value:
             if op in ("<", "<=", ">", ">="):
                 return Sym(f"({l!r}{op}{r!r})")
             return Sym(f"({l!r}{op}{r!r})")
-        # concrete
+        # Concrete operands must have compatible types. In particular, Python
+        # treats bool as int, but the formula language keeps them separate.
+        l_numeric = isinstance(l, (Decimal, int)) and not isinstance(l, bool)
+        r_numeric = isinstance(r, (Decimal, int)) and not isinstance(r, bool)
+        if op in ("==", "!="):
+            if type(l) is not type(r) and not (l_numeric and r_numeric):
+                raise FormulaError(f"type clash in '{op}': {l!r} vs {r!r}")
+        elif not (l_numeric and r_numeric):
+            raise FormulaError(f"non-numeric operands to '{op}': {l!r} vs {r!r}")
         if op == "==":
             return l == r
         if op == "!=":
@@ -378,22 +386,12 @@ def evaluate(node: Node, env: dict[str | int, Value]) -> Value:
         if op == ">=":
             return l >= r
         if op == "+":
-            if isinstance(l, str) or isinstance(r, str):
-                raise FormulaError(f"cannot add string operands: {l!r} + {r!r}")
             return l + r
         if op == "-":
-            if isinstance(l, str) or isinstance(r, str):
-                raise FormulaError(f"cannot subtract string operands")
             return l - r
         if op == "*":
-            if isinstance(l, bool) or isinstance(r, bool):
-                return l * r  # bool is int subclass; allow
-            if isinstance(l, str) or isinstance(r, str):
-                raise FormulaError(f"cannot multiply string operands")
             return l * r
         if op == "/":
-            if isinstance(l, str) or isinstance(r, str):
-                raise FormulaError(f"cannot divide string operands")
             return l / r
         raise FormulaError(f"unknown operator {op!r}")
 

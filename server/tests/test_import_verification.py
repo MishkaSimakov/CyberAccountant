@@ -122,7 +122,7 @@ def test_import_publishes_report_and_preserves_inputs(db, bundle, tmp_path, monk
     assert result["summary"]["mismatch"] == 1
     assert result["card"]["cells"][0]["stated"] == "110"
     assert result["card"]["cells"][0]["expected"] == "100"
-    assert [outcome["verdict"] for outcome in result["requirement_results"]] == ["true", "false"]
+    assert [outcome["verdict"] for outcome in result["requirement_results"]] == ["false", "false"]
     assert len(result["entity_documents"]) == 12
     details = reports.report_details(report_id)
     assert details["stage"] == "verification"
