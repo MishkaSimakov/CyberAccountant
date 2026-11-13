@@ -2,7 +2,8 @@ FROM node:24-alpine
 
 WORKDIR /app/client
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 COPY . ./
 
 EXPOSE 5173

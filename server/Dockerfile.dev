@@ -13,7 +13,8 @@ COPY workers.conf /etc/supervisor/workers.conf
 COPY pyproject.toml ./
 COPY app/ ./app/
 COPY checkier/ ./checkier/
-RUN pip install --no-cache-dir '.[dev]'
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install '.[dev]'
 
 WORKDIR /app
 EXPOSE 8000
