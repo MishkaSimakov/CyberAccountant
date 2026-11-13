@@ -87,7 +87,9 @@ def test_report_and_uploads_survive_across_requests(api):
     assert request("GET", "/reports")[1][0]["id"] == report_id
     status, main = upload(report_id, role="final_report")
     assert status == 201
-    assert main["ocr_status"] == "queued"
+    assert main["status"] == "queued"
+    assert "ocr_status" not in main
+    assert "extraction_status" not in main
     assert upload(report_id, role="final_report")[0] == 409
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda i: upload(report_id, name=f"invoice-{i}.pdf",
@@ -144,7 +146,7 @@ def test_real_ocr_preserves_artifacts_and_updates_progress(api):
     _, uploaded = upload(report_id, content=original)
     ocr.process_ocr(pending[0])
     details = request("GET", f"/reports/{report_id}")[1]
-    assert details["documents"][0]["ocr_status"] == "completed"
+    assert details["documents"][0]["status"] == "ocr_completed"
     assert details["progress"] == {"completed": 1, "total": 1}
     assert details["processing_status"] == "completed"
     assert "Invoice total 12345.67" in request("GET", f'/reports/{report_id}/documents/{uploaded["id"]}/markdown')[1][
@@ -266,7 +268,7 @@ def test_ocr_failure_is_persisted(api, monkeypatch):
         ocr.process_ocr(pending[0])
     details = request("GET", f"/reports/{report_id}")[1]
     assert details["processing_status"] == "failed"
-    assert details["documents"][0]["ocr_status"] == "failed"
+    assert details["documents"][0]["status"] == "failed"
     assert details["documents"][0]["error"]
 
 
@@ -279,7 +281,7 @@ def test_queue_failure_keeps_original_and_marks_failed(api, monkeypatch):
     monkeypatch.setattr(documents, "enqueue_ocr", fail)
     assert upload(report_id)[0] == 503
     details = request("GET", f"/reports/{report_id}")[1]
-    assert details["documents"][0]["ocr_status"] == "failed"
+    assert details["documents"][0]["status"] == "failed"
     with database.session_scope() as session:
         assert storage.artifact_path(session.scalar(select(File)).path).is_file()
 

@@ -79,7 +79,7 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     assert response["stage"] == "entities"
     assert response["processing_status"] == "queued"
     assert response["progress"] == {"completed": 0, "total": 2}
-    assert {file["extraction_status"] for file in response["documents"]} == {"queued"}
+    assert {file["status"] for file in response["documents"]} == {"ocr_completed"}
     assert pending == revisions
     assert request("POST", path + "/run-entity-extraction")[0] == 200
     assert pending == revisions  # Repeated requests must not duplicate jobs.
@@ -91,9 +91,9 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     assert details["available_actions"] == ["generate_requirements"]
     assert not details["blockers"]
     for document in details["documents"]:
-        assert document["extraction_status"] == "completed"
+        assert document["status"] == "completed"
         assert request("GET", path + f'/documents/{document["id"]}/markdown')[1]["content"] == TAGGED
-        assert request("GET", path + f'/documents/{document["id"]}')[1]["extraction_status"] == "completed"
+        assert request("GET", path + f'/documents/{document["id"]}')[1]["status"] == "completed"
     with database.session_scope() as session:
         for revision_id in revisions:
             file = session.get(File, revision_id)
@@ -117,9 +117,11 @@ def test_extraction_failure_can_be_retried_without_repeating_successes(ready, mo
         job.process_entities(revisions[1])
     response = request("GET", path)[1]
     assert response["processing_status"] == "failed"
-    assert response["documents"][1]["ocr_status"] == "completed"
-    assert response["documents"][1]["extraction_status"] == "failed"
+    assert response["documents"][1]["status"] == "failed"
     assert response["documents"][1]["error"]
+    assert response["blockers"] == [
+        "Не удалось извлечь сущности из некоторых документов. Повторите извлечение."
+    ]
     retry_path = path + (f'/documents/{response["documents"][1]["id"]}' if per_document else "")
     assert request("POST", retry_path + "/run-entity-extraction")[0] == 200
     assert pending == revisions + [revisions[1]]
@@ -147,16 +149,16 @@ def test_document_retry_leaves_other_failed_documents_untouched(ready):
     status, response = request("POST", retry_path)
     assert status == 200
     assert pending == revisions + [revisions[0]]
-    assert response["documents"][0]["extraction_status"] == "queued"
+    assert response["documents"][0]["status"] == "ocr_completed"
     assert response["documents"][0]["error"] is None
-    assert response["documents"][1]["extraction_status"] == "failed"
+    assert response["documents"][1]["status"] == "failed"
     assert response["documents"][1]["error"] == "Extraction failed"
     assert request("POST", retry_path)[0] == 200
     assert pending == revisions + [revisions[0]]
     job.process_entities(revisions[0])
     assert request("POST", retry_path)[0] == 200
     assert pending == revisions + [revisions[0]]
-    assert request("GET", path)[1]["documents"][0]["extraction_status"] == "completed"
+    assert request("GET", path)[1]["documents"][0]["status"] == "completed"
 
 
 def test_document_retry_requires_entities_stage_and_report_ownership(ready):
@@ -227,7 +229,7 @@ def test_enqueue_failure_is_persisted_and_retryable(ready, monkeypatch):
     assert request("POST", path + "/run-entity-extraction")[0] == 503
     response = request("GET", path)[1]
     assert response["processing_status"] == "failed"
-    assert all(file["extraction_status"] == "failed" for file in response["documents"])
+    assert all(file["status"] == "failed" for file in response["documents"])
     queued = []
     monkeypatch.setattr(entities, "enqueue_entities", queued.append)
     assert request("POST", path + "/run-entity-extraction")[0] == 200

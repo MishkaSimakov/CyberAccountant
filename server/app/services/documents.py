@@ -83,8 +83,8 @@ def upload_document(report_id: int, filename: str, stream: BinaryIO, role: str) 
 
 def document_details(report_id: int, file_id: int) -> Document:
     with session_scope() as session:
-        report = find_report(session, report_id)
-        return document_response(find_document(session, report_id, file_id), extracting=report.stage == "entities")
+        find_report(session, report_id)
+        return document_response(find_document(session, report_id, file_id))
 
 
 def original_document(report_id: int, file_id: int) -> File:
