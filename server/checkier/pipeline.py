@@ -14,7 +14,6 @@ from checkier.stage1_tag import run_tag
 from checkier.stage2_registry import run_registry
 from checkier.stage2_dates import run_date_normalization
 from checkier.stage3_replace import run_replace
-from checkier.stage4_scope import run_scope
 from checkier.stage5_relations import run_relations
 
 
@@ -48,7 +47,7 @@ class Pipeline:
                 (cfg.tagged_dir / f"{file_id}.md").write_text(text, encoding="utf-8")
         self._registry: EntityRegistry | None = None
         self._replaced: dict[str, str] | None = None
-        self._scope: dict | None = None
+        self._scope = {"target_row": None, "target_label": None}
         self._relations_raw: list[dict] | None = None
 
     # -- individual stages ---------------------------------------------------
@@ -96,11 +95,7 @@ class Pipeline:
         return self._replaced
 
     def scope(self) -> dict:
-        if self._scope is not None:
-            return self._scope
-        reg = self._registry or self.registry()
-        mapping = self._mapping or self._load_mapping()
-        self._scope = run_scope(self.cfg, reg, mapping)
+        """Return target-row metadata; requirements are evaluated by the solver."""
         return self._scope
 
     def relations(self) -> list[dict]:

@@ -10,13 +10,13 @@ import {faBell} from '@fortawesome/free-solid-svg-icons/faBell'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import {faCircleQuestion} from '@fortawesome/free-solid-svg-icons/faCircleQuestion'
 import {faTriangleExclamation} from '@fortawesome/free-solid-svg-icons/faTriangleExclamation'
-import type {Requirement} from '../api'
+import type {VerifiedRequirement} from '../api'
 import RequirementText from './RequirementText.vue'
 
 export default defineComponent({
   components: {FontAwesomeIcon, RequirementText},
   props: {
-    requirements: {type: Array as PropType<Requirement[]>, required: true},
+    requirements: {type: Array as PropType<VerifiedRequirement[]>, required: true},
     entityDocuments: {type: Object as PropType<Record<number, number>>, required: true},
   },
   emits: {select: (id: number) => Number.isInteger(id)},
@@ -44,7 +44,7 @@ export default defineComponent({
     silencedCount(): number {
       return this.requirements.filter(requirement => requirement.silenced).length
     },
-    filteredRequirements(): Requirement[] {
+    filteredRequirements(): VerifiedRequirement[] {
       return this.requirements.filter(requirement => {
         if (this.filter === 'failed') return requirement.verdict === 'false' && !requirement.silenced
         if (this.filter === 'passed') return requirement.verdict === 'true'
@@ -66,7 +66,7 @@ export default defineComponent({
   },
   methods: {
     ...mapActions('requirements', ['update']),
-    statusLabel(requirement: Requirement): string {
+    statusLabel(requirement: VerifiedRequirement): string {
       const label = {
         true: 'Выполнено',
         false: 'Нарушено',
@@ -75,7 +75,7 @@ export default defineComponent({
       }[requirement.verdict]
       return requirement.silenced ? `${label} — предупреждение отключено` : label
     },
-    statusClass(requirement: Requirement): string {
+    statusClass(requirement: VerifiedRequirement): string {
       if (requirement.silenced) return 'border-slate-200 bg-slate-100 text-slate-400'
       return {
         true: 'border-green-200 bg-green-50 text-green-700',
@@ -84,7 +84,7 @@ export default defineComponent({
         unverifiable: 'border-amber-200 bg-amber-50 text-amber-700',
       }[requirement.verdict]
     },
-    statusIcon(requirement: Requirement) {
+    statusIcon(requirement: VerifiedRequirement) {
       return {
         true: faCheck,
         false: faXmark,
@@ -122,10 +122,11 @@ export default defineComponent({
                 class="grid cursor-pointer list-none grid-cols-[2rem_minmax(0,1fr)_2.5rem_1rem] items-center gap-3 px-4 py-4 transition-colors hover:bg-slate-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-500 group-open:bg-slate-50 sm:grid-cols-[2.5rem_minmax(0,1fr)_2.5rem_1rem] sm:gap-4 [&::-webkit-details-marker]:hidden">
               <span class="text-sm tabular-nums text-slate-400"><span
                   class="sr-only">Требование </span>{{ requirement.id }}</span>
-              <RequirementText :text="requirement.equation || requirement.evidence || 'Условие не указано'"
-                               :entity-documents="entityDocuments" @select="$emit('select', $event)"
-                               class="min-w-0 whitespace-pre-wrap break-words text-sm leading-7"
-                               :class="[requirement.equation ? 'font-mono' : '', requirement.silenced ? 'text-slate-500' : 'text-slate-800']"/>
+              <RequirementText
+                  :text="requirement.kind === 'formula' ? requirement.equation : requirement.text || 'Условие не указано'"
+                  :entity-documents="entityDocuments" @select="$emit('select', $event)"
+                  class="min-w-0 whitespace-pre-wrap break-words text-sm leading-7"
+                  :class="[requirement.kind === 'formula' ? 'font-mono' : '', requirement.silenced ? 'text-slate-500' : 'text-slate-800']"/>
               <span class="inline-flex h-7 w-10 items-center justify-center rounded border"
                     :class="statusClass(requirement)"
                     :title="statusLabel(requirement)">
@@ -138,14 +139,14 @@ export default defineComponent({
             </summary>
             <div class="border-t border-slate-100 p-4 sm:pl-18">
               <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
-                <span>{{ requirement.equation ? 'Формула' : 'Текстовое условие' }}</span>
+                <span>{{ requirement.kind === 'formula' ? 'Формула' : 'Текстовое условие' }}</span>
                 <span>{{
                     statusLabel(requirement)
                   }}</span>
               </div>
-              <p v-if="requirement.equation && requirement.evidence"
+              <p v-if="requirement.kind === 'formula' && requirement.text"
                  class="mt-3 whitespace-pre-wrap break-words text-sm leading-7">
-                <RequirementText :text="requirement.evidence" :entity-documents="entityDocuments"
+                <RequirementText :text="requirement.text" :entity-documents="entityDocuments"
                                  @select="$emit('select', $event)"/>
               </p>
               <p v-if="requirement.error" class="mt-3 whitespace-pre-wrap break-words text-sm text-orange-700">

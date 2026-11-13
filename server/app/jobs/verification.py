@@ -5,7 +5,9 @@ import logging
 from sqlalchemy import delete
 
 from ..database import session_scope
-from ..models import EntityFile, Report, Requirement
+from .. import storage
+from ..models import EntityFile, Report, Requirement, VerificationResult
+from ..services.requirements import requirement_response
 from ..services.reports import find_report, report_documents
 from ..verification import evaluate_requirements, generate_requirements, prepare_verification
 
@@ -26,17 +28,28 @@ def process_verification(report_id: int) -> None:
     try:
         context = prepare_verification(report, files)
         requirements = generate_requirements(context)
-        results = evaluate_requirements(context, requirements)
         with session_scope() as session:
             report = find_report(session, report_id, lock=True)
             if report.processing_status != "running":
                 return
+            session.execute(delete(VerificationResult).where(VerificationResult.report_id == report_id))
             session.execute(delete(Requirement).where(Requirement.report_id == report_id))
+            definitions = []
+            for definition in requirements:
+                data = dict(definition)
+                requirement = Requirement(report_id=report_id, text=data.pop("text"),
+                                          source=data.pop("source"), json_data=data)
+                session.add(requirement)
+                session.flush()
+                definitions.append(requirement_response(requirement).model_dump())
+        result = evaluate_requirements(context, definitions)
+        result_path = storage.save_verification_result(report_id, result)
+        with session_scope() as session:
+            report = find_report(session, report_id, lock=True)
+            if report.processing_status != "running":
+                return
             session.execute(delete(EntityFile).where(EntityFile.report_id == report_id))
-            for result in results:
-                definition = dict(result)
-                verdict = definition.pop("verdict")
-                session.add(Requirement(report_id=report_id, verdict=verdict, json_data=definition))
+            session.add(VerificationResult(report_id=report_id, path=result_path))
             session.add_all(EntityFile(report_id=report_id, entity_id=entity.num, file_id=int(entity.file))
                             for entity in context.registry.entities)
             report.processing_status = "completed"

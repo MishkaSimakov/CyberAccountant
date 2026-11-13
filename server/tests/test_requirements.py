@@ -1,19 +1,24 @@
-"""Requirement verdicts use the same string values in storage and the API."""
+"""Requirement definitions are distinct from verification outcomes."""
 
 import pytest
 from pydantic import ValidationError
 
-from app.models.requirement import RequirementVerdict
-from app.schemas.requirements import RequirementResponse
+from app.schemas.requirements import requirement_adapter
 
 
-@pytest.mark.parametrize("verdict", list(RequirementVerdict))
-def test_requirement_verdict_serializes_as_string(verdict):
-    result = RequirementResponse(id=1, verdict=verdict)
-    assert result.model_dump(mode="json")["verdict"] == verdict.value
+@pytest.mark.parametrize("condition", [True, False, None])
+def test_assertion_keeps_condition_without_a_verdict(condition):
+    definition = requirement_adapter.validate_python({
+        "id": 1, "kind": "assertion", "condition": condition,
+        "text": "Проверка подписи", "ids_related": [0],
+    }).model_dump()
+    assert definition["condition"] is condition
+    assert "verdict" not in definition
 
 
-@pytest.mark.parametrize("verdict", [True, False, "unknown", "unverified", "ok", "mismatch", "constant"])
-def test_requirement_verdict_rejects_other_values(verdict):
+@pytest.mark.parametrize("outcome", [
+    {"verdict": "false"}, {"error": "Unknown entity"}, {"expected": "100"},
+])
+def test_requirement_rejects_result_fields(outcome):
     with pytest.raises(ValidationError):
-        RequirementResponse(id=1, verdict=verdict)
+        requirement_adapter.validate_python({"id": 1, "kind": "formula", "equation": "#0 == 100", **outcome})

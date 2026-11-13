@@ -3,13 +3,35 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
+from uuid import uuid4
 
 import jsonschema
 import requests
 
 from checkier.config import load_api_credentials
+
+logger = logging.getLogger(__name__)
+
+
+def _log_output(text: str, model: str, schema_name: str) -> None:
+    """Keep the exact model text, including invalid JSON and Markdown fences."""
+    root = Path(os.environ.get("STORAGE_ROOT", Path(__file__).resolve().parents[2] / "storage"))
+    directory = root / "llm_outputs"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    path = directory / f"{timestamp}-{uuid4().hex}.txt"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="")
+    except OSError:
+        logger.exception("Could not save raw LLM output to %s", path)
+    else:
+        logger.info("Saved raw LLM output to %s (model=%s, schema=%s)", path, model, schema_name)
 
 
 class LLMError(RuntimeError):
@@ -137,47 +159,37 @@ def call_llm(
         }
     try:
         if on_token is not None:
-            return _post_streaming(payload, timeout, on_token)
-        data = _post(payload, timeout)
-        return _extract_text(data)
+            text = _post_streaming(payload, timeout, on_token)
+        else:
+            text = _extract_text(_post(payload, timeout))
     except LLMError as exc:
         # Some endpoints/models reject response_format; retry without it.
         if schema is None or "response_format" not in str(exc):
             raise
         payload.pop("response_format")
         if on_token is not None:
-            return _post_streaming(payload, timeout, on_token)
-        data = _post(payload, timeout)
-        return _extract_text(data)
+            text = _post_streaming(payload, timeout, on_token)
+        else:
+            text = _extract_text(_post(payload, timeout))
+    _log_output(text, model, schema_name)
+    return text
 
 
 def _json_from_text(text: str) -> dict | list:
-    """Extract and parse the first JSON object/array in *text*."""
+    """Parse JSON with optional surrounding prose or (possibly unclosed) fences."""
     text = text.strip()
-    # strip markdown fences if present
-    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # fall back: first balanced {..} or [..]
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = text.find(opener)
-        if start == -1:
-            continue
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == opener:
-                depth += 1
-            elif text[i] == closer:
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(text[start : i + 1])
-                    except json.JSONDecodeError:
-                        break
+    # Decode the outermost container; never salvage an item from a broken array.
+    match = re.search(r"[\[{]", text)
+    if match:
+        try:
+            value, _ = json.JSONDecoder().raw_decode(text, match.start())
+            return value
+        except json.JSONDecodeError:
+            pass
     raise LLMError(f"model output is not valid JSON: {text[:500]}")
 
 

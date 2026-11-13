@@ -4,11 +4,10 @@ from datetime import date
 
 import pytest
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.exc import DataError, IntegrityError
+from sqlalchemy.exc import IntegrityError
 
 from app import database
-from app.models import EntityFile, File, Report, Requirement
-from app.models.requirement import RequirementVerdict
+from app.models import EntityFile, File, Report, Requirement, VerificationResult
 
 
 def test_initialization_preserves_data_and_round_trips_models(db):
@@ -21,8 +20,9 @@ def test_initialization_preserves_data_and_round_trips_models(db):
             file_id=1, report_id=report_id, name="акт.pdf", path="originals/акт.pdf",
             hash="a" * 64, role="supporting", size=42, content_type="application/pdf",
         ))
-        session.add(Requirement(report_id=report_id, verdict=RequirementVerdict.UNVERIFIABLE,
-                                json_data={"evidence": "Проверить", "ids_related": [0]}))
+        session.add(Requirement(report_id=report_id, text="Проверить", source="llm",
+                                json_data={"kind": "assertion", "condition": None, "ids_related": [0]}))
+        session.add(VerificationResult(report_id=report_id, path=f"{report_id}/verification/report.json"))
         session.add(EntityFile(report_id=report_id, entity_id=0, file_id=1))
 
     database.initialize_database()
@@ -37,11 +37,15 @@ def test_initialization_preserves_data_and_round_trips_models(db):
         assert session.get(EntityFile, (report_id, 0)).file_id == file.file_id
         requirement = session.scalar(select(Requirement))
         assert requirement.json_data["ids_related"] == [0]
-        assert requirement.verdict == RequirementVerdict.UNVERIFIABLE
-        requirement.verdict = RequirementVerdict.FALSE
+        assert requirement.text == "Проверить"
+        assert requirement.source == "llm"
+        assert requirement.json_data["condition"] is None
+        assert "verdict" not in Requirement.__table__.c
+        assert session.get(VerificationResult, report_id).path == f"{report_id}/verification/report.json"
+        requirement.text = "Пояснение"
 
     with database.session_scope() as session:
-        assert session.scalar(select(Requirement)).verdict == RequirementVerdict.FALSE
+        assert session.scalar(select(Requirement)).text == "Пояснение"
 
 
 def test_initialization_adds_upload_sequence_to_existing_tables(db):
@@ -80,8 +84,8 @@ def test_file_revision_uniqueness_and_report_cascade(db):
             hash="a" * 64, role="supporting", size=42, content_type="application/pdf",
         )
         session.add_all([File(**fields, version=1), File(**fields, version=2, hand_edited=True)])
-        session.add(Requirement(report_id=report_id, verdict=RequirementVerdict.TRUE,
-                                json_data={"equation": "#1 == 2"}))
+        session.add(Requirement(report_id=report_id, json_data={"kind": "formula", "equation": "#1 == 2"}))
+        session.add(VerificationResult(report_id=report_id, path="result.json"))
         session.add(EntityFile(report_id=report_id, entity_id=1, file_id=1))
 
     with pytest.raises(IntegrityError):
@@ -91,7 +95,7 @@ def test_file_revision_uniqueness_and_report_cascade(db):
     with database.session_scope() as session:
         session.execute(delete(Report).where(Report.id == report_id))
     with database.session_scope() as session:
-        for model in (File, Requirement, EntityFile):
+        for model in (File, Requirement, EntityFile, VerificationResult):
             assert session.scalar(select(func.count()).select_from(model)) == 0
 
 
@@ -115,24 +119,13 @@ def test_database_rejects_negative_entity_ids(db):
             session.add(EntityFile(report_id=report.id, entity_id=-1, file_id=1))
 
 
-@pytest.mark.parametrize("verdict", list(RequirementVerdict))
-def test_requirement_verdict_round_trip(db, verdict):
+def test_one_verification_result_per_report(db):
     with database.session_scope() as session:
-        report = Report(name="Requirement verdict")
+        report = Report(name="Verification result")
         session.add(report)
         session.flush()
-        session.add(Requirement(report_id=report.id, verdict=verdict, json_data={"equation": "#0 == 2"}))
-
-    with database.session_scope() as session:
-        assert session.scalar(select(Requirement)).verdict is verdict
-
-
-def test_database_rejects_unknown_requirement_verdict(db):
-    with pytest.raises(DataError):
+        report_id = report.id
+        session.add(VerificationResult(report_id=report_id, path="first.json"))
+    with pytest.raises(IntegrityError):
         with database.session_scope() as session:
-            report = Report(name="Invalid verdict")
-            session.add(report)
-            session.flush()
-            session.execute(Requirement.__table__.insert().values({
-                "report_id": report.id, "verdict": text("'unknown'"), "json": {},
-            }))
+            session.add(VerificationResult(report_id=report_id, path="second.json"))

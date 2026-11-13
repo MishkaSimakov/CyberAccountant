@@ -1,6 +1,30 @@
 """Smoke test for the human-readable report formatter."""
 
-from checkier.report import format_report_text
+import pytest
+
+from checkier.config import PipelineConfig
+from checkier.entities import build_registry
+from checkier.report import build_report, format_report_text
+from checkier.solver import Relation
+
+
+@pytest.mark.parametrize("tag, status, role, excluded", [
+    ("scope", "false", "data", True),
+    ("scope", "true", "data", False),
+    ("scope", "error", "data", False),
+    ("scope", "unverifiable", "data", False),
+    ("ref", "false", "data", False),
+    ("scope", "false", "card", False),
+    ("scope", "false", "request", False),
+])
+def test_out_of_scope_is_derived_only_from_failed_scope_formulas(tmp_path, tag, status, role, excluded):
+    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path)
+    registry = build_registry({})
+    relation = Relation(index=0, equation='value == "TARGET"', tag=tag, status=status,
+                        source="custom", involved_files=["file"])
+    result = build_report(cfg, {"file": {"role": role}}, registry, [relation], [], [], [], {})
+    assert result["files"]["out_of_scope"] == ({"file": [relation.equation]} if excluded else {})
+    assert result["summary"]["out_of_scope"] == int(excluded)
 
 
 def _sample_report() -> dict:
