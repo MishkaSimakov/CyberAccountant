@@ -1,5 +1,6 @@
 <script lang="ts">
-import {defineComponent, markRaw, type Raw} from 'vue'
+import {defineComponent, markRaw, type PropType, type Raw} from 'vue'
+import type {EntityBox} from '../../api'
 import {getDocument, GlobalWorkerOptions, type PDFDocumentLoadingTask} from 'pdfjs-dist/legacy/build/pdf.mjs'
 import {EventBus, PDFLinkService, PDFViewer} from 'pdfjs-dist/legacy/web/pdf_viewer.mjs'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
@@ -8,7 +9,10 @@ import 'pdfjs-dist/legacy/web/pdf_viewer.css'
 GlobalWorkerOptions.workerSrc = workerUrl
 
 export default defineComponent({
-  props: {src: {type: String, required: true}},
+  props: {
+    src: {type: String, required: true},
+    highlights: {type: Array as PropType<EntityBox[]>, default: () => []},
+  },
   data() {
     return {
       loading: true,
@@ -18,7 +22,11 @@ export default defineComponent({
       loadingTask: undefined as Raw<PDFDocumentLoadingTask> | undefined,
       safariGestureScale: undefined as number | undefined,
       resizeObserver: undefined as ResizeObserver | undefined,
+      revealPending: false,
     }
+  },
+  watch: {
+    highlights() { this.revealHighlights() },
   },
   async mounted() {
     const container = this.$refs.container as HTMLDivElement
@@ -39,9 +47,11 @@ export default defineComponent({
         if (!this.viewer || this.lifetime.signal.aborted) return
         this.viewer.currentScaleValue = 'page-width'
         this.loading = false
+        this.revealHighlights()
       })
       eventBus.on('pagerendered', ({error: cause}: { error?: Error }) => {
         if (cause) this.error = 'Не удалось отобразить PDF. Откройте PDF отдельно.'
+        this.paintHighlights()
       })
       container.addEventListener('wheel', this.onWheel, {passive: false, signal: this.lifetime.signal})
       for (const name of ['gesturestart', 'gesturechange', 'gestureend']) {
@@ -70,6 +80,60 @@ export default defineComponent({
     void this.loadingTask?.destroy()
   },
   methods: {
+    revealHighlights() {
+      this.revealPending = true
+      const first = this.highlights[0]
+      if (first && this.viewer && !this.loading) this.viewer.currentPageNumber = first.page
+      this.paintHighlights()
+    },
+    paintHighlights() {
+      const pages = this.$refs.pages as HTMLDivElement | undefined
+      if (!pages || !this.viewer || this.lifetime.signal.aborted) return
+      pages.querySelectorAll('[data-entity-highlight]').forEach(element => element.remove())
+      const groups = new Map<number, EntityBox[]>()
+      for (const box of this.highlights) {
+        const group = groups.get(box.page) ?? []
+        group.push(box)
+        groups.set(box.page, group)
+      }
+      for (const [page, boxes] of groups) {
+        const view = this.viewer.getPageView(page - 1)
+        const pageElement = view?.div as HTMLElement | undefined
+        const canvas = pageElement?.querySelector<HTMLElement>('.canvasWrapper')
+        if (!canvas) continue // Other pages will be painted on pagerendered.
+        canvas.style.position = 'relative'
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+        svg.setAttribute('viewBox', '0 0 1 1')
+        svg.setAttribute('preserveAspectRatio', 'none')
+        svg.setAttribute('role', 'img')
+        svg.setAttribute('aria-label', 'Выделенная сущность')
+        svg.setAttribute('data-entity-highlight', String(page))
+        svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3'
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+        path.setAttribute('d', boxes.map(({bbox_normalized: [x0, y0, x1, y1]}) =>
+            `M${x0} ${y0}H${x1}V${y1}H${x0}Z`).join(' '))
+        path.setAttribute('fill', '#facc15')
+        path.setAttribute('fill-opacity', '.4')
+        path.setAttribute('stroke', '#b45309')
+        path.setAttribute('stroke-width', '.6')
+        path.setAttribute('vector-effect', 'non-scaling-stroke')
+        svg.append(path)
+        canvas.append(svg)
+      }
+      const first = this.highlights[0]
+      if (!this.revealPending || !first || this.loading) return
+      const pageElement = this.viewer.getPageView(first.page - 1)?.div as HTMLElement | undefined
+      const canvas = pageElement?.querySelector<HTMLElement>('.canvasWrapper')
+      const container = this.$refs.container as HTMLDivElement
+      if (!canvas?.querySelector('[data-entity-highlight]') || !canvas.clientHeight) return
+      const pageRect = canvas.getBoundingClientRect(), containerRect = container.getBoundingClientRect()
+      const [x0, y0, x1, y1] = first.bbox_normalized
+      container.scrollTo({
+        top: container.scrollTop + pageRect.top - containerRect.top + (y0 + y1) / 2 * pageRect.height - container.clientHeight * .4,
+        left: container.scrollLeft + pageRect.left - containerRect.left + (x0 + x1) / 2 * pageRect.width - container.clientWidth / 2,
+      })
+      this.revealPending = false
+    },
     scaleAt(factor: number, x: number, y: number) {
       if (!this.viewer || this.loading || this.error) return
       const current = this.viewer.currentScale

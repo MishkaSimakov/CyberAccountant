@@ -61,6 +61,20 @@ export interface MarkdownRevision {
     revision: number
 }
 
+export interface EntityBox {
+    page: number
+    bbox_normalized: [number, number, number, number]
+}
+
+export interface EntityGeometry {
+    entity_id: number
+    document_revision: number
+    text: string
+    status: 'mapped' | 'partial' | 'unmapped'
+    boxes: EntityBox[]
+    message: string | null
+}
+
 export const getReport = (id: number) => request<ReportDetails>(`/reports/${id}`)
 
 export const reportLogUrl = (reportId: number) => `/api/v1/reports/${reportId}/log`
@@ -85,6 +99,9 @@ export const documentLogUrl = (reportId: number, documentId: number) =>
 
 export const getMarkdown = (reportId: number, documentId: number) =>
     request<MarkdownRevision>(`/reports/${reportId}/documents/${documentId}/markdown`)
+
+export const getEntityGeometry = (reportId: number, documentId: number, entityId: number) =>
+    request<EntityGeometry>(`/reports/${reportId}/documents/${documentId}/entities/${entityId}/geometry`)
 
 export const saveMarkdown = (reportId: number, documentId: number, content: string, baseRevision: number) =>
     request<MarkdownRevision>(`/reports/${reportId}/documents/${documentId}/markdown`, {

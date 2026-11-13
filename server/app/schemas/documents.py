@@ -27,3 +27,17 @@ class MarkdownRevision(BaseModel):
 class MarkdownEdit(BaseModel):
     content: str = Field(min_length=1, max_length=1_000_000)
     base_revision: int = Field(ge=1)
+
+
+class EntityBox(BaseModel):
+    page: int = Field(ge=1)
+    bbox_normalized: tuple[float, float, float, float]
+
+
+class EntityGeometry(BaseModel):
+    entity_id: int
+    document_revision: int
+    text: str
+    status: Literal['mapped', 'partial', 'unmapped']
+    boxes: list[EntityBox]
+    message: str | None = None

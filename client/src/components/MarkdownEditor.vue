@@ -8,15 +8,17 @@ import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import type {ReportDocument} from '../api'
 import DocumentViewer from './viewers/DocumentViewer.vue'
 import MarkdownViewer from './viewers/MarkdownViewer.vue'
+import EntityPdfPreview from './viewers/EntityPdfPreview.vue'
 
 export default defineComponent({
-  components: {FontAwesomeIcon, DocumentViewer, MarkdownViewer},
+  components: {FontAwesomeIcon, DocumentViewer, MarkdownViewer, EntityPdfPreview},
   props: {
     reportId: {type: Number, required: true},
     document: {type: Object as PropType<ReportDocument>, required: true},
     readonly: {type: Boolean, required: true},
     entities: Boolean,
     selectedEntityId: Number,
+    pdfEntities: Boolean,
   },
   emits: ['close', 'saved'],
   data() {
@@ -55,7 +57,7 @@ export default defineComponent({
       immediate: true,
       handler() {
         this.preview = true
-        void this.open({reportId: this.reportId, documentId: this.document.id})
+        if (!this.pdfEntities) void this.open({reportId: this.reportId, documentId: this.document.id})
       },
     },
   },
@@ -121,10 +123,12 @@ export default defineComponent({
       </div>
     </div>
 
-    <p v-if="error" class="mb-4 max-h-[20dvh] shrink-0 overflow-auto rounded bg-red-50 p-3 text-red-700" role="alert">
+    <p v-if="error && !pdfEntities" class="mb-4 max-h-[20dvh] shrink-0 overflow-auto rounded bg-red-50 p-3 text-red-700" role="alert">
       {{ error }}</p>
 
-    <div class="grid min-h-0 flex-1 grid-rows-2 gap-4 sm:grid-cols-2 sm:grid-rows-1">
+    <EntityPdfPreview v-if="pdfEntities" :report-id="reportId" :document-id="document.id"
+                      :selected-entity-id="selectedEntityId"/>
+    <div v-else class="grid min-h-0 flex-1 grid-rows-2 gap-4 sm:grid-cols-2 sm:grid-rows-1">
       <DocumentViewer :src="url"/>
       <section class="flex min-h-0 min-w-0 flex-col overflow-hidden rounded border border-slate-200"
                :aria-busy="loading">
