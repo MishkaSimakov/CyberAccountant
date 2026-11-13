@@ -6,12 +6,26 @@ import json
 import math
 from pathlib import Path
 import re
+from typing import Literal, TypedDict
 
 from checkier.entities import ENT_RE, parse_amount, parse_tag_attrs
 
 
 class EntityNotFound(ValueError):
     pass
+
+
+class EntityBox(TypedDict):
+    page: int
+    bbox_normalized: list[float]
+
+
+class EntityLocation(TypedDict):
+    entity_id: int
+    text: str
+    status: Literal['mapped', 'partial', 'unmapped']
+    boxes: list[EntityBox]
+    message: str | None
 
 
 def entity_source(tagged: str, entity_id: int):
@@ -78,21 +92,31 @@ def source_span(tagged_plain: str, original: str, start: int, end: int):
 
 
 def comparable_text(text: str):
+    # Ignore Markdown formatting, whitespace, and numeric separators when matching
+    # reviewed text to OCR, retaining each character's source offset for span mapping.
     ignored = set()
     for match in re.finditer(r'<!--[\s\S]*?-->|<br\s*/?>|(?m:^[ \t]*#{1,6}[ \t]+)|(?m:^[ \t|:\-]+$)', text):
         ignored.update(range(match.start(), match.end()))
     positions = [i for i, char in enumerate(text)
                  if i not in ignored and not char.isspace() and char not in '|*\\'
-                 and not (char in ',.' and 0 < i < len(text) - 1 and text[i-1].isdigit() and text[i+1].isdigit())]
+                 and not (char in ',.' and 0 < i < len(text) - 1 and text[i - 1].isdigit() and text[i + 1].isdigit())]
     return ''.join(text[i] for i in positions), positions
 
 
-def locate_entity(tagged: str, entity_id: int, pdf: Path, original_hash: str) -> dict:
-    plain, (start, end, text) = entity_source(tagged, entity_id)
-    result = dict(entity_id=entity_id, text=text, status='unmapped', boxes=[], message=None)
+def locate_entity(tagged: str, entity_id: int, pdf: Path, original_hash: str) -> EntityLocation:
+    """Match a tagged entity to the preserved OCR text and character geometry.
 
-    def unavailable(message):
-        return dict(result, message=message)
+    Return one enclosing normalized box per page, with mapped/partial status for
+    complete/incomplete character coverage, or unmapped with no boxes if unavailable.
+    Raise EntityNotFound when the entity ID does not identify exactly one occurrence.
+    """
+    plain, (start, end, text) = entity_source(tagged, entity_id)
+    result: EntityLocation = {
+        'entity_id': entity_id, 'text': text, 'status': 'unmapped', 'boxes': [], 'message': None,
+    }
+
+    def unavailable(message: str) -> EntityLocation:
+        return {**result, 'message': message}
 
     # OCR copies the PDF and sidecar together; edits keep pdf_path pointing at
     # that original artifact directory even when markdown_path changes.
@@ -122,7 +146,8 @@ def locate_entity(tagged: str, entity_id: int, pdf: Path, original_hash: str) ->
         if span is None:
             return unavailable('Текст сущности изменён или не удалось однозначно привязать его к PDF.')
         start, end = span
-        covered, boxes = set(), []
+        covered: set[int] = set()
+        page_boxes: dict[int, list[float]] = {}
         for char in manifest['characters']:
             positions = char.get('markdown_span')
             if positions is None or positions[0] >= end or positions[1] <= start:
@@ -132,12 +157,20 @@ def locate_entity(tagged: str, entity_id: int, pdf: Path, original_hash: str) ->
                     or not 0 <= x0 < x1 <= 1 or not 0 <= y0 < y1 <= 1
                     or not 1 <= char['page'] <= len(manifest['pages'])):
                 continue
-            boxes.append(dict(page=char['page'], bbox_normalized=[x0, y0, x1, y1]))
+            page = char['page']
+            bounds = page_boxes.get(page, [x0, y0, x1, y1])
+            page_boxes[page] = [min(bounds[0], x0), min(bounds[1], y0),
+                                max(bounds[2], x1), max(bounds[3], y1)]
             covered.update(range(max(start, positions[0]), min(end, positions[1])))
-        if not boxes:
+        if not page_boxes:
             return unavailable('Для выбранной сущности нет распознанных символов с координатами.')
+        boxes: list[EntityBox] = [
+            {'page': page, 'bbox_normalized': bounds} for page, bounds in page_boxes.items()
+        ]
         complete = all(i in covered or original[i].isspace() for i in range(start, end))
-        return dict(result, boxes=boxes, status='mapped' if complete else 'partial',
-                    message=None if complete else 'Подсвечена только часть символов: остальные не имеют точных координат OCR.')
+        return {
+            **result, 'boxes': boxes, 'status': 'mapped' if complete else 'partial',
+            'message': None if complete else 'Подсвечена только часть символов: остальные не имеют точных координат OCR.',
+        }
     except (OSError, UnicodeError, ValueError, KeyError, TypeError, IndexError):
         return unavailable('Не удалось прочитать сохранённые координаты OCR.')

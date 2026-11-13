@@ -42,12 +42,8 @@ export default defineComponent({
 
 <template>
   <section class="flex min-h-0 flex-1 flex-col gap-3" aria-label="Сущность в исходном документе">
-    <div class="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm">
-      <span class="rounded bg-white px-2 py-1 font-mono text-amber-900">#{{ selectedEntityId }}</span>
-      <span v-if="loading" role="status" class="text-slate-500">Находим фрагмент в документе…</span>
-      <span v-else-if="geometry" class="min-w-0 break-words font-medium text-slate-800">{{ geometry.text }}</span>
-      <span v-if="geometry?.message || error" role="status" class="w-full text-amber-900">{{ geometry?.message || error }}</span>
-    </div>
+    <p v-if="loading" role="status" class="shrink-0 text-sm text-slate-500">Находим фрагмент в документе…</p>
+    <p v-if="geometry?.message || error" role="status" class="shrink-0 text-sm text-amber-900">{{ geometry?.message || error }}</p>
     <DocumentViewer class="flex-1" :src="src" :highlights="geometry?.boxes ?? []"/>
   </section>
 </template>

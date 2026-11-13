@@ -5,7 +5,7 @@ import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import {faFloppyDisk} from '@fortawesome/free-solid-svg-icons/faFloppyDisk'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
-import type {ReportDocument} from '../api'
+import {pdfUrl, type ReportDocument} from '../api'
 import DocumentViewer from './viewers/DocumentViewer.vue'
 import MarkdownViewer from './viewers/MarkdownViewer.vue'
 import EntityPdfPreview from './viewers/EntityPdfPreview.vue'
@@ -30,7 +30,10 @@ export default defineComponent({
   },
   computed: {
     ...mapState('editor', ['loading', 'saving', 'error', 'revision']),
-    ...mapGetters('editor', {dirty: 'dirty', url: 'pdfUrl'}),
+    ...mapGetters('editor', ['dirty']),
+    url(): string {
+      return pdfUrl(this.reportId, this.document.id)
+    },
     content: {
       get(): string {
         return this.$store.state.editor.content
@@ -123,7 +126,8 @@ export default defineComponent({
       </div>
     </div>
 
-    <p v-if="error && !pdfEntities" class="mb-4 max-h-[20dvh] shrink-0 overflow-auto rounded bg-red-50 p-3 text-red-700" role="alert">
+    <p v-if="error && !pdfEntities" class="mb-4 max-h-[20dvh] shrink-0 overflow-auto rounded bg-red-50 p-3 text-red-700"
+       role="alert">
       {{ error }}</p>
 
     <EntityPdfPreview v-if="pdfEntities" :report-id="reportId" :document-id="document.id"

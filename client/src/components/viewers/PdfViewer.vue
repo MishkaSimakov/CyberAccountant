@@ -23,10 +23,13 @@ export default defineComponent({
       safariGestureScale: undefined as number | undefined,
       resizeObserver: undefined as ResizeObserver | undefined,
       revealPending: false,
+      highlightAnimationStartedAt: undefined as number | undefined,
     }
   },
   watch: {
-    highlights() { this.revealHighlights() },
+    highlights() {
+      this.revealHighlights()
+    },
   },
   async mounted() {
     const container = this.$refs.container as HTMLDivElement
@@ -87,6 +90,11 @@ export default defineComponent({
       this.paintHighlights()
     },
     paintHighlights() {
+      // In PDF units of padding so it scales with the document.
+      const margin = 2;
+      const bounceScales = [1, 1.5, .9, 1.1, 1]
+      const bounceDuration = 700
+
       const pages = this.$refs.pages as HTMLDivElement | undefined
       if (!pages || !this.viewer || this.lifetime.signal.aborted) return
       pages.querySelectorAll('[data-entity-highlight]').forEach(element => element.remove())
@@ -110,15 +118,36 @@ export default defineComponent({
         svg.setAttribute('data-entity-highlight', String(page))
         svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3'
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-        path.setAttribute('d', boxes.map(({bbox_normalized: [x0, y0, x1, y1]}) =>
-            `M${x0} ${y0}H${x1}V${y1}H${x0}Z`).join(' '))
+
+        const {width, height} = view.viewport.clone({scale: 1})
+        const marginX = margin / width, marginY = margin / height
+        path.setAttribute('d', boxes.map(({bbox_normalized: [x0, y0, x1, y1]}) => {
+          const left = Math.max(0, x0 - marginX), top = Math.max(0, y0 - marginY)
+          const right = Math.min(1, x1 + marginX), bottom = Math.min(1, y1 + marginY)
+          return `M${left} ${top}H${right}V${bottom}H${left}Z`
+        }).join(' '))
         path.setAttribute('fill', '#facc15')
-        path.setAttribute('fill-opacity', '.4')
-        path.setAttribute('stroke', '#b45309')
-        path.setAttribute('stroke-width', '.6')
+        path.setAttribute('fill-opacity', '.5')
+        path.setAttribute('stroke', '#92400e')
+        path.setAttribute('stroke-width', '2.5')
         path.setAttribute('vector-effect', 'non-scaling-stroke')
         svg.append(path)
         canvas.append(svg)
+        if (page === this.highlights[0]?.page && !this.loading
+            && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          // Resume the opening bounce across page repaints without restarting it.
+          this.highlightAnimationStartedAt ??= performance.now()
+          const elapsed = performance.now() - this.highlightAnimationStartedAt
+          if (elapsed < bounceDuration) {
+            path.style.transformBox = 'fill-box'
+            path.style.transformOrigin = 'center'
+            const animation = path.animate(
+                bounceScales.map(scale => ({transform: `scale(${scale})`})),
+                {duration: bounceDuration, easing: 'ease-out'},
+            )
+            animation.currentTime = elapsed
+          }
+        }
       }
       const first = this.highlights[0]
       if (!this.revealPending || !first || this.loading) return
@@ -129,7 +158,7 @@ export default defineComponent({
       const pageRect = canvas.getBoundingClientRect(), containerRect = container.getBoundingClientRect()
       const [x0, y0, x1, y1] = first.bbox_normalized
       container.scrollTo({
-        top: container.scrollTop + pageRect.top - containerRect.top + (y0 + y1) / 2 * pageRect.height - container.clientHeight * .4,
+        top: container.scrollTop + pageRect.top - containerRect.top + (y0 + y1) / 2 * pageRect.height - container.clientHeight / 2,
         left: container.scrollLeft + pageRect.left - containerRect.left + (x0 + x1) / 2 * pageRect.width - container.clientWidth / 2,
       })
       this.revealPending = false

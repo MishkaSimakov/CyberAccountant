@@ -123,10 +123,10 @@ export default defineComponent({
               <span class="text-sm tabular-nums text-slate-400"><span
                   class="sr-only">Требование </span>{{ requirement.id }}</span>
               <RequirementText
-                  :text="requirement.kind === 'formula' ? requirement.equation : requirement.text || 'Условие не указано'"
+                  :text="requirement.text || (requirement.kind === 'formula' ? 'Название не указано' : 'Условие не указано')"
                   :entity-documents="entityDocuments" @select="$emit('select', $event)"
                   class="min-w-0 whitespace-pre-wrap break-words text-sm leading-7"
-                  :class="[requirement.kind === 'formula' ? 'font-mono' : '', requirement.silenced ? 'text-slate-500' : 'text-slate-800']"/>
+                  :class="requirement.silenced ? 'text-slate-500' : 'text-slate-800'"/>
               <span class="inline-flex h-7 w-10 items-center justify-center rounded border"
                     :class="statusClass(requirement)"
                     :title="statusLabel(requirement)">
@@ -144,9 +144,9 @@ export default defineComponent({
                     statusLabel(requirement)
                   }}</span>
               </div>
-              <p v-if="requirement.kind === 'formula' && requirement.text"
-                 class="mt-3 whitespace-pre-wrap break-words text-sm leading-7">
-                <RequirementText :text="requirement.text" :entity-documents="entityDocuments"
+              <p v-if="requirement.kind === 'formula'"
+                 class="mt-3 whitespace-pre-wrap break-words font-mono text-sm leading-7">
+                <RequirementText :text="requirement.equation" :entity-documents="entityDocuments"
                                  @select="$emit('select', $event)"/>
               </p>
               <p v-if="requirement.error" class="mt-3 whitespace-pre-wrap break-words text-sm text-orange-700">
