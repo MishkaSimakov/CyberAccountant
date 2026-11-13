@@ -14,6 +14,7 @@ from checkier.stage5_relations import generate_relations
 
 from . import storage
 from .models import File, Report
+from .target_row import find_target_row_keys
 
 
 @dataclass
@@ -48,8 +49,9 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
     registry = build_registry(tagged, seed=cfg.seed)
     registry.save(cfg.entities_path)
     period = [report.period_start.toordinal(), report.period_end.toordinal()] if report.period_start else None
+    target_row = find_target_row_keys(tagged, registry, report.target_row)
     scope = run_scope(cfg, registry, mapping, target_contract=report.contract_number,
-                      target_period=period, target_label=report.target_row)
+                      target_period=period, target_label=report.target_row, target_row=target_row)
     if report.target_row and not scope["target_row"]:
         raise ValueError("Не удалось найти проверяемую строку в итоговом отчёте.")
     documents = run_replace(cfg, tagged, registry)

@@ -17,6 +17,23 @@ from app.services import requirements, reports
 from test_documents import api, request, upload
 
 
+@pytest.mark.parametrize("label, matches", [("3 этап, 2026 г.", True), ("3 этап, 2025 г.", False)])
+def test_prepare_verification_uses_exact_report_target(tmp_path, monkeypatch, label, matches):
+    monkeypatch.setattr(storage, "artifact_path", lambda path: tmp_path / path)
+    text = '| 3 этап, 2026 г. | <ent t="amount">100</ent> |\n'
+    (tmp_path / "card.md").write_text(text, encoding="utf-8")
+    report = Report(id=1, target_row=label)
+    file = File(file_id=1, name="card.pdf", role="final_report", version=1, entities_path="card.md")
+
+    if matches:
+        context = verification.prepare_verification(report, [file])
+        assert context.scope["target_row"] == [0]
+        assert context.scope["target_label"] == label
+    else:
+        with pytest.raises(ValueError, match="Не удалось найти проверяемую строку"):
+            verification.prepare_verification(report, [file])
+
+
 @pytest.fixture
 def reviewed(api, monkeypatch):
     report_id, revisions = api
