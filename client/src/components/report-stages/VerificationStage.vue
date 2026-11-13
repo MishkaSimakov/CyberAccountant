@@ -40,7 +40,7 @@ export default defineComponent({
           report.stage === 'requirements' ? 'Не удалось подготовить требования' : 'Не удалось проверить требования'
         }}</h2>
       <p class="mt-3 text-slate-500" role="alert">Во время обработки произошла ошибка. Повторите попытку.</p>
-      <button v-if="report.stage === 'requirements'" type="button"
+      <button type="button"
               class="mt-2 cursor-pointer rounded text-sm text-blue-700 underline underline-offset-2 hover:text-blue-900"
               @click="showingLog = true">Подробнее
       </button>
