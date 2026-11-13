@@ -1,7 +1,15 @@
 import type {Module} from 'vuex'
 import {
-    deleteDocument, getReport, retryDocumentExtraction, runEntityExtraction, runVerification, uploadDocument,
-    type DocumentRole, type ReportDetails, type ReportDocument,
+    deleteDocument,
+    generateRequirements,
+    getReport,
+    retryDocumentExtraction,
+    runEntityExtraction,
+    runVerification,
+    uploadDocument,
+    type DocumentRole,
+    type ReportDetails,
+    type ReportDocument,
 } from '../api'
 import type {RootState} from './index'
 
@@ -50,7 +58,7 @@ export const report: Module<ReportState, RootState> = {
         canAdvance: state => Boolean(!state.advancing && !state.pollError && !state.uploads.length
             && !state.deleting.length && !state.retrying.length
             && state.current?.documents.every(item => item.ocr_status === 'completed')
-            && state.current?.available_actions.some(action => ['run_entity_extraction', 'run_verification'].includes(action))),
+            && state.current?.available_actions.some(action => ['run_entity_extraction', 'generate_requirements', 'run_verification'].includes(action))),
     },
     mutations: {
         reset(state, id: number | null) {
@@ -169,7 +177,8 @@ export const report: Module<ReportState, RootState> = {
             commit('patch', {advancing: true, actionError: '', request: state.request + 1})
             try {
                 const current = await (state.current?.stage === 'documents'
-                    ? runEntityExtraction(state.id) : runVerification(state.id))
+                    ? runEntityExtraction(state.id)
+                    : state.current?.stage === 'verification' ? runVerification(state.id) : generateRequirements(state.id))
                 if (state.session !== session) return
                 commit('patch', {current})
                 commit('reports/upsert', current, {root: true})

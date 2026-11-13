@@ -2,6 +2,7 @@ import {createRouter, createWebHistory} from 'vue-router'
 import ReportPage from './pages/ReportPage.vue'
 import ReportsPage from './pages/ReportsPage.vue'
 import RequirementsPage from './pages/RequirementsPage.vue'
+import RequirementsEditorPage from './pages/RequirementsEditorPage.vue'
 
 export default createRouter({
     history: createWebHistory(),
@@ -17,6 +18,12 @@ export default createRouter({
             path: '/reports/:reportId(\\d+)/requirements',
             name: 'requirements',
             component: RequirementsPage,
+            props: route => ({reportId: Number(route.params.reportId)}),
+        },
+        {
+            path: '/reports/:reportId(\\d+)/requirements/edit',
+            name: 'requirements-edit',
+            component: RequirementsEditorPage,
             props: route => ({reportId: Number(route.params.reportId)}),
         },
         {path: '/:pathMatch(.*)*', redirect: '/'},

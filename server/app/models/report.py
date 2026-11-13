@@ -18,7 +18,8 @@ class Report(Timestamps, Base):
             "(period_start IS NOT NULL AND period_end IS NOT NULL AND period_start <= period_end)",
             name="report_valid_period",
         ),
-        CheckConstraint("stage IN ('documents', 'entities', 'verification')", name="report_valid_stage"),
+        CheckConstraint("stage IN ('documents', 'entities', 'requirements', 'verification')",
+                        name="report_valid_stage"),
         CheckConstraint(
             "processing_status IN ('idle', 'queued', 'running', 'completed', 'failed')",
             name="report_valid_processing_status",

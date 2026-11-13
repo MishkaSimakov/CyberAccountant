@@ -1,42 +1,54 @@
 """Prepare one corpus, collect generator outputs, and evaluate them together."""
 
 import json
-from dataclasses import dataclass
 
 from checkier import PipelineConfig
 from checkier.entities import EntityRegistry, build_registry
-from checkier.formula import collect_ids
+from checkier.formula import BinOp, FormulaError, collect_ids, parse
 from checkier.report import build_report
 from checkier.solver import solve_system
 from checkier.stage3_replace import run_replace
-from checkier.stage5_relations import generate_relations
 
 from . import storage
 from .generators.insurance import generate_insurance
+from .generators.llm import generate_llm
 from .generators.scope import generate_scope
 from .models import File, Report
 from .target_row import find_target_row_keys
-
-
-@dataclass
-class VerificationContext:
-    config: PipelineConfig
-    documents: dict[str, str]
-    registry: EntityRegistry
-    scope: dict
-    mapping: dict
-    report: Report
-
-
-def generate_llm(context: VerificationContext) -> list[dict]:
-    report = context.report
-    settings = dict(context.scope, contract_number=report.contract_number,
-                    period_start=report.period_start.isoformat() if report.period_start else None,
-                    period_end=report.period_end.isoformat() if report.period_end else None)
-    return generate_relations(context.config, context.documents, context.registry, settings)
+from .verification_context import VerificationContext
 
 
 GENERATORS = {"scope": generate_scope, "llm": generate_llm, "insurance": generate_insurance}
+
+
+def validation_registry(files: list[File]) -> EntityRegistry:
+    return build_registry({str(file.file_id): (
+        "card" if file.role == "final_report" else "data",
+        storage.artifact_path(file.entities_path).read_text(encoding="utf-8"),
+    ) for file in files})
+
+
+def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
+    """Check syntax and references without running the solver or any LLM calls."""
+    def boolean_expression(node):
+        if not isinstance(node, BinOp):
+            return False
+        if node.op in {"&&", "||"}:
+            return boolean_expression(node.left) and boolean_expression(node.right)
+        return node.op in {"==", "!=", "<", "<=", ">", ">="}
+
+    try:
+        ast = parse(equation)
+        if not boolean_expression(ast):
+            return "Формула должна содержать сравнение, например #0 == #1 + #2."
+        known = {key for entity in registry.entities for key in (entity.num, entity.mnemonic)}
+        unknown = collect_ids(ast) - known
+        if unknown:
+            return "Неизвестные сущности: " + ", ".join(f"#{key}" if isinstance(key, int) else key
+                                                      for key in sorted(unknown, key=str))
+    except (FormulaError, ValueError, RecursionError) as exc:
+        return str(exc)
+    return None
 
 
 def prepare_verification(report: Report, files: list[File]) -> VerificationContext:

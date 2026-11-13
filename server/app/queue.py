@@ -36,3 +36,7 @@ def enqueue_entities(file_revision_id: int) -> None:
 
 def enqueue_verification(report_id: int) -> None:
     verification_queue().enqueue("app.jobs.verification.process_verification", report_id)
+
+
+def enqueue_requirement_generation(report_id: int) -> None:
+    verification_queue().enqueue("app.jobs.verification.process_requirement_generation", report_id)
