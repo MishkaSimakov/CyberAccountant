@@ -23,6 +23,9 @@ __pycache__/
 # Vite production output
 /client/dist/
 
+# Regenerable CI reports and container logs
+/test-results/
+
 # OCR output can be regenerated from the preserved originals.
 /storage/*/*/versions/*/ocr/
 

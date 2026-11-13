@@ -7,6 +7,7 @@ dist/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+/test-results/
 *.egg-info/
 /server/build/
 /office_sandbox/build/

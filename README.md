@@ -93,3 +93,21 @@ it has no source bind mounts, Node.js, development dependencies or Python packag
 The container connects to PostgreSQL using the internal service name `postgres`; it does not use the local
 database or publish port 5432, so both can run together. Database data is stored in the named
 `postgres_data` volume and survives `docker compose down`. The Compose credentials are for local development.
+
+## Continuous integration
+
+Two GitHub Actions workflows run on pushes, pull requests and manual dispatch:
+
+- **Tests** starts `compose.yaml` and runs all Python tests in a disposable production server
+  container, adding only pytest and mounting the test sources. PostgreSQL, Redis/RQ and real
+  Office sandbox integration tests are enabled. Frontend tests run in the production Dockerfile's
+  Node build stage. Test counts and step outcomes appear in the run summary; the `test-results`
+  artifact contains JUnit reports, test output and container logs. The private scanned-report
+  fixture is not committed, so its test is skipped in CI.
+- **Compose health checks** independently builds and starts `compose.yaml` and `compose.dev.yaml`.
+  Every service must report healthy, including the OCR worker and all five extraction workers.
+  HTTP checks verify the API, frontend module scripts, the development API proxy and the Office
+  sandbox connection from the API. Each job publishes component health and container logs.
+
+Both workflows use fresh Compose volumes, require no API credentials, and remove their containers
+and volumes after each run.
