@@ -1,5 +1,6 @@
 <script lang="ts">
-import {defineAsyncComponent, defineComponent} from 'vue'
+import {defineAsyncComponent, defineComponent, type PropType} from 'vue'
+import type {EntityBox} from '../../api'
 
 export default defineComponent({
   components: {
@@ -7,6 +8,7 @@ export default defineComponent({
   },
   props: {
     src: {type: String, required: true},
+    highlights: {type: Array as PropType<EntityBox[]>, default: () => []},
   },
 })
 </script>
@@ -17,6 +19,6 @@ export default defineComponent({
       <h3 class="font-medium">Документ</h3>
       <a :href="src" target="_blank" rel="noopener" class="text-blue-700 hover:underline">Открыть PDF ↗</a>
     </div>
-    <PdfViewer :key="src" :src="src"/>
+    <PdfViewer :key="src" :src="src" :highlights="highlights"/>
   </section>
 </template>

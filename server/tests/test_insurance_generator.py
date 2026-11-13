@@ -118,6 +118,8 @@ def test_stated_mismatch_is_found_without_changing_generated_formula(documents, 
     documents['card.md'] = documents['card.md'].replace('value="15.00"', 'value="16.00"')
     own, results = run(context_factory(documents))
     assert original == own
+    assert results['requirement_results'][0]['verdict'] == 'false'
+    assert results['relations'][0]['status'] == 'false'
     cell = next(r for r in results['card']['cells'] if r.get('expected') is not None)
     assert cell['status'] == 'mismatch'
     assert Decimal(cell['expected']) == 15 and Decimal(cell['diff']) == 1

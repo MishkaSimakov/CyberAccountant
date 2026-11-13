@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from .. import storage
 from ..database import session_scope
 from ..entities import prepare_entities
+from ..entity_geometry import EntityNotFound, locate_entity
 from ..models import File
 from ..queue import enqueue_ocr
 from ..schemas.documents import Document, MarkdownEdit, MarkdownRevision
@@ -103,6 +104,23 @@ def pdf_document(report_id: int, file_id: int) -> File:
         if not storage.artifact_path(file.pdf_path).is_file():
             raise ServiceError(404, "PDF документа не найден.")
         return file
+
+
+def entity_geometry(report_id: int, file_id: int, entity_id: int) -> dict:
+    with session_scope() as session:
+        report = find_report(session, report_id)
+        file = find_document(session, report_id, file_id)
+        tagged = storage.artifact_path(f'{report_id}/verification/replaced/{file_id}.md')
+        if report.stage not in {'requirements', 'verification'} or not tagged.is_file():
+            raise ServiceError(404, 'Сущности для этого документа ещё не подготовлены.')
+        if not file.pdf_path or not storage.artifact_path(file.pdf_path).is_file():
+            raise ServiceError(409, 'PDF документа ещё не готов.')
+        try:
+            geometry = locate_entity(tagged.read_text(encoding='utf-8'), entity_id,
+                                     storage.artifact_path(file.pdf_path), file.hash)
+        except EntityNotFound as exc:
+            raise ServiceError(404, str(exc)) from exc
+        return dict(geometry, document_revision=file.version)
 
 
 def document_log(report_id: int, file_id: int) -> File:
