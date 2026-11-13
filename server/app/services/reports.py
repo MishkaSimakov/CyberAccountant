@@ -54,7 +54,7 @@ def blockers_for(report: Report, files: list[File], *, extracting: bool = False)
         blockers.append("Загрузите итоговый отчёт.")
     if not any(item.role == "supporting" for item in items):
         blockers.append("Загрузите подтверждающие документы.")
-    if any(item.status in {"queued", "ocr_running"} for item in items):
+    if any(item.status in {"ocr_queued", "ocr_running"} for item in items):
         blockers.append("Дождитесь обработки всех документов.")
     if any(item.status == "failed" for item in items):
         blockers.append("Не удалось извлечь сущности из некоторых документов. Повторите извлечение." if extracting
@@ -68,8 +68,10 @@ def blockers_for(report: Report, files: list[File], *, extracting: bool = False)
                     f"Не удалось найти проверяемую строку «{report.target_row}» в итоговом отчёте. "
                     "Проверьте результат OCR итогового отчёта и при необходимости исправьте распознанный текст."
                 )
-    if extracting and any(item.status in {"ocr_completed", "entities_running"} for item in items):
+    if extracting and any(item.status in {"entities_queued", "entities_running"} for item in items):
         blockers.append("Дождитесь извлечения сущностей из всех документов.")
+    if extracting and any(item.status == "ocr_completed" for item in items):
+        blockers.append("Извлеките сущности из всех документов.")
     names = {item.id: item.name for item in items}
     for group in duplicate_groups_for(items):
         names_text = ", ".join(f"«{names[file_id]}»" for file_id in group)
@@ -84,12 +86,13 @@ def sync_processing_status(session: Session, report: Report) -> None:
     statuses = {file.status for file in report_documents(session, report.id)}
     if report.stage == "entities":
         report.processing_status = (
-            "running" if "entities_running" in statuses else "queued" if "ocr_completed" in statuses
-            else "failed" if "failed" in statuses else "completed" if statuses else "idle"
+            "running" if "entities_running" in statuses else "queued" if "entities_queued" in statuses
+            else "failed" if "failed" in statuses else "idle" if "ocr_completed" in statuses
+            else "completed" if statuses else "idle"
         )
         return
     report.processing_status = (
-        "running" if "ocr_running" in statuses else "queued" if "queued" in statuses
+        "running" if "ocr_running" in statuses else "queued" if "ocr_queued" in statuses
         else "failed" if "failed" in statuses else "completed" if statuses else "idle"
     )
 

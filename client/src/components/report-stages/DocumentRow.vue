@@ -23,9 +23,10 @@ export default defineComponent({
       faFileLines, faTrashCan, faSpinner,
       statusLabels: {
         uploading: 'Загружается…',
-        queued: 'Загружен · в очереди',
+        ocr_queued: 'В очереди распознавания',
         ocr_running: 'Распознаётся',
         ocr_completed: 'Распознан',
+        entities_queued: 'В очереди извлечения сущностей',
         entities_running: 'Извлекаем сущности',
         completed: 'Сущности извлечены',
         failed: 'Ошибка',
@@ -34,7 +35,7 @@ export default defineComponent({
   },
   computed: {
     busy(): boolean {
-      return ['uploading', 'queued', 'ocr_running', 'entities_running'].includes(this.status)
+      return ['uploading', 'ocr_queued', 'ocr_running', 'entities_queued', 'entities_running'].includes(this.status)
     },
     sizeLabel(): string {
       return this.file.size < 1024 * 1024

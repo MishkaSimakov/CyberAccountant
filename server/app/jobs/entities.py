@@ -22,7 +22,7 @@ def process_entities(file_revision_id: int) -> None:
         report_id = file.report_id
         report = find_report(session, report_id, lock=True)
         session.refresh(file)
-        if (report.stage != "entities" or file.status != "ocr_completed"
+        if (report.stage != "entities" or file.status != "entities_queued"
                 or find_document(session, report_id, file.file_id).id != file_revision_id):
             return
         file.status = "entities_running"

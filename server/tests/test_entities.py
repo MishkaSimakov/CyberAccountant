@@ -44,7 +44,7 @@ def ready(api, monkeypatch):
     def enqueue(revision_id):
         with database.session_scope() as session:
             file = session.get(File, revision_id)
-            assert file.status == "ocr_completed"
+            assert file.status == "entities_queued"
             assert session.get(Report, report_id).stage == "entities"
             assert storage.artifact_path(file.markdown_path).read_text(encoding="utf-8") == MARKDOWN
         extraction_ids.append(revision_id)
@@ -70,6 +70,25 @@ def test_extraction_requires_ready_documents_and_rejects_duplicates(api):
     assert "Одинаковые файлы" in response["detail"]
 
 
+def test_completed_ocr_is_not_an_extraction_queue_entry(ready, monkeypatch):
+    report_id, revisions, pending = ready
+    with database.session_scope() as session:
+        session.get(Report, report_id).stage = "entities"
+        reports.sync_processing_status(session, session.get(Report, report_id))
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Extraction must not start before the document is queued")
+
+    monkeypatch.setattr(job, "tag_document", unexpected)
+    job.process_entities(revisions[0])
+    details = request("GET", f"/reports/{report_id}")[1]
+    assert details["processing_status"] == "idle"
+    assert {file["status"] for file in details["documents"]} == {"ocr_completed"}
+    assert details["blockers"] == ["Извлеките сущности из всех документов."]
+    assert details["available_actions"] == []
+    assert pending == []
+
+
 def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     report_id, revisions, pending = ready
     path = f"/reports/{report_id}"
@@ -79,7 +98,9 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     assert response["stage"] == "entities"
     assert response["processing_status"] == "queued"
     assert response["progress"] == {"completed": 0, "total": 2}
-    assert {file["status"] for file in response["documents"]} == {"ocr_completed"}
+    assert {file["status"] for file in response["documents"]} == {"entities_queued"}
+    assert response["blockers"] == ["Дождитесь извлечения сущностей из всех документов."]
+    assert response["available_actions"] == []
     assert pending == revisions
     assert request("POST", path + "/run-entity-extraction")[0] == 200
     assert pending == revisions  # Repeated requests must not duplicate jobs.
@@ -149,7 +170,7 @@ def test_document_retry_leaves_other_failed_documents_untouched(ready):
     status, response = request("POST", retry_path)
     assert status == 200
     assert pending == revisions + [revisions[0]]
-    assert response["documents"][0]["status"] == "ocr_completed"
+    assert response["documents"][0]["status"] == "entities_queued"
     assert response["documents"][0]["error"] is None
     assert response["documents"][1]["status"] == "failed"
     assert response["documents"][1]["error"] == "Extraction failed"

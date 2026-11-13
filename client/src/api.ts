@@ -41,7 +41,7 @@ export interface ReportDocument {
     size: number
     content_type: string
     role: DocumentRole
-    status: 'queued' | 'ocr_running' | 'ocr_completed' | 'entities_running' | 'completed' | 'failed'
+    status: 'ocr_queued' | 'ocr_running' | 'ocr_completed' | 'entities_queued' | 'entities_running' | 'completed' | 'failed'
     markdown_revision: number
     user_edited: boolean
     error: string | null

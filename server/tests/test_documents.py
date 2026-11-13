@@ -70,7 +70,7 @@ def api(db, tmp_path, monkeypatch):
         # A separate session must see the committed row and its saved original.
         with database.session_scope() as session:
             file = session.get(File, revision_id)
-            assert file is not None and file.status == "queued"
+            assert file is not None and file.status == "ocr_queued"
             assert storage.artifact_path(file.path).is_file()
         pending.append(revision_id)
 
@@ -87,7 +87,7 @@ def test_report_and_uploads_survive_across_requests(api):
     assert request("GET", "/reports")[1][0]["id"] == report_id
     status, main = upload(report_id, role="final_report")
     assert status == 201
-    assert main["status"] == "queued"
+    assert main["status"] == "ocr_queued"
     assert "ocr_status" not in main
     assert "extraction_status" not in main
     assert upload(report_id, role="final_report")[0] == 409
@@ -100,7 +100,7 @@ def test_report_and_uploads_survive_across_requests(api):
     with database.session_scope() as session:
         files = list(session.scalars(select(File)))
         assert len(files) == 26
-        assert all(file.status == "queued" and file.version == 1 for file in files)
+        assert all(file.status == "ocr_queued" and file.version == 1 for file in files)
     details = request("GET", f"/reports/{report_id}")[1]
     assert details["progress"] == {"completed": 0, "total": 26}
     assert details["processing_status"] == "queued"
