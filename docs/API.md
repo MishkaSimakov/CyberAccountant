@@ -11,17 +11,13 @@ The frontend uses the same API contract with stubs and the real processing pipel
 
 - POST /reports
   Create a report. Accepts a name and optional context: contract number, reporting period, and target row.
-  `target_row` accepts a label (`"3 этап, 2026 г."`) or a positive row number (`3` or `"3"`).
-  Numbers start at 1 among data rows of the final report's monetary table; leading headers,
-  the Markdown separator, and column-number rows are excluded. For example, `{"name": "КФЗ", "target_row": 3}`
-  selects the third data row. If there are multiple monetary tables or the row is missing,
-  verification reports an error instead of choosing an arbitrary row. The stored/returned value is a string.
-
+  
 - GET /reports/{report_id}
-  Return report details, document statuses, processing progress, blockers, and available actions. This is the main polling endpoint.
+  Return report details, document statuses, processing progress, blockers, and available actions. This is the main
+  polling endpoint.
 
 - PATCH /reports/{report_id}
-  Update the report name, main file, or context before verification starts. 
+  Update the report name, main file, or context before verification starts.
 
 - POST /reports/{report_id}/run-entity-extraction
   Start entity extraction across documents. Requires all documents to have completed OCR with no remaining file errors.
@@ -30,18 +26,22 @@ The frontend uses the same API contract with stubs and the real processing pipel
   Generate and check requirements. Requires all documents to have completed entity extraction.
 
 - GET /reports/{report_id}/summary
-  Return the overall conclusion, counts of passed, failed, unverified, and suppressed requirements, and a short explanation of the main problems. Suppression is counted separately from the original verdict.
+  Return the overall conclusion, counts of passed, failed, unverified, and suppressed requirements, and a short
+  explanation of the main problems. Suppression is counted separately from the original verdict.
 
 ## Documents
 
 - POST /reports/{report_id}/documents
-  Upload one file using multipart/form-data. Accepts role: final_report or supporting. Return the document ID after upload; OCR continues asynchronously.
+  Upload one file using multipart/form-data. Accepts role: final_report or supporting. Return the document ID after
+  upload; OCR continues asynchronously.
 
 - GET /reports/{report_id}/documents/{document_id}
-  Return metadata, role, OCR and extraction statuses, current revisions, user-edited flags, and concrete processing errors.
+  Return metadata, role, OCR and extraction statuses, current revisions, user-edited flags, and concrete processing
+  errors.
 
 - DELETE /reports/{report_id}/documents/{document_id}
-  Delete a document, including a failed upload. The user can upload it again afterward. Available during the upload stage.
+  Delete a document, including a failed upload. The user can upload it again afterward. Available during the upload
+  stage.
 
 - GET /reports/{report_id}/documents/{document_id}/original
   Serve the original file for download or preview.
@@ -56,7 +56,8 @@ The frontend uses the same API contract with stubs and the real processing pipel
   Return markdown containing <entity> tags, structured entity parameters, and the annotation revision.
 
 - POST /reports/{report_id}/documents/{document_id}/annotations
-  Save edited entity annotations as a new revision. Validate tag syntax, entity IDs, types, and values. Accepts base_revision.
+  Save edited entity annotations as a new revision. Validate tag syntax, entity IDs, types, and values. Accepts
+  base_revision.
 
 ## Requirements
 
@@ -64,10 +65,12 @@ The frontend uses the same API contract with stubs and the real processing pipel
   List requirements. Filtering by verdict, type, category, and suppression status work on the client's side.
 
 - POST /reports/{report_id}/requirements/{requirement_id}
-  Edit a formula or natural-language condition. Accepts base_revision. Create a revision and automatically queue verification.
+  Edit a formula or natural-language condition. Accepts base_revision. Create a revision and automatically queue
+  verification.
 
 - POST /reports/{report_id}/requirements/{requirement_id}/suppression
-  Suppress an LLM-generated requirement and record a reason. Preserve the requirement and its original verification result.
+  Suppress an LLM-generated requirement and record a reason. Preserve the requirement and its original verification
+  result.
 
 - DELETE /reports/{report_id}/requirements/{requirement_id}/suppression
   Remove suppression and restore the requirement's contribution to the summary.
