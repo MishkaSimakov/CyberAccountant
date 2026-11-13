@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -48,6 +49,10 @@ def log_model_output(text: str, model: str, schema_name: str) -> None:
 
 class LLMError(RuntimeError):
     pass
+
+
+# Extra attempts for transient transport failures (connection reset, timeout).
+TRANSPORT_RETRIES = 3
 
 
 def _raise_if_incomplete(data: dict) -> None:
@@ -211,14 +216,37 @@ def call_llm(
                 log_model_output("".join(chunks), model, schema_name)
             raise
 
+    def request_text_resilient() -> str:
+        """Retry transient transport failures (connection reset, timeout).
+
+        Long non-streaming requests sit idle while the model generates and are
+        routinely dropped by the provider or middleboxes; these are safe to
+        retry because a reset means no response was produced."""
+        transport_errors = (requests.ConnectionError, requests.Timeout)
+        for attempt in range(TRANSPORT_RETRIES + 1):
+            try:
+                return request_text()
+            except transport_errors as exc:
+                if attempt == TRANSPORT_RETRIES:
+                    raise LLMError(
+                        f"LLM request failed after {TRANSPORT_RETRIES + 1} attempts: {exc}"
+                    ) from exc
+                delay = 2 ** attempt
+                logger.warning(
+                    "LLM request failed (%s); retrying in %ss (attempt %d/%d)",
+                    exc, delay, attempt + 1, TRANSPORT_RETRIES + 1,
+                )
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
     try:
-        text = request_text()
+        text = request_text_resilient()
     except LLMError as exc:
         # Some endpoints/models reject response_format; retry without it.
         if schema is None or "response_format" not in str(exc):
             raise
-        payload.pop("response_format")
-        text = request_text()
+        payload.pop("text", None)
+        text = request_text_resilient()
     log_model_output(text, model, schema_name)
     return text
 
