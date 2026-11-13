@@ -153,6 +153,6 @@ export default defineComponent({
                            @select="selectedEntityId = $event"/>
     </template>
     <MarkdownEditor v-if="selectedDocument" :report-id="reportId" :document="selectedDocument"
-                    readonly entities :selected-entity-id="selectedEntityId" @close="selectedEntityId = undefined"/>
+                    readonly entities pdf-entities :selected-entity-id="selectedEntityId" @close="selectedEntityId = undefined"/>
   </main>
 </template>

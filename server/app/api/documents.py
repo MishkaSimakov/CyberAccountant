@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import FileResponse
 
-from ..schemas.documents import Document, MarkdownEdit, MarkdownRevision
+from ..schemas.documents import Document, EntityGeometry, MarkdownEdit, MarkdownRevision
 from ..services import documents as service
 from ..services.entities import run_entity_extraction as start_entity_extraction
 from ..services.reports import report_details
@@ -52,6 +52,11 @@ def document_pdf(report_id: int, document_id: int):
 @router.get("/reports/{report_id}/documents/{document_id}/markdown", response_model=MarkdownRevision)
 def document_markdown(report_id: int, document_id: int):
     return service.document_markdown(report_id, document_id)
+
+
+@router.get('/reports/{report_id}/documents/{document_id}/entities/{entity_id}/geometry', response_model=EntityGeometry)
+def entity_geometry(report_id: int, document_id: int, entity_id: int):
+    return service.entity_geometry(report_id, document_id, entity_id)
 
 
 @router.get("/reports/{report_id}/documents/{document_id}/log")
