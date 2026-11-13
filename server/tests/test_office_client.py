@@ -57,6 +57,7 @@ class OfficeClientTests(unittest.TestCase):
         self.assertEqual(request.full_url, 'http://office_sandbox:8001/convert/xlsx')
         self.assertEqual(request.data, b'workbook bytes')
         self.assertEqual(request.method, 'POST')
+        self.assertEqual(opener.open.call_args.kwargs['timeout'], 180 + client.QUEUE_TIMEOUT)
         self.assertEqual(self.destination.read_bytes(), self.artifacts['preview.pdf'])
         self.assertEqual(self.destination.with_name('recalculated.xlsx').read_bytes(),
                          self.artifacts['recalculated.xlsx'])

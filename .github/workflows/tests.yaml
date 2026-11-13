@@ -19,6 +19,8 @@ jobs:
     env:
       COMPOSE_FILE: compose.yaml
       COMPOSE_PROJECT_NAME: ci-tests
+      OFFICE_WORKERS: "2"
+      OCR_WORKERS: "2"
     defaults:
       run:
         shell: bash

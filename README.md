@@ -42,6 +42,44 @@ to use its own services, so local PostgreSQL is not needed. Tables are initializ
 from the models before the API starts. The development project uses its own database volume.
 Stop one mode before starting the other because both publish API port 8000.
 
+## Parallel document processing
+
+See [the OCR guide](docs/OCR.md#запуск-приложения-и-параллельная-обработка)
+for arguments, configuration precedence, document upload, single-file conversion,
+and commands to inspect or stop the workers.
+
+Office conversions and OCR jobs have independent process limits. Both default to **1**,
+because each LibreOffice/OCR process consumes additional memory. Documents keep their
+normal processing order within each job; different documents can run concurrently.
+
+```sh
+# Production stack at http://localhost:8000:
+python scripts/start.py --office-workers 2 --ocr-workers 3
+# Development stack with Vite at http://localhost:5173:
+python scripts/start.py --dev --office-workers 2 --ocr-workers 3
+```
+
+The launcher uses Docker Compose (or Podman Compose if Docker is not installed),
+preserves an existing `.env`, and creates an empty `.env` if needed. Counts can also
+be set as `OFFICE_WORKERS` and `OCR_WORKERS` in `.env` or the shell environment for
+ordinary Compose commands. Launcher flags override those settings.
+Project names default to `cyberaccountant` / `cyberaccountant-dev`, including when
+the checkout path contains Cyrillic; `COMPOSE_PROJECT_NAME` can override the name.
+The command starts the application; upload documents through the site to enqueue
+processing. Re-running the launcher does not reprocess existing documents or wait
+for the OCR queue to finish.
+
+Each Office slot starts its own existing subprocess and LibreOffice profile in a
+separate temporary directory, with an independent UNO pipe and home directory.
+Excess requests wait for a slot instead of immediately
+failing with `503`. Slot wait and conversion are each bounded to 180 seconds; the HTTP
+client allows the wait in addition to its conversion timeout. OCR uses the specified
+number of independent RQ processes consuming the same queue. These settings do not
+change the extraction/verification worker pool.
+
+Container RAM, CPU, PID and tmpfs limits still apply to all processes combined.
+Increase those limits when deliberately raising worker counts beyond what they support.
+
 ## Database
 
 The database layer uses SQLAlchemy and Psycopg 3. Its four tables follow `docs/DESIGN.md`.
