@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
+import requests
 
 from checkier import llm
 from checkier.file_log import append_log, file_log_run
@@ -78,19 +79,58 @@ def test_streaming_output_is_logged(tmp_path, monkeypatch):
     assert files[0].read_bytes() == output.encode("utf-8")
 
 
-def test_schema_fallback_response_is_logged(tmp_path, monkeypatch):
+def test_schema_rejection_is_not_retried_without_schema(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     calls = []
 
     def post(payload, timeout):
         calls.append(dict(payload))
-        if "response_format" in payload:
-            raise llm.LLMError("API 400: response_format unsupported")
+        raise llm.LLMError("API 400: text.format must contain a JSON schema")
+
+    monkeypatch.setattr(llm, "_post", post)
+    with pytest.raises(llm.LLMError, match="API 400"):
+        llm.call_llm_json("prompt", "test-model", schema=RELATIONS_SCHEMA, max_retries=0)
+    assert len(calls) == 1
+    assert "text" in calls[0]
+    assert not list((tmp_path / "llm_outputs").glob("*.txt"))
+
+
+@pytest.mark.parametrize("failures", [0, 2, llm.TRANSPORT_RETRIES + 1])
+def test_transport_errors_are_retried_with_backoff(monkeypatch, failures):
+    monkeypatch.setattr(llm.time, "sleep", lambda seconds: None)
+    calls = 0
+
+    def post(payload, timeout):
+        nonlocal calls
+        calls += 1
+        if calls <= failures:
+            raise requests.ConnectionError("Connection reset by peer")
+        return {"output_text": "ok"}
+
+    monkeypatch.setattr(llm, "_post", post)
+    if failures <= llm.TRANSPORT_RETRIES:
+        assert llm.call_llm("prompt", "test-model") == "ok"
+        assert calls == failures + 1
+    else:
+        with pytest.raises(llm.LLMError, match="failed after .* attempts"):
+            llm.call_llm("prompt", "test-model")
+        assert calls == llm.TRANSPORT_RETRIES + 1
+
+
+def test_schema_uses_responses_text_format(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    payloads = []
+
+    def post(payload, timeout):
+        payloads.append(payload)
         return {"output_text": "[]"}
 
     monkeypatch.setattr(llm, "_post", post)
     assert llm.call_llm_json("prompt", "test-model", schema=RELATIONS_SCHEMA) == []
-    assert len(calls) == 2
+    assert len(payloads) == 1
+    fmt = payloads[0]["text"]["format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["schema"] == RELATIONS_SCHEMA
     files = list((tmp_path / "llm_outputs").glob("*.txt"))
     assert len(files) == 1
     assert files[0].read_bytes() == b"[]"
@@ -191,7 +231,7 @@ def test_file_log_keeps_prompts_when_requests_fail_or_use_schema_fallback(tmp_pa
         nonlocal calls
         calls += 1
         assert path.read_bytes().endswith(prompt.encode("utf-8") + b"\n")
-        if fallback and "response_format" not in payload:
+        if fallback and "text" not in payload:
             return {"output_text": "[]"}
         raise llm.LLMError("API 400: response_format unsupported" if fallback else "API unavailable")
 

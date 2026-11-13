@@ -1,4 +1,4 @@
-"""Thin OpenRouter client with JSON-schema structured output, streaming and retries."""
+"""OpenAI-compatible Responses client with structured output and retries."""
 
 from __future__ import annotations
 
@@ -6,9 +6,11 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import jsonschema
@@ -50,11 +52,26 @@ class LLMError(RuntimeError):
     pass
 
 
+# Extra attempts for transient transport failures (connection reset, timeout).
+TRANSPORT_RETRIES = 3
+
+
+def _raise_if_incomplete(data: dict) -> None:
+    """Reject truncated responses before their partial text reaches the parser."""
+    if data.get("status") == "incomplete" or data.get("incomplete_details"):
+        details = data.get("incomplete_details") or {}
+        raise LLMError(f"model output is incomplete/truncated: {details}")
+    for choice in data.get("choices") or []:
+        if choice.get("finish_reason") == "length":
+            raise LLMError("model output is truncated: finish_reason='length'")
+
+
 def _extract_text(data: dict) -> str:
     """Tolerantly pull the assistant text out of Responses- or Chat-shaped replies.
 
     Reasoning/thinking blocks are skipped: only ``output_text`` / message
     content is returned, never chain-of-thought."""
+    _raise_if_incomplete(data)
     if isinstance(data.get("output_text"), str):
         return data["output_text"]
     # OpenAI Responses API: {"output": [{"type": "message", "content": [...]}]}
@@ -73,8 +90,21 @@ def _extract_text(data: dict) -> str:
     raise LLMError(f"could not extract text from response: {str(data)[:500]}")
 
 
+def _endpoint_for_url(base_url: str) -> str:
+    """Append the Responses endpoint to a versioned API base URL."""
+    parsed = urlparse(base_url)
+    path = parsed.path.rstrip("/")
+    if path.endswith(("/responses", "/chat/completions")):
+        raise LLMError(
+            "AI_API_URL must be a base URL such as https://api.example.com/v1, "
+            "not a /responses or /chat/completions endpoint"
+        )
+    return parsed._replace(path=f"{path}/responses").geturl()
+
+
 def _post(payload: dict, timeout: float) -> dict:
-    url, key = load_api_credentials()
+    base_url, key = load_api_credentials()
+    url = _endpoint_for_url(base_url)
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {key}"},
@@ -96,7 +126,8 @@ def _post_streaming(
     Handles both the Responses API (``response.output_text.delta``) and Chat
     Completions (``choices[].delta.content``) streaming shapes.
     """
-    url, key = load_api_credentials()
+    base_url, key = load_api_credentials()
+    url = _endpoint_for_url(base_url)
     payload = dict(payload)
     payload["stream"] = True
     resp = requests.post(
@@ -110,6 +141,7 @@ def _post_streaming(
         raise LLMError(f"API {resp.status_code}: {resp.text[:500]}")
     resp.encoding = "utf-8"  # force UTF-8; default guess mangles Cyrillic
     chunks: list[str] = []
+    incomplete: str | None = None
     for raw in resp.iter_lines(decode_unicode=True):
         if not raw or not raw.startswith("data:"):
             continue
@@ -122,6 +154,9 @@ def _post_streaming(
             continue
         # Skip reasoning/thinking deltas — only surface final answer text.
         etype = event.get("type", "")
+        response = event.get("response") or {}
+        if etype == "response.incomplete" or response.get("status") == "incomplete":
+            incomplete = str(response.get("incomplete_details") or event.get("error") or {})
         if "reasoning" in etype:
             continue
         # Responses API streaming delta
@@ -132,11 +167,15 @@ def _post_streaming(
                 on_token(delta)
         # Chat completions streaming delta
         for choice in event.get("choices", []):
+            if choice.get("finish_reason") == "length":
+                incomplete = "finish_reason='length'"
             d = (choice.get("delta") or {}).get("content")
             if isinstance(d, str):
                 chunks.append(d)
                 if on_token:
                     on_token(d)
+    if incomplete is not None:
+        raise LLMError(f"model output is incomplete/truncated: {incomplete}")
     return "".join(chunks)
 
 
@@ -149,25 +188,27 @@ def call_llm(
         on_token: Callable[[str], None] | None = None,
         reasoning: str = "disabled",
 ) -> str:
-    """Single LLM call. If *schema* is given, request structured JSON output
-    with strict mode; transparently falls back to plain prompting when the
-    endpoint rejects the structured-output field. Streams tokens to on_token
-    when provided.
+    """Single LLM call with optional strict JSON Schema structured output.
 
-    reasoning: "disabled" (default, no thinking tokens — fast/cheap),
-    "enabled" (model may reason), or "exclude" (reason but strip from output).
+    Schema rejection is surfaced to the caller; silently switching to an
+    unconstrained request would make structured-output guarantees meaningless.
+    Streams tokens to on_token when provided.
+
+    reasoning: "disabled" requests minimum effort ("low"), "enabled" uses
+    the model default, and "exclude" hides reasoning from parsed output.
     """
     payload: dict = {"model": model, "input": prompt}
-    # Control reasoning/thinking token generation. "disabled" avoids the
-    # latency + token cost of chain-of-thought for structured tasks.
+    # Portable APIs do not guarantee that reasoning can be fully disabled.
     if reasoning == "disabled":
-        payload["reasoning"] = {"enabled": False}
-    elif reasoning == "exclude":
-        payload["reasoning"] = {"exclude": True}
+        payload["reasoning"] = {"effort": "low"}
     if schema is not None:
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+        payload["text"] = {
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "schema": schema,
+                "strict": True,
+            }
         }
 
     def request_text() -> str:
@@ -187,14 +228,37 @@ def call_llm(
                 log_model_output("".join(chunks), model, schema_name)
             raise
 
+    def request_text_resilient() -> str:
+        """Retry transient transport failures (connection reset, timeout).
+
+        Long non-streaming requests sit idle while the model generates and are
+        routinely dropped by the provider or middleboxes; these are safe to
+        retry because a reset means no response was produced."""
+        transport_errors = (requests.ConnectionError, requests.Timeout)
+        for attempt in range(TRANSPORT_RETRIES + 1):
+            try:
+                return request_text()
+            except transport_errors as exc:
+                if attempt == TRANSPORT_RETRIES:
+                    raise LLMError(
+                        f"LLM request failed after {TRANSPORT_RETRIES + 1} attempts: {exc}"
+                    ) from exc
+                delay = 2 ** attempt
+                logger.warning(
+                    "LLM request failed (%s); retrying in %ss (attempt %d/%d)",
+                    exc, delay, attempt + 1, TRANSPORT_RETRIES + 1,
+                )
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
     try:
-        text = request_text()
+        text = request_text_resilient()
     except LLMError as exc:
         # Some endpoints/models reject response_format; retry without it.
         if schema is None or "response_format" not in str(exc):
             raise
-        payload.pop("response_format")
-        text = request_text()
+        payload.pop("text", None)
+        text = request_text_resilient()
     log_model_output(text, model, schema_name)
     return text
 
@@ -202,6 +266,13 @@ def call_llm(
 def _json_from_text(text: str) -> dict | list:
     """Parse JSON with optional surrounding prose or (possibly unclosed) fences."""
     text = text.strip()
+    # Strip Markdown fences if present, including a missing closing fence.
+    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if m:
+        text = m.group(1).strip()
+    else:
+        text = re.sub(r"^```(?:json)?\s*", "", text, count=1)
+        text = re.sub(r"\s*```$", "", text, count=1).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
