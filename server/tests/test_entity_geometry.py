@@ -42,7 +42,7 @@ def test_repeated_amount_maps_only_to_the_selected_occurrence(repeated_pdf):
     first = locate_entity(tagged_occurrence(md, '650000.00'), 7, pdf, digest)
     second = locate_entity(tagged_occurrence(md, '650000.00', 1), 7, pdf, digest)
     assert first['status'] == second['status'] == 'mapped'
-    assert len(first['boxes']) == len(second['boxes']) == 9
+    assert len(first['boxes']) == len(second['boxes']) == 1
     assert max(b['bbox_normalized'][3] for b in first['boxes']) < min(b['bbox_normalized'][1] for b in second['boxes'])
     assert all(b['page'] == 1 for b in second['boxes'])
 
@@ -80,7 +80,7 @@ def test_missing_character_is_reported_as_partial(repeated_pdf):
     sidecar.write_text(json.dumps(data), encoding='utf-8')
     result = locate_entity(tagged_occurrence(md, '650000.00', 1), 7, pdf, digest)
     assert result['status'] == 'partial'
-    assert len(result['boxes']) == 8
+    assert len(result['boxes']) == 1
     assert result['message']
 
 
@@ -110,7 +110,7 @@ def test_unique_account_survives_corrupted_label_and_reordered_blocks(tmp_path):
     result = locate_entity(tagged_occurrence(reviewed, '109.60'), 7,
                            output.parent / data['preview_pdf'], hashlib.sha256(source.read_bytes()).hexdigest())
     assert result['status'] == 'mapped'
-    assert len(result['boxes']) == 6
+    assert len(result['boxes']) == 1
     assert all(b['page'] == 1 and b['bbox_normalized'][3] < .15 for b in result['boxes'])
 
 
@@ -128,7 +128,8 @@ def test_unique_value_fallback_refuses_duplicates_fragments_edits_and_short_valu
     assert source_span(reviewed, original, start, start + len(value)) is None
 
 
-def test_unicode_offsets_and_one_entity_on_two_pages(tmp_path):
+@pytest.mark.parametrize('second_page', [1, 2])
+def test_unicode_offsets_and_merged_entity_boxes_per_page(tmp_path, second_page):
     assets = tmp_path / 'document.assets'
     assets.mkdir()
     pdf = assets / 'preview.pdf'
@@ -136,15 +137,23 @@ def test_unicode_offsets_and_one_entity_on_two_pages(tmp_path):
     md = '😀 Значение: 12\n34'
     (tmp_path / 'document.md').write_text(md, encoding='utf-8', newline='')
     start = md.index('12')
-    characters = [dict(markdown_span=[start + i, start + i + 1], page=1 if i < 2 else 2,
-                       bbox_normalized=[.1 + .05 * i, .2, .14 + .05 * i, .25]) for i in (0, 1, 3, 4)]
+    characters = [dict(markdown_span=[start + i, start + i + 1], page=1 if i < 2 else second_page,
+                       bbox_normalized=[.1 + .05 * i, .2 if i < 2 else .3,
+                                        .14 + .05 * i, .25 if i < 2 else .35]) for i in (0, 1, 3, 4)]
     data = dict(schema_version='2.0', source={'sha256': 'hash'}, preview_pdf='document.assets/preview.pdf',
                 markdown={'path': 'document.md', 'sha256': hashlib.sha256(md.encode()).hexdigest()},
                 pages=[{}, {}], characters=characters)
     (tmp_path / 'document.boxes.json').write_text(json.dumps(data), encoding='utf-8')
     result = locate_entity(tagged_occurrence(md, '12\n34'), 7, pdf, 'hash')
     assert result['status'] == 'mapped'
-    assert {b['page'] for b in result['boxes']} == {1, 2}
+    if second_page == 1:
+        assert len(result['boxes']) == 1
+        assert result['boxes'][0]['page'] == 1
+        assert result['boxes'][0]['bbox_normalized'] == pytest.approx([.1, .2, .34, .35])
+    else:
+        assert [b['page'] for b in result['boxes']] == [1, 2]
+        assert result['boxes'][0]['bbox_normalized'] == pytest.approx([.1, .2, .19, .25])
+        assert result['boxes'][1]['bbox_normalized'] == pytest.approx([.25, .3, .34, .35])
 
 
 @pytest.mark.parametrize('rotation', [0, 90, 180, 270])
@@ -160,13 +169,18 @@ def test_cropbox_and_rotation_keep_visible_normalized_geometry(tmp_path, rotatio
     result = locate_entity(tagged_occurrence(output.read_text(encoding='utf-8'), '123.45'), 7,
                            output.parent / data['preview_pdf'], hashlib.sha256(source.read_bytes()).hexdigest())
     assert result['status'] == 'mapped'
+    assert len(result['boxes']) == 1
     with fitz.open(source) as doc:
         expected = doc[0].search_for('123.45')[0] * doc[0].rotation_matrix
         rect = doc[0].rect
         x0 = min(b['bbox_normalized'][0] for b in result['boxes']) * rect.width
         y0 = min(b['bbox_normalized'][1] for b in result['boxes']) * rect.height
+        x1 = result['boxes'][0]['bbox_normalized'][2] * rect.width
+        y1 = result['boxes'][0]['bbox_normalized'][3] * rect.height
         assert abs(x0 - expected.x0) < 2
         assert abs(y0 - expected.y0) < 2
+        assert abs(x1 - expected.x1) < 2
+        assert abs(y1 - expected.y1) < 2
 
 
 def test_api_reuses_original_geometry_after_an_edited_revision(api, repeated_pdf):
@@ -195,6 +209,6 @@ def test_api_reuses_original_geometry_after_an_edited_revision(api, repeated_pdf
     assert status == 200
     assert result['status'] == 'mapped'
     assert result['document_revision'] == 2
-    assert len(result['boxes']) == 9
+    assert len(result['boxes']) == 1
     assert request('GET', endpoint.replace('/7/', '/999/'))[0] == 404
     assert request('GET', endpoint.replace(f'/documents/{file_id}/', '/documents/99999/'))[0] == 404
