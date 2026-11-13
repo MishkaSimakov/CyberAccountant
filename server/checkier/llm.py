@@ -1,4 +1,4 @@
-"""OpenAI-compatible Responses/Chat client with structured output and retries."""
+"""OpenAI-compatible Responses client with structured output and retries."""
 
 from __future__ import annotations
 
@@ -91,41 +91,15 @@ def _extract_text(data: dict) -> str:
 
 
 def _endpoint_for_url(base_url: str) -> str:
-    """Resolve a versioned API base URL, accepting legacy full endpoints too."""
+    """Append the Responses endpoint to a versioned API base URL."""
     parsed = urlparse(base_url)
     path = parsed.path.rstrip("/")
     if path.endswith(("/responses", "/chat/completions")):
-        return base_url
+        raise LLMError(
+            "AI_API_URL must be a base URL such as https://api.example.com/v1, "
+            "not a /responses or /chat/completions endpoint"
+        )
     return parsed._replace(path=f"{path}/responses").geturl()
-
-
-def _payload_for_url(payload: dict, url: str) -> dict:
-    """Translate the internal Responses payload for Chat Completions APIs."""
-    if not urlparse(url).path.rstrip("/").endswith("/chat/completions"):
-        return payload
-
-    chat_payload = dict(payload)
-    prompt = chat_payload.pop("input")
-    chat_payload["messages"] = [{"role": "user", "content": prompt}]
-    # Convert portable Responses reasoning effort to its Chat Completions name.
-    reasoning = chat_payload.pop("reasoning", None)
-    if reasoning and reasoning.get("effort"):
-        chat_payload["reasoning_effort"] = reasoning["effort"]
-
-    text = chat_payload.pop("text", None)
-    if text is not None:
-        fmt = text["format"]
-        if fmt.get("type") != "json_schema":
-            raise LLMError(f"unsupported structured output format: {fmt.get('type')!r}")
-        chat_payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": fmt["name"],
-                "schema": fmt["schema"],
-                "strict": fmt["strict"],
-            },
-        }
-    return chat_payload
 
 
 def _post(payload: dict, timeout: float) -> dict:
@@ -134,7 +108,7 @@ def _post(payload: dict, timeout: float) -> dict:
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {key}"},
-        json=_payload_for_url(payload, url),
+        json=payload,
         timeout=timeout,
     )
     if resp.status_code != 200:
@@ -159,7 +133,7 @@ def _post_streaming(
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {key}"},
-        json=_payload_for_url(payload, url),
+        json=payload,
         timeout=timeout,
         stream=True,
     )

@@ -7,6 +7,7 @@ import pytest
 
 from checkier.llm import (
     LLMError,
+    _endpoint_for_url,
     _extract_text,
     _json_from_text,
     _post_streaming,
@@ -21,6 +22,21 @@ SCHEMA = {
     "required": ["answer"],
     "additionalProperties": False,
 }
+
+
+def test_base_url_gets_responses_endpoint():
+    assert _endpoint_for_url("https://provider.example/v1/") == "https://provider.example/v1/responses"
+
+
+@pytest.mark.parametrize("url", [
+    "https://provider.example/v1/responses",
+    "https://provider.example/v1/responses/",
+    "https://provider.example/v1/chat/completions",
+    "https://provider.example/v1/chat/completions/",
+])
+def test_full_endpoint_urls_are_rejected(url):
+    with pytest.raises(LLMError, match="must be a base URL"):
+        _endpoint_for_url(url)
 
 
 def test_schema_uses_responses_text_format(monkeypatch):
