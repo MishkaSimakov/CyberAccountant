@@ -11,7 +11,7 @@ from ..models import Requirement, VerificationResult
 from ..queue import enqueue_verification
 from ..schemas.requirements import RequirementResponse, RequirementsResponse, RequirementUpdate, requirement_adapter
 from . import ServiceError
-from .reports import blockers_for, document_response, find_report, report_documents
+from .reports import blockers_for, find_report, report_documents
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def run_verification(report_id: int) -> None:
         if report.stage not in {"entities", "verification"}:
             raise ServiceError(409, "Сначала завершите разметку сущностей.")
         files = report_documents(session, report_id)
-        blockers = blockers_for([document_response(file, extracting=True) for file in files], extracting=True)
+        blockers = blockers_for(report, files, extracting=True)
         if blockers or any(file.status != "completed" or not file.entities_path for file in files):
             raise ServiceError(409, " ".join(blockers) or "Завершите извлечение сущностей из всех документов.")
         report.stage = "verification"

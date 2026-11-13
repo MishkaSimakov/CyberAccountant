@@ -3,10 +3,12 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import storage
 from ..database import session_scope
 from ..models import File, Report
 from ..schemas.documents import Document
 from ..schemas.reports import Report as ReportResponse, ReportCreate
+from ..target_row import find_target_row_spans
 from . import ServiceError
 
 
@@ -53,7 +55,8 @@ def duplicate_groups_for(items: list[Document]) -> list[list[int]]:
     return [group for group in groups.values() if len(group) > 1]
 
 
-def blockers_for(items: list[Document], *, extracting: bool = False) -> list[str]:
+def blockers_for(report: Report, files: list[File], *, extracting: bool = False) -> list[str]:
+    items = [document_response(file, extracting=extracting) for file in files]
     blockers = []
     if not any(item.role == "final_report" for item in items):
         blockers.append("Загрузите итоговый отчёт.")
@@ -63,6 +66,15 @@ def blockers_for(items: list[Document], *, extracting: bool = False) -> list[str
         blockers.append("Дождитесь обработки всех документов.")
     if any(item.ocr_status == "failed" for item in items):
         blockers.append("Удалите документы с ошибками и загрузите их повторно.")
+    if report.stage == "documents" and report.target_row:
+        main = next((file for file in files if file.role == "final_report"), None)
+        if main is not None and main.markdown_path:
+            text = storage.artifact_path(main.markdown_path).read_text(encoding="utf-8")
+            if not find_target_row_spans(text, report.target_row):
+                blockers.append(
+                    f"Не удалось найти проверяемую строку «{report.target_row}» в итоговом отчёте. "
+                    "Проверьте результат OCR итогового отчёта и при необходимости исправьте распознанный текст."
+                )
     if extracting and any(item.extraction_status in {"queued", "running"} for item in items):
         blockers.append("Дождитесь извлечения сущностей из всех документов.")
     if extracting and any(item.extraction_status == "failed" for item in items):
@@ -112,8 +124,9 @@ def report_details(report_id: int) -> dict:
     with session_scope() as session:
         report = find_report(session, report_id)
         extracting = report.stage in {"entities", "verification"}
-        items = [document_response(file, extracting=extracting) for file in report_documents(session, report_id)]
-        blockers = blockers_for(items, extracting=extracting)
+        files = report_documents(session, report_id)
+        items = [document_response(file, extracting=extracting) for file in files]
+        blockers = blockers_for(report, files, extracting=extracting)
         actions = []
         if report.stage == "documents" and not blockers:
             actions = ["run_entity_extraction"]

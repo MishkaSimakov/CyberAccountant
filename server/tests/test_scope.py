@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.target_row import find_target_row_keys
+from app.target_row import find_target_row_keys, find_target_row_spans
 from checkier.config import PipelineConfig
 from checkier.entities import build_registry
 from checkier.stage4_scope import run_scope
@@ -60,3 +60,10 @@ def test_target_row_ignores_matches_in_supporting_documents():
 def test_target_row_with_no_entities_returns_none():
     tagged = {"card1": ("card", '| Итого | 10 |\n')}
     assert find_target_row_keys(tagged, build_registry(tagged), "Итого") is None
+
+
+def test_target_row_spans_work_with_ocr_text_before_entities_exist():
+    text = '| 3 этап, 2025 г. | 10 |\r\n| 3 этап, 2026 г. | 20 |'
+    start = text.index('| 3 этап, 2026 г.')
+    assert find_target_row_spans(text, "3 этап, 2026 г.") == [(start, len(text))]
+    assert find_target_row_spans(text, "3 этап, 2024 г.") == []

@@ -7,7 +7,7 @@ from ..models import File
 from ..queue import enqueue_entities
 from . import ServiceError
 from .documents import find_document
-from .reports import blockers_for, document_response, find_report, report_documents, sync_processing_status
+from .reports import blockers_for, find_report, report_documents, sync_processing_status
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def run_entity_extraction(report_id: int, document_id: int | None = None) -> Non
         else:
             files = report_documents(session, report_id)
         if report.stage == "documents":
-            blockers = blockers_for([document_response(file) for file in files])
+            blockers = blockers_for(report, files)
             if blockers:
                 raise ServiceError(409, " ".join(blockers))
             report.stage = "entities"

@@ -21,7 +21,7 @@ from app.jobs import ocr
 from app.main import app
 from app.models import File, Report
 from app.ocr import ConversionError, ParsedDocument
-from app.services import documents, reports
+from app.services import documents, entities, reports
 
 
 def request(method, path, payload=None, *, body=None, content_type="application/json"):
@@ -159,6 +159,56 @@ def test_real_ocr_preserves_artifacts_and_updates_progress(api):
         assert request("GET", f'/reports/{report_id}/documents/{uploaded["id"]}/pdf') == (200, preview.read_bytes())
         assert storage.artifact_path(file.path).read_bytes() == original
     ocr.process_ocr(pending[0])  # Completed jobs do not run again.
+
+
+def test_missing_target_blocks_after_ocr_until_main_report_text_is_corrected(api, monkeypatch):
+    report_id, ocr_ids = api
+    path = f"/reports/{report_id}"
+    target = "Target 2026"
+    with database.session_scope() as session:
+        session.get(Report, report_id).target_row = target
+    extraction_ids = []
+    monkeypatch.setattr(entities, "enqueue_entities", extraction_ids.append)
+
+    for role, text in [("final_report", "Target 2025"), ("supporting", target)]:
+        with fitz.open() as pdf:
+            pdf.new_page().insert_text((50, 50), text)
+            assert upload(report_id, role=role, content=pdf.tobytes())[0] == 201
+
+    assert not any(target in blocker for blocker in request("GET", path)[1]["blockers"])
+    ocr.process_ocr(ocr_ids[0])
+    details = request("GET", path)[1]
+    blocker = next(blocker for blocker in details["blockers"] if target in blocker)
+    assert "OCR итогового отчёта" in blocker
+    assert details["available_actions"] == []
+    assert details["progress"] == {"completed": 1, "total": 2}
+
+    # A match in a supporting file cannot satisfy the main report check.
+    ocr.process_ocr(ocr_ids[1])
+    details = request("GET", path)[1]
+    assert details["blockers"] == [blocker]
+    assert details["processing_status"] == "completed"
+    assert details["available_actions"] == []
+    status, response = request("POST", path + "/run-entity-extraction")
+    assert status == 409 and response["detail"] == blocker
+    assert extraction_ids == []
+    with database.session_scope() as session:
+        assert session.get(Report, report_id).stage == "documents"
+        assert all(file.entities_path is None for file in reports.report_documents(session, report_id))
+
+    main = next(file for file in details["documents"] if file["role"] == "final_report")
+    assert request("POST", path + f'/documents/{main["id"]}/markdown', {
+        "content": "| Target 2026 | 100 |\n", "base_revision": 1,
+    })[0] == 200
+    details = request("GET", path)[1]
+    assert details["blockers"] == []
+    assert details["available_actions"] == ["run_entity_extraction"]
+    assert request("POST", path + "/run-entity-extraction")[0] == 200
+    with database.session_scope() as session:
+        latest = reports.report_documents(session, report_id)
+        assert extraction_ids == [file.id for file in latest]
+        assert latest[0].version == 2
+        assert all(file.entities_path is None for file in latest)
 
 
 @pytest.mark.parametrize("name", ["scan.png", "invoice.docx", "workbook.xlsx"])
