@@ -15,6 +15,7 @@ from checkier.entities import build_registry
     ("date", "Январь 2026", 'value="2026-01-01"', date(2026, 1, 1).toordinal()),
     ("date", "неизвестно", 'value=""', None),
     ("docid", 'Акт "А" & Б', 'value="Акт &quot;А&quot; &amp; Б"', 'Акт "А" & Б'),
+    ("docid", "А > Б", 'value="А &gt; Б"', "А > Б"),
     ("contract", "24/03/15-01", 'value="24/03/15-01"', "24/03/15-01"),
     ("number", "12,5", 'u="person_month" value="12.5"', "12.5"),
     ("pct", "30%", 'value="30"', "30"),

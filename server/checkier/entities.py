@@ -7,20 +7,14 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from html import unescape
 from pathlib import Path
 
 from checkier.bip39 import MnemonicSampler
+from processing.entities.markup import ATTR_RE, ENT_RE, parse_tag_attrs
 
 # ---------------------------------------------------------------------------
 # Tag parsing
 # ---------------------------------------------------------------------------
-
-ENT_RE = re.compile(
-    r"<ent\s+([^>]*)>(.*?)</ent>",
-    re.DOTALL,
-)
-ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 
 MONTHS_RU = {
     "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
@@ -28,11 +22,6 @@ MONTHS_RU = {
     "январь": 1, "февраль": 2, "март": 3, "апрель": 4, "май": 5, "июнь": 6,
     "июль": 7, "август": 8, "сентябрь": 9, "октябрь": 10, "ноябрь": 11, "декабрь": 12,
 }
-
-
-def parse_tag_attrs(attr_str: str) -> dict[str, str]:
-    attrs = {key: unescape(value) for key, value in ATTR_RE.findall(attr_str)}
-    return attrs
 
 
 # ---------------------------------------------------------------------------

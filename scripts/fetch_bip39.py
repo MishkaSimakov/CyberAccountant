@@ -4,7 +4,7 @@ Run this once to vendor the wordlist into the package:
 
     python scripts/fetch_bip39.py
 
-The list is saved to ``server/checkier/data/bip39_english.txt``.
+The list is saved to ``server/processing/entities/data/bip39_english.txt``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 
 URL = "https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt"
-DEST = Path(__file__).parent.parent / "server" / "checkier" / "data" / "bip39_english.txt"
+DEST = Path(__file__).parent.parent / "server" / "processing" / "entities" / "data" / "bip39_english.txt"
 
 
 def main() -> None:

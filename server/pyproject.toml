@@ -40,4 +40,4 @@ entities-worker = "app.worker:entities_main"
 include = ["app*", "checkier*", "processing*", "infrastructure*"]
 
 [tool.setuptools.package-data]
-"checkier.data" = ["bip39_english.txt"]
+"processing.entities.data" = ["bip39_english.txt"]

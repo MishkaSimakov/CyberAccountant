@@ -1,7 +1,8 @@
 """Mnemonic ids: two-word combinations from a 1024x1024 word space.
 
 The canonical wordlist is BIP39 English, vendored in
-``data/bip39_english.txt`` and fetched by ``scripts/fetch_bip39.py``.
+``processing/entities/data/bip39_english.txt`` and fetched by
+``scripts/fetch_bip39.py``.
 
 When the vendored file is absent the package falls back to a *deterministic
 generated* list of pronounceable pseudo-words (CVC syllable combinations).
@@ -60,7 +61,7 @@ def load_words() -> tuple[list[str], list[str]]:
     """
     try:
         text = (
-            resources.files("checkier.data")
+            resources.files("processing.entities.data")
             .joinpath(WORDLIST_RESOURCE)
             .read_text(encoding="utf-8")
         )

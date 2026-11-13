@@ -35,6 +35,7 @@ output/
 
 data/
 !server/checkier/data/
+!server/processing/entities/data/
 data_md/
 out/
 /storage/

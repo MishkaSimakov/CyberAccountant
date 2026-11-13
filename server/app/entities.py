@@ -1,11 +1,10 @@
 """Validate saved review markup using Checkier's tag syntax."""
 
-import re
 from html import escape
 
 from fastapi import HTTPException
 
-from checkier.entities import ATTR_RE, ENT_RE, parse_tag_attrs
+from processing.entities.markup import parse_entity_tags
 
 from .schemas.entities import EntityAttributes
 
@@ -13,20 +12,15 @@ from .schemas.entities import EntityAttributes
 def prepare_entities(content: str) -> str:
     """Validate tags without allocating registry IDs or altering source text."""
 
-    def replace(match: re.Match) -> str:
-        raw_attributes = match.group(1)
-        attributes = parse_tag_attrs(raw_attributes)
-        if ATTR_RE.sub("", raw_attributes).strip() or len(attributes) != len(ATTR_RE.findall(raw_attributes)):
-            raise ValueError("Некорректные или повторяющиеся атрибуты сущности.")
-        EntityAttributes.model_validate(attributes)
-        if re.search(r"</?(?:ent|entity)\b", match.group(2), re.I):
-            raise ValueError("Сущности не должны пересекаться.")
-        fields = " ".join(f'{name}="{escape(value, quote=True)}"' for name, value in attributes.items())
-        return f"<ent {fields}>{match.group(2)}</ent>"
-
     try:
-        if re.search(r"</?(?:ent|entity)\b", ENT_RE.sub("", content), re.I):
-            raise ValueError("Некорректная разметка сущностей.")
-        return ENT_RE.sub(replace, content)
+        pieces: list[str] = []
+        end = 0
+        for tag in parse_entity_tags(content):
+            EntityAttributes.model_validate(tag.attributes)
+            fields = " ".join(f'{name}="{escape(value, quote=True)}"' for name, value in tag.attributes.items())
+            pieces.extend((content[end:tag.span[0]], f"<ent {fields}>{content[slice(*tag.body_span)]}</ent>"))
+            end = tag.span[1]
+        pieces.append(content[end:])
+        return "".join(pieces)
     except ValueError as error:
         raise HTTPException(422, "Проверьте разметку <ent> и атрибуты t, u, n, value.") from error
