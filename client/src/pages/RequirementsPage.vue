@@ -3,6 +3,7 @@ import {defineComponent} from 'vue'
 import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
+import {editRequirements} from '../api'
 import type {FieldVerdict, Report, ReportDetails, ReportDocument, VerifiedRequirement, VerificationResult} from '../api'
 import ReportHeader from '../components/ReportHeader.vue'
 import RequirementsResults from '../components/RequirementsResults.vue'
@@ -14,7 +15,7 @@ export default defineComponent({
   components: {FontAwesomeIcon, ReportHeader, RequirementsResults, MarkdownEditor, RequirementText, FileProblems},
   props: {reportId: {type: Number, required: true}},
   data() {
-    return {faSpinner, selectedEntityId: undefined as number | undefined}
+    return {faSpinner, selectedEntityId: undefined as number | undefined, editing: false, editError: ''}
   },
   computed: {
     ...mapState('requirements', ['loading', 'error', 'entityDocuments']),
@@ -59,6 +60,20 @@ export default defineComponent({
   },
   methods: {
     ...mapActions('requirements', ['start', 'stop', 'load']),
+    async edit() {
+      if (this.editing || this.$store.state.requirements.saving.length) return
+      this.editing = true
+      this.editError = ''
+      try {
+        const report = await editRequirements(this.reportId)
+        this.$store.commit('reports/upsert', report)
+        await this.$router.push({name: 'requirements-edit', params: {reportId: this.reportId}})
+      } catch (cause) {
+        this.editError = cause instanceof Error ? cause.message : 'Не удалось открыть требования.'
+      } finally {
+        this.editing = false
+      }
+    },
     fieldValue(field: FieldVerdict, value: string | null, difference = false): string {
       if (value === null) return '—'
       if (field.type === 'date' && !difference) return new Date((Number(value) - 719163) * 86400000)
@@ -85,6 +100,13 @@ export default defineComponent({
       <button class="mt-4 cursor-pointer text-blue-700 hover:underline" @click="load">Повторить загрузку</button>
     </div>
     <template v-else-if="result && requirements !== null">
+      <div class="mt-6 flex justify-end">
+        <button type="button" :disabled="editing || $store.state.requirements.saving.length > 0"
+                class="cursor-pointer rounded border border-slate-300 bg-white px-4 py-2 hover:bg-slate-50 disabled:opacity-50"
+                @click="edit">{{ editing ? 'Открываем…' : 'Редактировать требования' }}
+        </button>
+      </div>
+      <p v-if="editError" class="mt-3 text-red-700" role="alert">{{ editError }}</p>
       <section class="mt-6 overflow-hidden rounded-lg border border-slate-200 bg-white"
                aria-labelledby="fields-heading">
         <h2 id="fields-heading" class="border-b border-slate-200 p-4 font-semibold">Проверка значений отчёта</h2>

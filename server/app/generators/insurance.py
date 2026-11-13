@@ -1,18 +1,14 @@
 """Aggregate article 0300 from one consolidated insurance calculation per month."""
 
-from __future__ import annotations
-
 import calendar
 import re
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from html import unescape
-from typing import TYPE_CHECKING
 
 from checkier.entities import ENT_RE, parse_tag_attrs
 
-if TYPE_CHECKING:
-    from app.verification import VerificationContext
+from ..verification_context import VerificationContext
 
 
 def _plain(text):

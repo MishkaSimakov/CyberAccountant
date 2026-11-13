@@ -1,1 +1,1 @@
-"""Deterministic relation generators for the shared verification context."""
+"""Requirement generators for the shared verification context."""

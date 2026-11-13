@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from app import verification
+from app.verification_context import VerificationContext
 from app.generators.scope import generate_scope
 from app.models import Report
 from app.target_row import find_target_row_keys, find_target_row_spans
@@ -31,7 +32,7 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
     mapping["6"]["duplicate_of"] = "2"
     report = Report(contract_number="TARGET", period_start=date(2026, 1, 1), period_end=date(2026, 5, 31))
     scope = {"target_row": None, "target_label": None}
-    context = verification.VerificationContext(cfg, {}, registry, scope, mapping, report)
+    context = VerificationContext(cfg, {}, registry, scope, mapping, report)
     assert verification.GENERATORS["scope"] is generate_scope
     monkeypatch.setattr(verification, "GENERATORS", {"scope": generate_scope})
 

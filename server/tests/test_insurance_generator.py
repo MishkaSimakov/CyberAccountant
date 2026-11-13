@@ -8,6 +8,7 @@ import pytest
 
 from app import storage, verification
 from app.generators.insurance import generate_insurance
+from app.generators.llm import generate_llm
 from app.models import File, Report
 from checkier.formula import collect_ids, parse
 
@@ -54,7 +55,7 @@ def context_factory(tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail('Insurance-only verification must not call an LLM')
 
-    monkeypatch.setattr(verification, 'generate_llm', forbidden)
+    monkeypatch.setattr('app.generators.llm.generate_relations', forbidden)
     monkeypatch.setattr('checkier.stage5_relations.call_llm_json', forbidden)
 
     def prepare(documents, *, start=date(2026, 1, 1), end=date(2026, 2, 28), style='numeric', row='3 этап, 2026 г.'):
@@ -85,7 +86,7 @@ def run(context):
 
 def test_registered_alongside_existing_llm_generator():
     assert verification.GENERATORS['insurance'] is generate_insurance
-    assert 'llm' in verification.GENERATORS
+    assert verification.GENERATORS['llm'] is generate_llm
 
 
 @pytest.mark.parametrize('style', ['numeric', 'mnemonic'])

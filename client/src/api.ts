@@ -5,7 +5,7 @@ export interface Report {
     period_start: string | null
     period_end: string | null
     target_row: string | null
-    stage: 'documents' | 'entities' | 'verification'
+    stage: 'documents' | 'entities' | 'requirements' | 'verification'
     processing_status: 'idle' | 'queued' | 'running' | 'completed' | 'failed'
 }
 
@@ -54,7 +54,7 @@ export interface ReportDetails extends Report {
     progress: { completed: number; total: number }
     blockers: string[]
     available_actions: string[]
-    processing_mode: 'ocr' | 'entities' | 'verification'
+    processing_mode: 'ocr' | 'entities' | 'requirements' | 'verification'
 }
 
 export interface MarkdownRevision {
@@ -145,6 +145,7 @@ export const runVerification = (reportId: number) =>
 
 export interface RequirementsResponse {
     requirements: Requirement[]
+    entity_documents: Record<number, number>
 }
 
 export const getRequirements = (reportId: number) =>
@@ -161,3 +162,27 @@ export const updateRequirement = (reportId: number, requirementId: number, chang
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(changes),
     })
+
+export type RequirementDefinition =
+    { kind: 'formula'; equation: string; text: string | null; tag: 'scope' | 'agg' | 'ref' | null }
+    | { kind: 'assertion'; text: string; condition: boolean | null; ids_related: (number | string)[] }
+
+export const generateRequirements = (reportId: number) =>
+    request<ReportDetails>(`/reports/${reportId}/generate-requirements`, {method: 'POST'})
+
+export const editRequirements = (reportId: number) =>
+    request<ReportDetails>(`/reports/${reportId}/edit-requirements`, {method: 'POST'})
+
+export const validateFormula = (reportId: number, equation: string) =>
+    request<{ valid: boolean; error: string | null }>(`/reports/${reportId}/requirements/validate-formula`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({equation}),
+    })
+
+export const saveRequirementDefinition = (reportId: number, id: number | null, definition: RequirementDefinition) =>
+    request<Requirement>(`/reports/${reportId}/requirements${id === null ? '' : `/${id}`}`, {
+        method: id === null ? 'POST' : 'PUT',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(definition),
+    })
+
+export const deleteRequirement = (reportId: number, id: number) =>
+    request<void>(`/reports/${reportId}/requirements/${id}`, {method: 'DELETE'})

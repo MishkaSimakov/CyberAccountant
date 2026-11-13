@@ -2,7 +2,8 @@ FROM node:24-alpine AS client-build
 
 WORKDIR /app/client
 COPY client/package.json client/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 COPY client/ ./
 RUN npm run build
 
@@ -12,7 +13,8 @@ WORKDIR /build
 COPY server/pyproject.toml ./
 COPY server/app/ ./app/
 COPY server/checkier/ ./checkier/
-RUN pip install --no-cache-dir --prefix=/install .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --prefix=/install .
 
 FROM python:3.13-slim AS production
 

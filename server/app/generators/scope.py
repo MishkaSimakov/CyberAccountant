@@ -1,12 +1,8 @@
 """Generate contract and period requirements without evaluating them."""
 
-from __future__ import annotations
-
 import json
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from app.verification import VerificationContext
+from ..verification_context import VerificationContext
 
 
 def generate_scope(context: VerificationContext) -> list[dict]:
