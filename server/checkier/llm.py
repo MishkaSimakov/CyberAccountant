@@ -20,6 +20,13 @@ from checkier.file_log import append_log, current_log_path
 logger = logging.getLogger(__name__)
 
 
+def log_model_prompt(prompt: str, model: str, schema_name: str) -> None:
+    """Append the exact prompt before sending each request, including retries."""
+    if path := current_log_path.get():
+        timestamp = datetime.now(timezone.utc).isoformat()
+        append_log(path, f"\n--- MODEL PROMPT | {timestamp} | model={model} | schema={schema_name} ---\n{prompt}\n")
+
+
 def log_model_output(text: str, model: str, schema_name: str) -> None:
     """Keep the exact model text, including invalid JSON and Markdown fences."""
     if path := current_log_path.get():
@@ -164,6 +171,7 @@ def call_llm(
         }
 
     def request_text() -> str:
+        log_model_prompt(prompt, model, schema_name)
         if on_token is None:
             return _extract_text(_post(payload, timeout))
         chunks: list[str] = []

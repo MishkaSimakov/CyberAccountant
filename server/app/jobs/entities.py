@@ -2,9 +2,8 @@
 
 import logging
 
-from checkier import PipelineConfig, normalize_document
+from checkier import PipelineConfig, normalize_document, tag_document
 from checkier.file_log import file_log_run
-from checkier.llm import log_model_output
 
 from ..database import session_scope
 from ..models import File
@@ -13,26 +12,6 @@ from ..services.reports import find_report, sync_processing_status
 from ..storage import artifact_path, save_entities
 
 logger = logging.getLogger(__name__)
-
-MOCK_MODEL_LOG = """[MOCK MODEL LOG]
-stage: entity_extraction
-finish_reason: length
-response:
-[
-  {"content": "Итого: ", "wrap": "100,00", "type": "amount", "unit": "RUB"},
-  {"content": " руб.", "wrap": "", "type": "EOF"
-error: Invalid JSON: expected '}' and ']' before end of model output.
-[/MOCK MODEL LOG]"""
-
-
-def _mock_tag_document(cfg: PipelineConfig, _filename: str, _markdown: str) -> tuple[str, int]:
-    """Temporarily fail every extraction without calling the model."""
-    log_model_output(MOCK_MODEL_LOG, cfg.tag_model, "tagged_document")
-    raise RuntimeError("Invalid JSON returned by model")
-
-
-tag_document = _mock_tag_document
-
 
 def process_entities(file_revision_id: int) -> None:
     """Run one document extraction, keeping LLM calls outside transactions."""

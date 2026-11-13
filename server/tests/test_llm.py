@@ -152,3 +152,58 @@ def test_interrupted_stream_keeps_partial_output_in_the_file_log(tmp_path, monke
     assert output.encode("utf-8") in content
     assert content.count(b"--- MODEL OUTPUT |") == 1
     assert b"ERROR (LLMError): Stream interrupted" in content
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_file_log_preserves_full_prompts_before_each_retry(tmp_path, monkeypatch, streaming):
+    path = tmp_path / "processing.log"
+    prompt = "Полный запрос\r\n" * 4_000
+    prompts = []
+    outputs = ["not JSON", "[]"]
+
+    def respond(payload, timeout, on_token=None):
+        sent_prompt = payload["input"]
+        assert path.read_bytes().endswith(sent_prompt.encode("utf-8") + b"\n")
+        prompts.append(sent_prompt)
+        output = outputs[len(prompts) - 1]
+        return output if streaming else {"output_text": output}
+
+    monkeypatch.setattr(llm, "_post_streaming" if streaming else "_post", respond)
+    with file_log_run(path, "extraction"):
+        assert llm.call_llm_json(prompt, "test-model", schema=RELATIONS_SCHEMA, max_retries=1,
+                                 on_token=(lambda token: None) if streaming else None) == []
+    assert prompts[0] == prompt
+    assert "Your previous answer failed validation" in prompts[1]
+    content = path.read_bytes()
+    assert content.count(b"--- MODEL PROMPT |") == 2
+    assert content.count(b"--- MODEL OUTPUT |") == 2
+    for sent_prompt in prompts:
+        assert sent_prompt.encode("utf-8") in content
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_file_log_keeps_prompts_when_requests_fail_or_use_schema_fallback(tmp_path, monkeypatch, fallback):
+    path = tmp_path / "processing.log"
+    prompt = "The exact prompt\r\n"
+    calls = 0
+
+    def respond(payload, timeout):
+        nonlocal calls
+        calls += 1
+        assert path.read_bytes().endswith(prompt.encode("utf-8") + b"\n")
+        if fallback and "response_format" not in payload:
+            return {"output_text": "[]"}
+        raise llm.LLMError("API 400: response_format unsupported" if fallback else "API unavailable")
+
+    monkeypatch.setattr(llm, "_post", respond)
+    if fallback:
+        with file_log_run(path, "extraction"):
+            assert llm.call_llm_json(prompt, "test-model", schema=RELATIONS_SCHEMA) == []
+    else:
+        with pytest.raises(llm.LLMError, match="API unavailable"):
+            with file_log_run(path, "extraction"):
+                llm.call_llm(prompt, "test-model")
+    assert calls == (2 if fallback else 1)
+    content = path.read_bytes()
+    assert content.count(b"--- MODEL PROMPT |") == calls
+    assert content.count(prompt.encode("utf-8")) == calls

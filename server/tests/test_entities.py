@@ -10,7 +10,6 @@ from redis import Redis
 from rq import Queue, SimpleWorker
 from rq.job import Job
 
-from checkier import tag_document
 from checkier import llm
 
 from app import database, queue, storage
@@ -53,24 +52,20 @@ def ready(api, monkeypatch):
         extraction_ids.append(revision_id)
 
     monkeypatch.setattr(entities, "enqueue_entities", enqueue)
-    monkeypatch.setattr(job, "tag_document", tag_document)
     monkeypatch.setattr("checkier.stage1_tag.call_llm_json", lambda *args, **kwargs: SEGMENTS)
     return report_id, ocr_ids, extraction_ids
 
 
-def test_mock_extraction_returns_full_model_log_on_every_attempt(ready, monkeypatch):
+def test_extraction_preserves_full_model_logs_across_runs(ready, monkeypatch):
     report_id, revisions, _ = ready
     path = f"/reports/{report_id}"
-    monkeypatch.setattr(job, "tag_document", job._mock_tag_document)
-
-    def unexpected(*args, **kwargs):
-        pytest.fail("Mock extraction must not call the model")
-
-    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", unexpected)
+    output = '{"incomplete": "' + "Ответ модели\r\n" * 1_000
+    monkeypatch.setattr(llm, "_post", lambda *args, **kwargs: {"output_text": output})
+    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", llm.call_llm_json)
     for run in range(1, 3):
         assert request("POST", path + "/run-entity-extraction")[0] == 200
         for revision_id in revisions:
-            with pytest.raises(RuntimeError, match="Invalid JSON"):
+            with pytest.raises(RuntimeError, match="tagging failed"):
                 job.process_entities(revision_id)
         details = request("GET", path)[1]
         assert details["processing_status"] == "failed"
@@ -83,8 +78,11 @@ def test_mock_extraction_returns_full_model_log_on_every_attempt(ready, monkeypa
             assert status == 200
             log = content.decode("utf-8")
             assert log.count("\nRUN ") == run
-            assert log.count(job.MOCK_MODEL_LOG) == run
-            assert log.count("ERROR (RuntimeError): Invalid JSON returned by model") == run
+            assert log.count("--- MODEL PROMPT |") == run * 9
+            assert f"Filename: {document['name']}" in log
+            assert MARKDOWN in log
+            assert content.count(output.encode("utf-8")) == run * 9
+            assert log.count("ERROR (RuntimeError): tagging failed") == run
         with database.session_scope() as session:
             for revision_id in revisions:
                 file = session.get(File, revision_id)
