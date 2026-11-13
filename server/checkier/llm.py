@@ -1,4 +1,4 @@
-"""Thin OpenRouter client with JSON-schema structured output, streaming and retries."""
+"""OpenAI-compatible Responses/Chat client with structured output and retries."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import jsonschema
@@ -89,12 +90,51 @@ def _extract_text(data: dict) -> str:
     raise LLMError(f"could not extract text from response: {str(data)[:500]}")
 
 
+def _endpoint_for_url(base_url: str) -> str:
+    """Resolve a versioned API base URL, accepting legacy full endpoints too."""
+    parsed = urlparse(base_url)
+    path = parsed.path.rstrip("/")
+    if path.endswith(("/responses", "/chat/completions")):
+        return base_url
+    return parsed._replace(path=f"{path}/responses").geturl()
+
+
+def _payload_for_url(payload: dict, url: str) -> dict:
+    """Translate the internal Responses payload for Chat Completions APIs."""
+    if not urlparse(url).path.rstrip("/").endswith("/chat/completions"):
+        return payload
+
+    chat_payload = dict(payload)
+    prompt = chat_payload.pop("input")
+    chat_payload["messages"] = [{"role": "user", "content": prompt}]
+    # Convert portable Responses reasoning effort to its Chat Completions name.
+    reasoning = chat_payload.pop("reasoning", None)
+    if reasoning and reasoning.get("effort"):
+        chat_payload["reasoning_effort"] = reasoning["effort"]
+
+    text = chat_payload.pop("text", None)
+    if text is not None:
+        fmt = text["format"]
+        if fmt.get("type") != "json_schema":
+            raise LLMError(f"unsupported structured output format: {fmt.get('type')!r}")
+        chat_payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": fmt["name"],
+                "schema": fmt["schema"],
+                "strict": fmt["strict"],
+            },
+        }
+    return chat_payload
+
+
 def _post(payload: dict, timeout: float) -> dict:
-    url, key = load_api_credentials()
+    base_url, key = load_api_credentials()
+    url = _endpoint_for_url(base_url)
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {key}"},
-        json=payload,
+        json=_payload_for_url(payload, url),
         timeout=timeout,
     )
     if resp.status_code != 200:
@@ -112,13 +152,14 @@ def _post_streaming(
     Handles both the Responses API (``response.output_text.delta``) and Chat
     Completions (``choices[].delta.content``) streaming shapes.
     """
-    url, key = load_api_credentials()
+    base_url, key = load_api_credentials()
+    url = _endpoint_for_url(base_url)
     payload = dict(payload)
     payload["stream"] = True
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {key}"},
-        json=payload,
+        json=_payload_for_url(payload, url),
         timeout=timeout,
         stream=True,
     )
@@ -173,22 +214,19 @@ def call_llm(
         on_token: Callable[[str], None] | None = None,
         reasoning: str = "disabled",
 ) -> str:
-    """Single LLM call with optional strict Responses API JSON Schema output.
+    """Single LLM call with optional strict JSON Schema structured output.
 
     Schema rejection is surfaced to the caller; silently switching to an
     unconstrained request would make structured-output guarantees meaningless.
     Streams tokens to on_token when provided.
 
-    reasoning: "disabled" (default, no thinking tokens — fast/cheap),
-    "enabled" (model may reason), or "exclude" (reason but strip from output).
+    reasoning: "disabled" requests minimum effort ("low"), "enabled" uses
+    the model default, and "exclude" hides reasoning from parsed output.
     """
     payload: dict = {"model": model, "input": prompt}
-    # Control reasoning/thinking token generation. "disabled" avoids the
-    # latency + token cost of chain-of-thought for structured tasks.
+    # Portable APIs do not guarantee that reasoning can be fully disabled.
     if reasoning == "disabled":
-        payload["reasoning"] = {"enabled": False}
-    elif reasoning == "exclude":
-        payload["reasoning"] = {"exclude": True}
+        payload["reasoning"] = {"effort": "low"}
     if schema is not None:
         payload["text"] = {
             "format": {

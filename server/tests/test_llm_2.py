@@ -34,6 +34,7 @@ def test_schema_uses_responses_text_format(monkeypatch):
     assert call_llm("Return an answer", "model", schema=SCHEMA) == '{"answer":"allowed"}'
     assert len(payloads) == 1
     assert "response_format" not in payloads[0]
+    assert payloads[0]["reasoning"] == {"effort": "low"}
     assert payloads[0]["text"] == {
         "format": {
             "type": "json_schema",
