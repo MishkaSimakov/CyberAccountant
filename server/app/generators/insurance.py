@@ -85,12 +85,12 @@ def generate_insurance(context: VerificationContext) -> list[dict]:
         return unverifiable("неоднозначная итоговая ячейка")
     if target.unit.upper() not in {"RUB", "RUB_K"}:
         return unverifiable("итоговая ячейка должна быть задана в рублях")
-    contract, period = context.scope.get("target_contract"), context.scope.get("target_period")
-    if not contract or not period:
+    report = context.report
+    contract = report.contract_number
+    start, end = report.period_start, report.period_end
+    if not contract or start is None or end is None:
         return unverifiable("не заданы договор и отчётный период")
-    try:
-        start, end = map(date.fromordinal, period)
-    except (TypeError, ValueError, OverflowError):
+    if not isinstance(start, date) or not isinstance(end, date):
         return unverifiable("некорректный отчётный период")
     years = set(re.findall(r"\b(20\d{2})\b", _plain(context.scope.get("target_label") or "")))
     if len(years) == 1:
@@ -100,7 +100,8 @@ def generate_insurance(context: VerificationContext) -> list[dict]:
         return unverifiable("период не пересекается с годом проверяемой строки")
     months, problems = {}, []
     for file, text in sorted(context.documents.items()):
-        if file not in context.scope.get("in_scope", []):
+        entry = context.mapping[file]
+        if entry["role"] != "data" or entry.get("duplicate_of"):
             continue
         if "расчет страховых взносов" not in _plain(text):
             continue

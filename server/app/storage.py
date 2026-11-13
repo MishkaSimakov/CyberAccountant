@@ -1,6 +1,7 @@
 """Local artifact storage shared by the API and OCR worker."""
 
 import os
+import json
 import shutil
 from hashlib import sha256
 from pathlib import Path
@@ -26,6 +27,21 @@ def storage_root() -> Path:
 
 def artifact_path(relative_path: str) -> Path:
     return storage_root() / relative_path
+
+
+def save_verification_result(report_id: int, result: dict) -> str:
+    relative = f"{report_id}/verification/report.json"
+    destination = artifact_path(relative)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent, delete=False) as output:
+        temporary = Path(output.name)
+        try:
+            json.dump(result, output, ensure_ascii=False, indent=2)
+            output.close()
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return relative
 
 
 def stage_upload(stream: BinaryIO) -> tuple[Path, int, str]:

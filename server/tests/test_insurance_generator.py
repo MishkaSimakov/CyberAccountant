@@ -68,8 +68,8 @@ def context_factory(tmp_path, monkeypatch):
         if style == 'mnemonic':
             context.config.id_style = style
             context.documents = {name: re.sub(r'id="(\d+)"',
-                lambda m: f'id="{context.registry.entities[int(m[1])].mnemonic}"', text)
-                for name, text in context.documents.items()}
+                                              lambda m: f'id="{context.registry.entities[int(m[1])].mnemonic}"', text)
+                                 for name, text in context.documents.items()}
             context.scope['target_row'] = [context.registry.entities[n].mnemonic
                                            for n in context.scope['target_row']]
         return context
@@ -79,8 +79,8 @@ def context_factory(tmp_path, monkeypatch):
 
 def run(context):
     relations = verification.generate_requirements(context)
-    own = [r for r in relations if r['source'] == 'insurance']
-    return own, verification.evaluate_requirements(context, relations)
+    definitions = [dict(requirement, id=i) for i, requirement in enumerate(relations, 1)]
+    return generate_insurance(context), verification.evaluate_requirements(context, definitions)
 
 
 def test_registered_alongside_existing_llm_generator():
@@ -106,10 +106,10 @@ def test_only_algorithm_uses_real_registry_and_single_shared_solver(documents, c
     keys = collect_ids(parse(own[0]['equation']))
     selected = [e for e in context.registry.entities if (e.num if style == 'numeric' else e.mnemonic) in keys]
     assert sorted(Decimal(e.value) for e in selected) == [Decimal(7), Decimal(8), Decimal(15)]
-    assert next(r for r in results if r['source'] == 'insurance')['verdict'] == 'true'
-    checked = next(r for r in results if r['source'] == 'evaluator' and r.get('expected') is not None)
-    assert checked['verdict'] == 'true' and Decimal(checked['expected']) == 15
-    assert any(r['verdict'] == 'unverifiable' for r in results if r['source'] == 'evaluator')
+    assert results['requirement_results'][0]['verdict'] == 'true'
+    checked = next(r for r in results['card']['cells'] if r.get('expected') is not None)
+    assert checked['status'] == 'ok' and Decimal(checked['expected']) == 15
+    assert any(r['status'] == 'unverified' for r in results['card']['cells'])
 
 
 def test_stated_mismatch_is_found_without_changing_generated_formula(documents, context_factory):
@@ -117,9 +117,9 @@ def test_stated_mismatch_is_found_without_changing_generated_formula(documents, 
     documents['card.md'] = documents['card.md'].replace('value="15.00"', 'value="16.00"')
     own, results = run(context_factory(documents))
     assert original == own
-    cell = next(r for r in results if r['source'] == 'evaluator' and r.get('expected') is not None)
-    assert cell['verdict'] == 'false'
-    assert Decimal(cell['expected']) == 15 and Decimal(cell['difference']) == 1
+    cell = next(r for r in results['card']['cells'] if r.get('expected') is not None)
+    assert cell['status'] == 'mismatch'
+    assert Decimal(cell['expected']) == 15 and Decimal(cell['diff']) == 1
 
 
 def test_missing_month_is_unverifiable_not_partial_equality(documents, context_factory):
@@ -128,7 +128,7 @@ def test_missing_month_is_unverifiable_not_partial_equality(documents, context_f
     assert own[0]['verdict'] == 'unverifiable'
     assert '2026-02' in own[0]['evidence']
     assert 'equation' not in own[0]
-    assert not any(r.get('expected') is not None for r in results)
+    assert not any(r.get('expected') is not None for r in results['card']['cells'])
 
 
 def test_duplicate_is_counted_once_and_foreign_documents_are_excluded(documents, context_factory):
@@ -137,8 +137,8 @@ def test_duplicate_is_counted_once_and_foreign_documents_are_excluded(documents,
     documents['march.md'] = calculation('2026-03', '2222')
     own, results = run(context_factory(documents))
     assert len(collect_ids(parse(own[0]['equation']))) == 3
-    cell = next(r for r in results if r.get('expected') is not None)
-    assert Decimal(cell['expected']) == 15 and cell['verdict'] == 'true'
+    cell = next(r for r in results['card']['cells'] if r.get('expected') is not None)
+    assert Decimal(cell['expected']) == 15 and cell['status'] == 'ok'
 
 
 @pytest.mark.parametrize('number', [None, 'ANOTHER'])
@@ -167,7 +167,7 @@ def test_partial_month_and_year_intersection(documents, context_factory):
     assert own[0]['verdict'] == 'unverifiable'
     own, results = run(context_factory(documents, start=date(2025, 8, 1)))
     assert 'equation' in own[0]  # The requested 2026 row excludes the previous year.
-    assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'
+    assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
 
 
 def test_other_reports_are_ignored_and_reordered_columns_work(documents, context_factory):
@@ -187,15 +187,15 @@ def test_other_reports_are_ignored_and_reordered_columns_work(documents, context
         documents[name] = '\n'.join(lines)
     own, results = run(context_factory(documents))
     assert 'equation' in own[0]
-    assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'
+    assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
 
 
 def test_normalized_thousands_are_not_multiplied_a_second_time(documents, context_factory):
     documents['jan.md'] = documents['jan.md'].replace(tag('amount', '7.00', unit='RUB'),
-        tag('amount', '7.00', text='0.007', unit='RUB_K'))
+                                                      tag('amount', '7.00', text='0.007', unit='RUB_K'))
     _, results = run(context_factory(documents))
-    cell = next(r for r in results if r.get('expected') is not None)
-    assert Decimal(cell['expected']) == 15 and cell['verdict'] == 'true'
+    cell = next(r for r in results['card']['cells'] if r.get('expected') is not None)
+    assert Decimal(cell['expected']) == 15 and cell['status'] == 'ok'
 
 
 def test_untagged_insurance_document_cannot_be_silently_ignored(documents, context_factory):
@@ -206,15 +206,15 @@ def test_untagged_insurance_document_cannot_be_silently_ignored(documents, conte
 
 def test_non_ruble_target_is_unverifiable(documents, context_factory):
     documents['card.md'] = documents['card.md'].replace(tag('amount', '15.00', unit='RUB'),
-                                                       tag('amount', '15.00', unit='USD'))
+                                                        tag('amount', '15.00', unit='USD'))
     own, _ = run(context_factory(documents))
     assert own[0]['verdict'] == 'unverifiable' and 'рублях' in own[0]['evidence']
 
 
-@pytest.mark.parametrize('period', [[], [0, 1], [1]])
-def test_missing_or_invalid_scope_cannot_generate_empty_sum(documents, context_factory, period):
+@pytest.mark.parametrize('start, end', [(None, None), (0, 1), (date(2026, 1, 1), None)])
+def test_missing_or_invalid_report_period_cannot_generate_empty_sum(documents, context_factory, start, end):
     context = context_factory(documents)
-    context.scope['target_period'] = period
+    context.report.period_start, context.report.period_end = start, end
     own = generate_insurance(context)
     assert own[0]['verdict'] == 'unverifiable' and 'equation' not in own[0]
 
@@ -226,12 +226,13 @@ def test_row_label_keeps_report_year(documents, context_factory, style):
     assert context.scope['target_label'] == '3 этап, 2026 г.'
     own, results = run(context)
     assert own == named
-    assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'
+    assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
 
 
 def test_row_label_ignores_multirow_header_and_column_numbers(documents, context_factory):
     documents['card.md'] = documents['card.md'].replace('| 3 этап, 2025 г.',
-        '| Уточняющая шапка | Взносы, всего | Другие затраты |\n| 1 | 2 | 3 |\n| 3 этап, 2025 г.', 1)
+                                                        '| Уточняющая шапка | Взносы, всего | Другие затраты |\n| 1 | 2 | 3 |\n| 3 этап, 2025 г.',
+                                                        1)
     own, _ = run(context_factory(documents, row='3 этап, 2026 г.'))
     assert 'equation' in own[0]
 
@@ -242,10 +243,11 @@ def test_unknown_row_label_fails_instead_of_selecting_all_card_cells(documents, 
 
 
 def test_row_label_works_with_multiple_monetary_tables(documents, context_factory):
-    documents['card.md'] += f'\n| Другая таблица | Сумма |\n| --- | --- |\n| Расходы | {tag("amount", "1", unit="RUB")} |\n'
+    documents[
+        'card.md'] += f'\n| Другая таблица | Сумма |\n| --- | --- |\n| Расходы | {tag("amount", "1", unit="RUB")} |\n'
     own, results = run(context_factory(documents, row='3 этап, 2026 г.'))
     assert 'equation' in own[0]
-    assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'
+    assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
 
 
 def test_numeric_text_is_not_interpreted_as_row_position(documents, context_factory):
@@ -254,4 +256,4 @@ def test_numeric_text_is_not_interpreted_as_row_position(documents, context_fact
     assert context.scope['target_label'] == '99'
     own, results = run(context)
     assert 'equation' in own[0]
-    assert next(r for r in results if r.get('expected') is not None)['verdict'] == 'true'
+    assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'

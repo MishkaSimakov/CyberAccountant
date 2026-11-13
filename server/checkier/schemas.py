@@ -68,7 +68,7 @@ RELATIONS_SCHEMA = {
                     "equation": {"type": "string"},
                     "tag": {
                         "type": "string",
-                        "enum": ["contract", "period", "agg", "ref"],
+                        "enum": ["scope", "agg", "ref"],
                     },
                 },
                 "required": ["equation"],

@@ -25,6 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Create fake env file
+        run: cp .env.example .env
+
       - name: Prepare reports
         run: mkdir -p test-results
 

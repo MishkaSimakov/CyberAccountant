@@ -1,20 +1,34 @@
 """Requirement request and response schemas."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, Literal
 
-from ..models.requirement import RequirementVerdict
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 
-class RequirementResponse(BaseModel):
+class RequirementMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: int
-    verdict: RequirementVerdict
-    equation: str | None = None
-    evidence: str | None = None
+    text: str | None = None
     source: str = ""
-    error: str | None = None
-    ids_related: list[int] = []
     notes: str = ""
     silenced: bool = False
+
+
+class FormulaRequirement(RequirementMetadata):
+    kind: Literal["formula"]
+    equation: str
+    tag: Literal["scope", "agg", "ref"] | None = None
+
+
+class AssertionRequirement(RequirementMetadata):
+    kind: Literal["assertion"]
+    condition: bool | None
+    ids_related: list[int | str]
+
+
+RequirementResponse = Annotated[FormulaRequirement | AssertionRequirement, Field(discriminator="kind")]
+requirement_adapter = TypeAdapter(RequirementResponse)
 
 
 class RequirementUpdate(BaseModel):
@@ -24,6 +38,5 @@ class RequirementUpdate(BaseModel):
     silenced: bool = False
 
 
-class RequirementsResult(BaseModel):
+class RequirementsResponse(BaseModel):
     requirements: list[RequirementResponse]
-    entity_documents: dict[int, int]

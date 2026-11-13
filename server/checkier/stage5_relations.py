@@ -32,7 +32,7 @@ Write relations in this exact JSON format (array of objects):
 
 1. Equations — every relation that must hold between entity ids:
    {{"equation": "{example_equation}", "tag": "agg"}}
-   tags: contract | period | agg (aggregation) | ref (cross-doc identity)
+   tags: scope (contract or reporting period) | agg (aggregation) | ref (cross-doc identity)
 
 2. Textual findings — when data looks wrong or cannot be verified with an equation:
    {{"evidence": "one short sentence describing the problem", "ids_related": ["{example_id}"], "verdict": "false"}}
@@ -51,7 +51,7 @@ Rules:
   or be explicitly marked unverifiable via a fishy entry.
 - Cover ALL aggregations: card totals == sum of their components (from both card and data).
 - Cross-document identity: if the same logical value appears in two docs, relate them with tag "ref".
-- Documents marked out of scope must not contribute to the target row's totals.
+- Documents for other contracts or outside the reporting period must not contribute to the target row's totals.
 - Preserve the supplied normalized values; do not replace unknown values with guesses.
 - Output ONLY the JSON array, nothing else.
 """
@@ -101,8 +101,8 @@ def run_relations(
         registry: EntityRegistry,
         scope: dict,
 ) -> list[dict]:
-    """Notebook pipeline wrapper: add shared scope checks and save the result."""
-    all_relations = list(scope["scope_relations"]) + generate_relations(cfg, replaced_docs, registry, scope)
+    """Notebook pipeline wrapper: generate requirements and save the result."""
+    all_relations = generate_relations(cfg, replaced_docs, registry, scope)
     cfg.relations_path.write_text(
         json.dumps(all_relations, ensure_ascii=False, indent=2), encoding="utf-8"
     )

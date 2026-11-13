@@ -68,7 +68,7 @@ def test_pipeline_resumes_from_extracted_documents(tmp_path, monkeypatch):
     assert len(registry.entities) == 1
     assert registry.entities[0].value == "100.00"
     assert '<ent id="' in pipeline.replace()["card1"]
-    assert pipeline.scope()["target_row"] == [registry.entities[0].key]
+    assert pipeline.scope()["target_row"] is None
 
 
 def test_empty_extraction_does_not_rerun_tagging(tmp_path, monkeypatch):
