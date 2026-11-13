@@ -65,6 +65,8 @@ export const getReport = (id: number) => request<ReportDetails>(`/reports/${id}`
 
 export const reportLogUrl = (reportId: number) => `/api/v1/reports/${reportId}/log`
 
+export const reportArchiveUrl = (reportId: number) => `/api/v1/reports/${reportId}/archive`
+
 export const uploadDocument = (reportId: number, file: File, role: DocumentRole) => {
     const body = new FormData()
     body.append('file', file)
