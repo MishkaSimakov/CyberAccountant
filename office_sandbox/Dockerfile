@@ -19,7 +19,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY pyproject.toml office_worker.py service.py ./
-RUN pip install --no-cache-dir .
+RUN --mount=type=cache,target=/work/home/.cache/pip \
+    pip install .
 USER 10001:10001
 EXPOSE 8001
 CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8001"]
