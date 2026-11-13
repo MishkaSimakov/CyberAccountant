@@ -61,6 +61,8 @@ services:
 networks:
   office:
     internal: true
+  default:
+    internal: true
 
 volumes:
   postgres_data:
