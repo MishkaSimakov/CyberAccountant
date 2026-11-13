@@ -16,6 +16,7 @@ __pycache__/
 !.env.example
 
 AGENTS.md
+prompts/
 
 # Local OCR runtime and generated artifacts
 .tools/
