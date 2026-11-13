@@ -3,6 +3,7 @@ import {defineComponent} from 'vue'
 import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
+import {faChevronDown} from '@fortawesome/free-solid-svg-icons/faChevronDown'
 import {editRequirements, reportArchiveUrl} from '../api'
 import type {FieldVerdict, Report, ReportDetails, ReportDocument, VerifiedRequirement, VerificationResult} from '../api'
 import ReportHeader from '../components/ReportHeader.vue'
@@ -15,7 +16,10 @@ export default defineComponent({
   components: {FontAwesomeIcon, ReportHeader, RequirementsResults, MarkdownEditor, RequirementText, FileProblems},
   props: {reportId: {type: Number, required: true}},
   data() {
-    return {faSpinner, selectedEntityId: undefined as number | undefined, editing: false, editError: ''}
+    return {
+      faSpinner, faChevronDown, expandedFields: [] as number[],
+      selectedEntityId: undefined as number | undefined, editing: false, editError: '',
+    }
   },
   computed: {
     ...mapState('requirements', ['loading', 'error', 'entityDocuments']),
@@ -35,6 +39,15 @@ export default defineComponent({
         return {...definition, ...outcome}
       })
     },
+    fieldRequirements(): Record<number, VerifiedRequirement[]> {
+      const related: Record<number, VerifiedRequirement[]> = {}
+      for (const requirement of this.requirements ?? []) {
+        for (const id of requirement.ids_related) {
+          (related[id] ??= []).push(requirement)
+        }
+      }
+      return related
+    },
     selectedDocument(): ReportDocument | undefined {
       if (this.selectedEntityId === undefined) return
       const documentId = this.$store.state.requirements.entityDocuments[this.selectedEntityId]
@@ -46,6 +59,7 @@ export default defineComponent({
       immediate: true,
       handler(id: number) {
         this.selectedEntityId = undefined
+        this.expandedFields = []
         void this.start(id)
       },
     },
@@ -61,6 +75,11 @@ export default defineComponent({
   methods: {
     reportArchiveUrl,
     ...mapActions('requirements', ['start', 'stop', 'load']),
+    toggleField(id: number) {
+      this.expandedFields = this.expandedFields.includes(id)
+          ? this.expandedFields.filter(value => value !== id)
+          : [...this.expandedFields, id]
+    },
     async edit() {
       if (this.editing || this.$store.state.requirements.saving.length) return
       this.editing = true
@@ -91,7 +110,8 @@ export default defineComponent({
 <template>
   <main class="mx-auto max-w-6xl p-6">
     <ReportHeader :report="report"/>
-    <div v-if="loading" class="mt-6 flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500"
+    <div v-if="loading"
+         class="mt-6 flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500"
          role="status">
       <FontAwesomeIcon :icon="faSpinner" class="size-4 shrink-0 animate-spin" aria-hidden="true"/>
       Загружаем результаты проверки…
@@ -127,21 +147,79 @@ export default defineComponent({
             </tr>
             </thead>
             <tbody class="divide-y divide-slate-100">
-            <tr v-for="field in result.card.cells" :key="field.num">
-              <td class="p-4">
-                <RequirementText :text="`#${field.num}`" :entity-documents="entityDocuments"
-                                 @select="selectedEntityId = $event"/>
-              </td>
-              <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.stated) }}</td>
-              <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.expected) }}</td>
-              <td class="whitespace-nowrap p-4 tabular-nums">
-                {{ fieldValue(field, field.diff ?? (field.status === 'ok' ? '0' : null), true) }}
-              </td>
-              <td class="p-4"
-                  :class="field.status === 'ok' ? 'text-green-700' : field.status === 'mismatch' ? 'text-red-700' : 'text-amber-700'">
-                {{ {ok: 'Совпадает', mismatch: 'Расхождение', unverified: 'Недостаточно данных'}[field.status] }}
-              </td>
-            </tr>
+            <template v-for="field in result.card.cells" :key="field.num">
+              <tr class="cursor-pointer hover:bg-slate-50" @click="toggleField(field.num)">
+                <td class="p-4">
+                  <div class="flex items-center gap-3">
+                    <button type="button"
+                            class="cursor-pointer rounded p-1 text-slate-500 focus-visible:outline-blue-500"
+                            :aria-expanded="expandedFields.includes(field.num)"
+                            :aria-controls="`field-requirements-${field.num}`"
+                            :aria-label="`Требования для поля #${field.num}`" @click.stop="toggleField(field.num)">
+                      <FontAwesomeIcon :icon="faChevronDown"
+                                       class="size-3 transition-transform motion-reduce:transition-none"
+                                       :class="{'rotate-180': expandedFields.includes(field.num)}" aria-hidden="true"/>
+                    </button>
+                    <RequirementText :text="`#${field.num}`" :entity-documents="entityDocuments"
+                                     @select="selectedEntityId = $event"/>
+                  </div>
+                </td>
+                <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.stated) }}</td>
+                <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.expected) }}</td>
+                <td class="whitespace-nowrap p-4 tabular-nums">
+                  {{ fieldValue(field, field.diff ?? (field.status === 'ok' ? '0' : null), true) }}
+                </td>
+                <td class="p-4"
+                    :class="field.status === 'ok' ? 'text-green-700' : field.status === 'mismatch' ? 'text-red-700' : 'text-amber-700'">
+                  {{ {ok: 'Совпадает', mismatch: 'Расхождение', unverified: 'Недостаточно данных'}[field.status] }}
+                </td>
+              </tr>
+              <tr v-show="expandedFields.includes(field.num)" :id="`field-requirements-${field.num}`">
+                <td colspan="5" class="bg-slate-50 p-4">
+                  <h3 class="font-medium">Связанные требования ({{ fieldRequirements[field.num]?.length ?? 0 }})</h3>
+                  <p v-if="!fieldRequirements[field.num]?.length" class="mt-3 text-slate-500">
+                    Для этого поля нет связанных требований.
+                  </p>
+                  <ul v-else class="mt-3 divide-y divide-slate-200 rounded border border-slate-200 bg-white">
+                    <li v-for="requirement in fieldRequirements[field.num]" :key="requirement.id" class="p-4">
+                      <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div class="flex min-w-0 flex-1 items-baseline gap-3">
+                          <span class="text-slate-400"><span class="sr-only">Требование </span>{{
+                              requirement.id
+                            }}</span>
+                          <RequirementText
+                              :text="requirement.kind === 'formula' ? requirement.equation : requirement.text || 'Условие не указано'"
+                              :entity-documents="entityDocuments" @select="selectedEntityId = $event"
+                              class="min-w-0 whitespace-pre-wrap break-words leading-7"
+                              :class="{'font-mono': requirement.kind === 'formula'}"/>
+                        </div>
+                        <span :class="{
+                        'text-green-700': requirement.verdict === 'true',
+                        'text-red-700': requirement.verdict === 'false',
+                        'text-orange-700': requirement.verdict === 'error',
+                        'text-amber-700': requirement.verdict === 'unverifiable',
+                      }">{{
+                            {
+                              true: 'Выполнено',
+                              false: 'Нарушено',
+                              error: 'Ошибка проверки',
+                              unverifiable: 'Не удалось проверить'
+                            }[requirement.verdict]
+                          }}</span>
+                      </div>
+                      <p v-if="requirement.kind === 'formula' && requirement.text"
+                         class="mt-2 whitespace-pre-wrap break-words leading-7">
+                        <RequirementText :text="requirement.text" :entity-documents="entityDocuments"
+                                         @select="selectedEntityId = $event"/>
+                      </p>
+                      <p v-if="requirement.error" class="mt-2 whitespace-pre-wrap break-words text-orange-700">
+                        {{ requirement.error }}</p>
+                      <p v-if="requirement.silenced" class="mt-2 text-slate-500">Предупреждение отключено</p>
+                    </li>
+                  </ul>
+                </td>
+              </tr>
+            </template>
             </tbody>
           </table>
         </div>
@@ -152,6 +230,7 @@ export default defineComponent({
                            @select="selectedEntityId = $event"/>
     </template>
     <MarkdownEditor v-if="selectedDocument" :report-id="reportId" :document="selectedDocument"
-                    readonly entities pdf-entities :selected-entity-id="selectedEntityId" @close="selectedEntityId = undefined"/>
+                    readonly entities pdf-entities :selected-entity-id="selectedEntityId"
+                    @close="selectedEntityId = undefined"/>
   </main>
 </template>
