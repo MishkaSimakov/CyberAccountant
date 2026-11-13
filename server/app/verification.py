@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from checkier import PipelineConfig
 from checkier.entities import EntityRegistry, build_registry
 from checkier.formula import collect_ids
+from checkier.report import build_report
 from checkier.solver import solve_system
 from checkier.stage3_replace import run_replace
 from checkier.stage4_scope import run_scope
@@ -13,7 +14,6 @@ from checkier.stage5_relations import generate_relations
 
 from . import storage
 from .models import File, Report
-from .models.requirement import RequirementVerdict
 
 
 @dataclass
@@ -22,6 +22,7 @@ class VerificationContext:
     documents: dict[str, str]
     registry: EntityRegistry
     scope: dict
+    mapping: dict
 
 
 def generate_llm(context: VerificationContext) -> list[dict]:
@@ -42,7 +43,7 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
         role = "card" if file.role == "final_report" else "data"
         text = storage.artifact_path(file.entities_path).read_text(encoding="utf-8")
         tagged[key] = (role, text)
-        mapping[key] = {"role": role, "original": file.name}
+        mapping[key] = {"role": role, "original": file.name, "version": file.version}
         (cfg.tagged_dir / f"{key}.md").write_text(text, encoding="utf-8")
     registry = build_registry(tagged, seed=cfg.seed)
     registry.save(cfg.entities_path)
@@ -52,50 +53,70 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
     if report.target_row and not scope["target_row"]:
         raise ValueError("Не удалось найти проверяемую строку в итоговом отчёте.")
     documents = run_replace(cfg, tagged, registry)
-    return VerificationContext(cfg, documents, registry, scope)
+    return VerificationContext(cfg, documents, registry, scope, mapping)
 
 
 def generate_requirements(context: VerificationContext) -> list[dict]:
     """Every generator receives the same prepared documents, IDs, and scope."""
-    requirements = list(context.scope["scope_relations"])
+    generated = list(context.scope["scope_relations"])
     for name, generate in GENERATORS.items():
-        requirements.extend(dict(requirement, source=name) for requirement in generate(context))
+        generated.extend(dict(requirement, source=name) for requirement in generate(context))
+    by_key = {key: entity.num for entity in context.registry.entities
+              for key in (entity.num, str(entity.num), f"#{entity.num}", entity.mnemonic)}
+    requirements = []
+    for raw in generated:
+        if "equation" in raw:
+            definition = dict(kind="formula", equation=raw["equation"], tag=raw.get("tag"), text=raw.get("text"))
+        else:
+            condition = (raw["condition"] if raw.get("kind") == "assertion"
+                         else {"true": True, "false": False, "unverifiable": None}[raw["verdict"]])
+            definition = dict(kind="assertion", condition=condition, text=raw.get("text", raw.get("evidence")),
+                              ids_related=[by_key.get(key, key) for key in raw["ids_related"]])
+        requirements.append(dict(definition, source=raw["source"]))
     context.config.relations_path.write_text(json.dumps(requirements, ensure_ascii=False), encoding="utf-8")
     return requirements
 
 
-def evaluate_requirements(context: VerificationContext, requirements: list[dict]) -> list[dict]:
-    """Make exactly one solver call with the complete collection of requirements."""
-    relations, findings, verdicts, _dangling = solve_system(
-        requirements, context.registry, variable_keys=context.scope["target_row"],
+def evaluate_requirements(context: VerificationContext, requirements: list[dict]) -> dict:
+    """Evaluate saved definitions once and keep requirement and field outcomes separate."""
+    inputs = []
+    for requirement in requirements:
+        if requirement["kind"] == "formula":
+            inputs.append(dict(equation=requirement["equation"], tag=requirement.get("tag"),
+                               source=requirement["source"]))
+        else:
+            condition = requirement["condition"]
+            inputs.append(dict(evidence=requirement["text"] or "", ids_related=requirement["ids_related"],
+                               verdict="unverifiable" if condition is None else "true" if condition else "false"))
+    relations, findings, verdicts, dangling = solve_system(
+        inputs, context.registry, variable_keys=context.scope["target_row"],
     )
     by_key = {key: entity.num for entity in context.registry.entities
               for key in (entity.num, str(entity.num), f"#{entity.num}", entity.mnemonic)}
     results = []
-    for relation in relations:
-        ids = collect_ids(relation.ast) if relation.ast is not None else []
-        results.append(dict(
-            verdict=RequirementVerdict(relation.status), equation=relation.equation,
-            source=relation.source, tag=relation.tag, error=relation.error,
-            ids_related=sorted({by_key[key] for key in ids if key in by_key}),
-        ))
-    raw_findings = [requirement for requirement in requirements if "equation" not in requirement]
-    for raw, finding in zip(raw_findings, findings):
-        unknown = [key for key in finding.ids_related if key not in by_key]
-        results.append(dict(
-            verdict=RequirementVerdict.ERROR if unknown else RequirementVerdict(finding.verdict),
-            evidence=finding.evidence, source=raw["source"],
-            error=f"Unknown entity IDs: {unknown}" if unknown else None,
-            ids_related=sorted({by_key[key] for key in finding.ids_related if key in by_key}),
-        ))
-    for verdict in verdicts:
-        if not verdict.target:
-            continue
-        status = {"ok": RequirementVerdict.TRUE, "mismatch": RequirementVerdict.FALSE,
-                  "unverified": RequirementVerdict.UNVERIFIABLE}[verdict.status]
-        evidence = (f"Значение #{verdict.num}: указано {verdict.stated}, ожидается {verdict.expected}."
-                    if verdict.expected is not None else f"Недостаточно данных для проверки значения #{verdict.num}.")
-        results.append(dict(verdict=status, evidence=evidence, source="evaluator",
-                            ids_related=[verdict.num], stated=verdict.stated,
-                            expected=verdict.expected, difference=verdict.diff))
-    return results
+    relation_iter, finding_iter = iter(relations), iter(findings)
+    for requirement in requirements:
+        if requirement["kind"] == "formula":
+            relation = next(relation_iter)
+            ids = collect_ids(relation.ast) if relation.ast is not None else []
+            status, error = relation.status, relation.error
+        else:
+            finding = next(finding_iter)
+            ids = finding.ids_related
+            unknown = [key for key in ids if key not in by_key]
+            status = "error" if unknown else finding.verdict
+            error = f"Unknown entity IDs: {unknown}" if unknown else None
+        results.append(dict(requirement_id=requirement["id"], verdict=status, error=error,
+                            ids_related=sorted({by_key[key] for key in ids if key in by_key})))
+
+    result = build_report(context.config, context.mapping, context.registry,
+                          relations, findings, verdicts, dangling, context.scope)
+    result["requirement_results"] = results
+    result["entity_documents"] = {entity.num: int(entity.file) for entity in context.registry.entities}
+    result["entities"] = context.registry.to_dict()["entities"]
+    result["documents"] = context.mapping
+    result["scope"] = context.scope
+    by_num = {entity.num: entity for entity in context.registry.entities}
+    for cell in result["card"]["cells"] + result["constants"]:
+        cell["unit"] = by_num[cell["num"]].unit
+    return result

@@ -3,13 +3,14 @@ import {defineComponent} from 'vue'
 import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
-import type {Report, ReportDetails, ReportDocument, Requirement} from '../api'
+import type {FieldVerdict, Report, ReportDetails, ReportDocument, VerifiedRequirement, VerificationResult} from '../api'
 import ReportHeader from '../components/ReportHeader.vue'
 import RequirementsResults from '../components/RequirementsResults.vue'
 import MarkdownEditor from '../components/MarkdownEditor.vue'
+import RequirementText from '../components/RequirementText.vue'
 
 export default defineComponent({
-  components: {FontAwesomeIcon, ReportHeader, RequirementsResults, MarkdownEditor},
+  components: {FontAwesomeIcon, ReportHeader, RequirementsResults, MarkdownEditor, RequirementText},
   props: {reportId: {type: Number, required: true}},
   data() {
     return {faSpinner, selectedEntityId: undefined as number | undefined}
@@ -19,8 +20,18 @@ export default defineComponent({
     report(): ReportDetails | null {
       return this.$store.state.requirements.report
     },
-    requirements(): Requirement[] | null {
-      return this.$store.state.requirements.items
+    result(): VerificationResult | null {
+      return this.$store.state.requirements.result
+    },
+    requirements(): VerifiedRequirement[] | null {
+      const items = this.$store.state.requirements.items
+      if (items === null || this.result === null) return null
+      const definitions = new Map(items.map(item => [item.id, item]))
+      return this.result.requirement_results.map(outcome => {
+        const definition = definitions.get(outcome.requirement_id)
+        if (!definition) throw new Error('Не найдено определение требования.')
+        return {...definition, ...outcome}
+      })
     },
     selectedDocument(): ReportDocument | undefined {
       if (this.selectedEntityId === undefined) return
@@ -47,6 +58,15 @@ export default defineComponent({
   },
   methods: {
     ...mapActions('requirements', ['start', 'stop', 'load']),
+    fieldValue(field: FieldVerdict, value: string | null, difference = false): string {
+      if (value === null) return '—'
+      if (field.type === 'date' && !difference) return new Date((Number(value) - 719163) * 86400000)
+          .toLocaleDateString('ru-RU', {timeZone: 'UTC'})
+      if (field.type === 'amount' && Number.isFinite(Number(value))) {
+        return Number(value).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+      }
+      return value
+    },
   },
 })
 </script>
@@ -63,8 +83,45 @@ export default defineComponent({
       <p role="alert">{{ error }}</p>
       <button class="mt-4 cursor-pointer text-blue-700 hover:underline" @click="load">Повторить загрузку</button>
     </div>
-    <RequirementsResults v-else-if="requirements !== null" :key="reportId" :requirements="requirements"
-                         :entity-documents="entityDocuments" @select="selectedEntityId = $event"/>
+    <template v-else-if="result && requirements !== null">
+      <section class="mt-6 overflow-hidden rounded-lg border border-slate-200 bg-white"
+               aria-labelledby="fields-heading">
+        <h2 id="fields-heading" class="border-b border-slate-200 p-4 font-semibold">Проверка значений отчёта</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500">
+            <tr>
+              <th class="p-4">Поле</th>
+              <th class="p-4">Указано</th>
+              <th class="p-4">Ожидается</th>
+              <th class="p-4">Расхождение</th>
+              <th class="p-4">Статус</th>
+            </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+            <tr v-for="field in result.card.cells" :key="field.num">
+              <td class="p-4">
+                <RequirementText :text="`#${field.num}`" :entity-documents="entityDocuments"
+                                 @select="selectedEntityId = $event"/>
+                <span class="ml-2 text-slate-500">{{ field.raw }}</span>
+              </td>
+              <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.stated) }}</td>
+              <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.expected) }}</td>
+              <td class="whitespace-nowrap p-4 tabular-nums">
+                {{ fieldValue(field, field.diff ?? (field.status === 'ok' ? '0' : null), true) }}
+              </td>
+              <td class="p-4"
+                  :class="field.status === 'ok' ? 'text-green-700' : field.status === 'mismatch' ? 'text-red-700' : 'text-amber-700'">
+                {{ {ok: 'Совпадает', mismatch: 'Расхождение', unverified: 'Недостаточно данных'}[field.status] }}
+              </td>
+            </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <RequirementsResults :key="reportId" :requirements="requirements" :entity-documents="entityDocuments"
+                           @select="selectedEntityId = $event"/>
+    </template>
     <MarkdownEditor v-if="selectedDocument" :report-id="reportId" :document="selectedDocument"
                     readonly entities :selected-entity-id="selectedEntityId" @close="selectedEntityId = undefined"/>
   </main>

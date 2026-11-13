@@ -95,28 +95,63 @@ export const retryDocumentExtraction = (reportId: number, documentId: number) =>
 
 export type RequirementVerdict = 'true' | 'false' | 'error' | 'unverifiable'
 
-export interface Requirement {
+interface RequirementMetadata {
     id: number
-    verdict: RequirementVerdict
-    equation: string | null
-    evidence: string | null
+    text: string | null
     source: string
-    error: string | null
-    ids_related: number[]
     notes: string
     silenced: boolean
+}
+
+export type Requirement = RequirementMetadata & (
+    { kind: 'formula'; equation: string; tag: 'contract' | 'period' | 'agg' | 'ref' | null }
+    | { kind: 'assertion'; condition: boolean | null; ids_related: (number | string)[] }
+    )
+
+export interface RequirementResult {
+    requirement_id: number
+    verdict: RequirementVerdict
+    error: string | null
+    ids_related: number[]
+}
+
+export type VerifiedRequirement = Requirement & RequirementResult
+
+export interface FieldVerdict {
+    num: number
+    raw: string
+    type: string
+    unit: string
+    file: string
+    status: 'ok' | 'mismatch' | 'unverified'
+    stated: string | null
+    expected: string | null
+    diff: string | null
+}
+
+export interface VerificationResult {
+    requirement_results: RequirementResult[]
+    card: { cells: FieldVerdict[] }
+    entity_documents: Record<number, number>
+    files: {
+        duplicates: Record<string, string>
+        out_of_scope: Record<string, string[]>
+        dangling: string[]
+    }
 }
 
 export const runVerification = (reportId: number) =>
     request<ReportDetails>(`/reports/${reportId}/run-verification`, {method: 'POST'})
 
-export interface RequirementsResult {
+export interface RequirementsResponse {
     requirements: Requirement[]
-    entity_documents: Record<number, number>
 }
 
 export const getRequirements = (reportId: number) =>
-    request<RequirementsResult>(`/reports/${reportId}/requirements`)
+    request<RequirementsResponse>(`/reports/${reportId}/requirements`)
+
+export const getVerificationResult = (reportId: number) =>
+    request<VerificationResult>(`/reports/${reportId}/verification-result`)
 
 export type RequirementUpdate = Partial<Pick<Requirement, 'notes' | 'silenced'>>
 

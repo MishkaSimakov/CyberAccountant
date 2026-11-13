@@ -1,13 +1,15 @@
 """Queue report verification and expose its atomically published results."""
 
 import logging
+from pathlib import Path
 
 from sqlalchemy import select
 
 from ..database import session_scope
-from ..models import EntityFile, Requirement
+from .. import storage
+from ..models import Requirement, VerificationResult
 from ..queue import enqueue_verification
-from ..schemas.requirements import RequirementResponse, RequirementsResult, RequirementUpdate
+from ..schemas.requirements import RequirementResponse, RequirementsResponse, RequirementUpdate, requirement_adapter
 from . import ServiceError
 from .reports import blockers_for, document_response, find_report, report_documents
 
@@ -40,25 +42,31 @@ def run_verification(report_id: int) -> None:
 
 
 def requirement_response(requirement: Requirement) -> RequirementResponse:
-    return RequirementResponse(
-        **requirement.json_data, id=requirement.id, verdict=requirement.verdict,
+    return requirement_adapter.validate_python(dict(
+        **requirement.json_data, id=requirement.id, text=requirement.text, source=requirement.source,
         notes=requirement.note, silenced=requirement.is_silenced,
-    )
+    ))
 
 
-def requirements_result(report_id: int) -> RequirementsResult:
+def report_requirements(report_id: int) -> RequirementsResponse:
+    with session_scope() as session:
+        find_report(session, report_id)
+        return RequirementsResponse(
+            requirements=[requirement_response(requirement) for requirement in session.scalars(
+                select(Requirement).where(Requirement.report_id == report_id).order_by(Requirement.id)
+            )],
+        )
+
+
+def verification_result_file(report_id: int) -> Path:
     with session_scope() as session:
         report = find_report(session, report_id)
         if report.stage != "verification" or report.processing_status != "completed":
             raise ServiceError(409, "Дождитесь завершения проверки требований.")
-        return RequirementsResult(
-            requirements=[requirement_response(requirement) for requirement in session.scalars(
-                select(Requirement).where(Requirement.report_id == report_id).order_by(Requirement.id)
-            )],
-            entity_documents={entity.entity_id: entity.file_id for entity in session.scalars(
-                select(EntityFile).where(EntityFile.report_id == report_id)
-            )},
-        )
+        result = session.get(VerificationResult, report_id)
+        if result is None or not storage.artifact_path(result.path).is_file():
+            raise ServiceError(404, "Результат проверки не найден.")
+        return storage.artifact_path(result.path)
 
 
 def update_requirement(report_id: int, requirement_id: int, payload: RequirementUpdate) -> RequirementResponse:

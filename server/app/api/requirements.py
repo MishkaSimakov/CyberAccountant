@@ -1,8 +1,9 @@
 """Report verification and requirement annotations."""
 
 from fastapi import APIRouter
+from fastapi.responses import FileResponse
 
-from ..schemas.requirements import RequirementResponse, RequirementsResult, RequirementUpdate
+from ..schemas.requirements import RequirementResponse, RequirementsResponse, RequirementUpdate
 from ..services import requirements as service
 from ..services.reports import report_details
 
@@ -15,9 +16,14 @@ def run_verification(report_id: int):
     return report_details(report_id)
 
 
-@router.get("/reports/{report_id}/requirements", response_model=RequirementsResult)
+@router.get("/reports/{report_id}/requirements", response_model=RequirementsResponse)
 def requirements(report_id: int):
-    return service.requirements_result(report_id)
+    return service.report_requirements(report_id)
+
+
+@router.get("/reports/{report_id}/verification-result")
+def verification_result(report_id: int):
+    return FileResponse(service.verification_result_file(report_id), media_type="application/json")
 
 
 @router.patch("/reports/{report_id}/requirements/{requirement_id}", response_model=RequirementResponse)

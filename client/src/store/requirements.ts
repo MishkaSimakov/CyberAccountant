@@ -2,10 +2,12 @@ import type {Module} from 'vuex'
 import {
     getReport,
     getRequirements,
+    getVerificationResult,
     updateRequirement,
     type ReportDetails,
     type Requirement,
-    type RequirementUpdate
+    type RequirementUpdate,
+    type VerificationResult,
 } from '../api'
 import type {RootState} from './index'
 
@@ -14,6 +16,7 @@ export interface RequirementsState {
     session: number
     report: ReportDetails | null
     items: Requirement[] | null
+    result: VerificationResult | null
     entityDocuments: Record<number, number>
     loading: boolean
     error: string
@@ -23,7 +26,7 @@ export interface RequirementsState {
 
 const initialState = (): RequirementsState => ({
     id: null, session: 0, report: null, items: null, loading: false, error: '',
-    saving: [], saveErrors: {}, entityDocuments: {},
+    saving: [], saveErrors: {}, entityDocuments: {}, result: null,
 })
 
 export const requirements: Module<RequirementsState, RootState> = {
@@ -55,9 +58,9 @@ export const requirements: Module<RequirementsState, RootState> = {
                 if (state.session !== session) return
                 commit('patch', {report})
                 if (report.stage !== 'verification' || report.processing_status !== 'completed') return
-                const result = await getRequirements(id)
+                const [definitions, result] = await Promise.all([getRequirements(id), getVerificationResult(id)])
                 if (state.session === session) commit('patch', {
-                    items: result.requirements, entityDocuments: result.entity_documents,
+                    items: definitions.requirements, result, entityDocuments: result.entity_documents,
                 })
             } catch (cause) {
                 if (state.session === session) commit('patch', {
