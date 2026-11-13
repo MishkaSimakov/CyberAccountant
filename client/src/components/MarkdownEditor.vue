@@ -109,7 +109,6 @@ export default defineComponent({
         <h2 id="editor-heading" class="line-clamp-2 break-all text-lg font-semibold">{{ document.name }}</h2>
       </div>
       <div class="flex shrink-0 items-center gap-2">
-        <a :href="url" target="_blank" rel="noopener" class="text-blue-700 hover:underline">Открыть PDF ↗</a>
         <button v-if="!readonly" type="button"
                 class="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded bg-blue-600 px-3 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 :aria-label="saving ? 'Сохраняем…' : 'Сохранить изменения'"
@@ -120,7 +119,7 @@ export default defineComponent({
           <span>{{ saving ? 'Сохраняем…' : 'Сохранить' }}</span>
         </button>
         <button type="button"
-                class="ml-16 inline-flex size-9 cursor-pointer items-center justify-center rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
+                class="inline-flex size-9 cursor-pointer items-center justify-center rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
                 aria-label="Закрыть" title="Закрыть" :disabled="saving" @click="close">
           <FontAwesomeIcon :icon="faXmark" class="size-4" aria-hidden="true"/>
         </button>
