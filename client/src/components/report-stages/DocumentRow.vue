@@ -5,9 +5,10 @@ import {faFileLines} from '@fortawesome/free-solid-svg-icons/faFileLines'
 import {faTrashCan} from '@fortawesome/free-solid-svg-icons/faTrashCan'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import type {ReportDocument} from '../../api'
+import LogModal from '../LogModal.vue'
 
 export default defineComponent({
-  components: {FontAwesomeIcon},
+  components: {FontAwesomeIcon, LogModal},
   props: {
     file: {type: Object as PropType<Pick<ReportDocument, 'name' | 'size' | 'role' | 'error'>>, required: true},
     status: {type: String as PropType<ReportDocument['status'] | 'uploading'>, required: true},
@@ -16,11 +17,13 @@ export default defineComponent({
     removable: Boolean,
     removing: Boolean,
     disabled: Boolean,
+    logUrl: {type: String, default: ''},
   },
   emits: ['remove'],
   data() {
     return {
       faFileLines, faTrashCan, faSpinner,
+      showingLog: false,
       statusLabels: {
         uploading: 'Загружается…',
         ocr_queued: 'В очереди распознавания',
@@ -57,7 +60,13 @@ export default defineComponent({
         {{ file.role === 'final_report' ? 'Итоговый отчёт' : 'Подтверждающий документ' }} ·
         {{ sizeLabel }}<span v-if="edited" class="ml-2 text-blue-700">Изменён пользователем</span>
       </p>
-      <p v-if="file.error" class="mt-2 text-xs text-red-700" role="alert">{{ file.error }}</p>
+      <div v-if="file.error" class="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
+        <p class="min-w-0 break-words text-red-700" role="alert">{{ file.error }}</p>
+        <button v-if="logUrl" type="button"
+                class="shrink-0 cursor-pointer rounded text-blue-700 underline underline-offset-2 hover:text-blue-900"
+                :aria-label="`Подробнее об ошибке в ${file.name}`" @click="showingLog = true">Подробнее
+        </button>
+      </div>
     </div>
     <div class="flex flex-wrap items-center gap-2">
       <span class="inline-flex h-7 items-center rounded px-3 text-xs leading-none" role="status"
@@ -78,4 +87,6 @@ export default defineComponent({
       </button>
     </div>
   </li>
+  <LogModal v-if="showingLog" :src="logUrl" :title="`Журнал обработки — ${file.name}`"
+            @close="showingLog = false"/>
 </template>

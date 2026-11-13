@@ -30,6 +30,14 @@ def artifact_path(relative_path: str) -> Path:
     return storage_root() / relative_path
 
 
+def create_file_log(report_id: int, file_id: int) -> str:
+    relative = f"{report_id}/{file_id}/processing.log"
+    destination = artifact_path(relative)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.touch(exist_ok=True)
+    return relative
+
+
 def save_verification_result(report_id: int, result: dict) -> str:
     relative = f"{report_id}/verification/report-{uuid4().hex}.json"
     destination = artifact_path(relative)

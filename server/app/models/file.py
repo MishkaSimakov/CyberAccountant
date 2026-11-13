@@ -38,6 +38,7 @@ class File(Timestamps, Base):
     pdf_path: Mapped[str | None]
     markdown_path: Mapped[str | None]
     entities_path: Mapped[str | None]
+    log_path: Mapped[str | None]
     role: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), server_default=text("'ocr_queued'"))
     error: Mapped[str | None]

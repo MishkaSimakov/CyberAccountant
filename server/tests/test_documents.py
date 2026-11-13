@@ -48,7 +48,7 @@ def request(method, path, payload=None, *, body=None, content_type="application/
         return messages[0]["status"], content
 
     status, content = asyncio.run(run())
-    return status, json.loads(content) if content and not path.endswith(("/original", "/pdf")) else content
+    return status, json.loads(content) if content and not path.endswith(("/original", "/pdf", "/log")) else content
 
 
 def upload(report_id, name="invoice.pdf", role="supporting", content=b"%PDF-1.4\ninvoice\n%%EOF"):
@@ -128,7 +128,7 @@ def test_documents_are_scoped_and_can_be_deleted_while_queued(api):
     _, uploaded = upload(report_id, name="../../invoice.pdf")
     assert uploaded["name"] == "invoice.pdf"
     document_id = uploaded["id"]
-    for suffix in ("", "/original", "/pdf", "/markdown"):
+    for suffix in ("", "/original", "/pdf", "/markdown", "/log"):
         assert request("GET", f'/reports/{other["id"]}/documents/{document_id}{suffix}')[0] == 404
     assert request("GET", f"/reports/{report_id}/documents/{document_id}/markdown")[0] == 409
     assert request("GET", f"/reports/{report_id}/documents/{document_id}/pdf")[0] == 409
@@ -136,6 +136,29 @@ def test_documents_are_scoped_and_can_be_deleted_while_queued(api):
     ocr.process_ocr(pending[0])
     assert request("GET", f"/reports/{report_id}")[1]["documents"] == []
     assert not (storage.storage_root() / str(report_id) / str(document_id)).exists()
+
+
+def test_document_log_is_separate_from_metadata_and_served_as_plain_text(api):
+    report_id, pending = api
+    status, document = upload(report_id)
+    assert status == 201
+    path = f'/reports/{report_id}/documents/{document["id"]}'
+    assert request("GET", path + "/log") == (200, b"")
+    content = "<script>raw log</script>\r\nСтрока журнала\n".encode("utf-8")
+    with database.session_scope() as session:
+        file = session.get(File, pending[0])
+        log_path = storage.artifact_path(file.log_path)
+        with log_path.open("ab") as output:
+            output.write(content)
+    assert request("GET", path + "/log") == (200, content)
+    assert "raw log" not in json.dumps(request("GET", path)[1])
+    from app.api.documents import document_log
+    response = document_log(report_id, document["id"])
+    assert response.media_type == "text/plain; charset=utf-8"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
+    log_path.unlink()
+    assert request("GET", path + "/log")[0] == 404
 
 
 def test_real_ocr_preserves_artifacts_and_updates_progress(api):

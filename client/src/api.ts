@@ -76,6 +76,9 @@ export const deleteDocument = (reportId: number, documentId: number) =>
 export const pdfUrl = (reportId: number, documentId: number) =>
     `/api/v1/reports/${reportId}/documents/${documentId}/pdf`
 
+export const documentLogUrl = (reportId: number, documentId: number) =>
+    `/api/v1/reports/${reportId}/documents/${documentId}/log`
+
 export const getMarkdown = (reportId: number, documentId: number) =>
     request<MarkdownRevision>(`/reports/${reportId}/documents/${documentId}/markdown`)
 

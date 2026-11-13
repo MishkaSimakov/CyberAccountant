@@ -4,7 +4,7 @@ import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import {faRotateRight} from '@fortawesome/free-solid-svg-icons/faRotateRight'
-import type {ReportDetails, ReportDocument} from '../../api'
+import {documentLogUrl, type ReportDetails, type ReportDocument} from '../../api'
 import DocumentRow from './DocumentRow.vue'
 
 export default defineComponent({
@@ -23,6 +23,7 @@ export default defineComponent({
     },
   },
   methods: {
+    documentLogUrl,
     ...mapActions('report', ['refresh', 'remove', 'dismissUpload', 'retryExtraction']),
   },
 })
@@ -61,22 +62,23 @@ export default defineComponent({
                    :status="upload.error ? 'failed' : 'uploading'" :removable="Boolean(upload.error)"
                    :disabled="advancing" @remove="dismissUpload(upload.id)"/>
       <DocumentRow v-for="document in report.documents" :key="document.id" :file="document"
+                   :log-url="documentLogUrl(report.id, document.id)"
                    :status="document.status" :edited="document.user_edited" :duplicate="duplicateIds.has(document.id)"
                    :removable="report.stage === 'documents'" :removing="deleting.includes(document.id)"
                    :disabled="advancing" @remove="remove(document.id)">
-          <button
-              v-if="report.stage === 'entities' && (document.status === 'failed' || retrying.includes(document.id))"
-              class="inline-flex h-7 cursor-pointer items-center gap-2 rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-              :aria-label="`Повторить извлечение из ${document.name}`"
-              :disabled="advancing || retrying.includes(document.id)" @click="retryExtraction(document.id)">
-            <FontAwesomeIcon :icon="retrying.includes(document.id) ? faSpinner : faRotateRight" class="size-3"
-                             :class="{'animate-spin': retrying.includes(document.id)}" aria-hidden="true"/>
-            {{ retrying.includes(document.id) ? 'Повторяем…' : 'Повторить извлечение' }}
-          </button>
-          <button v-if="document.status === (report.stage === 'documents' ? 'ocr_completed' : 'completed')"
-                  class="inline-flex h-7 cursor-pointer items-center rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-                  :disabled="deleting.includes(document.id) || advancing" @click="$emit('select', document)">Просмотреть
-          </button>
+        <button
+            v-if="report.stage === 'entities' && (document.status === 'failed' || retrying.includes(document.id))"
+            class="inline-flex h-7 cursor-pointer items-center gap-2 rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+            :aria-label="`Повторить извлечение из ${document.name}`"
+            :disabled="advancing || retrying.includes(document.id)" @click="retryExtraction(document.id)">
+          <FontAwesomeIcon :icon="retrying.includes(document.id) ? faSpinner : faRotateRight" class="size-3"
+                           :class="{'animate-spin': retrying.includes(document.id)}" aria-hidden="true"/>
+          {{ retrying.includes(document.id) ? 'Повторяем…' : 'Повторить извлечение' }}
+        </button>
+        <button v-if="document.status === (report.stage === 'documents' ? 'ocr_completed' : 'completed')"
+                class="inline-flex h-7 cursor-pointer items-center rounded px-3 text-xs leading-none text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                :disabled="deleting.includes(document.id) || advancing" @click="$emit('select', document)">Просмотреть
+        </button>
       </DocumentRow>
     </ul>
   </section>
