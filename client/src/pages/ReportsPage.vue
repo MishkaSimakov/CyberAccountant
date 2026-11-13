@@ -7,11 +7,12 @@ import {faPlus} from '@fortawesome/free-solid-svg-icons/faPlus'
 import {faRotateRight} from '@fortawesome/free-solid-svg-icons/faRotateRight'
 import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import type {Report} from '../api'
+import RefreshButton from '../components/RefreshButton.vue'
 
 const dateFormatter = new Intl.DateTimeFormat('ru-RU', {timeZone: 'UTC'})
 
 export default defineComponent({
-  components: {RouterLink, FontAwesomeIcon},
+  components: {RouterLink, FontAwesomeIcon, RefreshButton},
   data() {
     return {
       form: {name: '', contract_number: '', period_start: '', period_end: '', target_row: ''},
@@ -93,12 +94,7 @@ export default defineComponent({
         <h2 id="reports-heading" class="font-semibold">
           Все отчёты <span v-if="!loading && !loadError" class="ml-2 text-slate-500">{{ reports.length }}</span>
         </h2>
-        <button
-            class="inline-flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-            :disabled="loading" @click="loadReports">
-          <FontAwesomeIcon :icon="faRotateRight" class="size-3 text-slate-400" aria-hidden="true"/>
-          Обновить
-        </button>
+        <RefreshButton :loading="loading" @refresh="loadReports"/>
       </div>
 
       <div v-if="loading" class="border-t border-slate-200 p-8 text-center text-slate-500" role="status">

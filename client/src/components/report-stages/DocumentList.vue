@@ -6,14 +6,16 @@ import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import {faRotateRight} from '@fortawesome/free-solid-svg-icons/faRotateRight'
 import {documentLogUrl, type ReportDetails, type ReportDocument} from '../../api'
 import DocumentRow from './DocumentRow.vue'
+import RefreshButton from '../RefreshButton.vue'
 
 export default defineComponent({
-  components: {FontAwesomeIcon, DocumentRow},
+  components: {FontAwesomeIcon, DocumentRow, RefreshButton},
   props: {report: {type: Object as PropType<ReportDetails>, required: true}},
   emits: {select: (document: ReportDocument) => Boolean(document)},
   data() {
     return {
       faSpinner, faRotateRight,
+      refreshing: false,
     }
   },
   computed: {
@@ -25,6 +27,15 @@ export default defineComponent({
   methods: {
     documentLogUrl,
     ...mapActions('report', ['refresh', 'remove', 'dismissUpload', 'retryExtraction']),
+    async refreshDocuments() {
+      if (this.refreshing) return
+      this.refreshing = true
+      try {
+        await this.refresh()
+      } finally {
+        this.refreshing = false
+      }
+    },
   },
 })
 </script>
@@ -46,12 +57,7 @@ export default defineComponent({
             <span class="text-xs text-slate-500" aria-live="polite">Обработано {{
                 report.progress.completed
               }} из {{ report.progress.total }}</span>
-        <button
-            class="inline-flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-            @click="refresh">
-          <FontAwesomeIcon :icon="faRotateRight" class="size-3 text-slate-400" aria-hidden="true"/>
-          Обновить
-        </button>
+        <RefreshButton :loading="refreshing" @refresh="refreshDocuments"/>
       </div>
     </div>
     <p v-if="!report.documents.length && !uploads.length"
