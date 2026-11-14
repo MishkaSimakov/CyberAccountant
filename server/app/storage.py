@@ -83,7 +83,8 @@ def save_ocr(report_id: int, file_id: int, version: int, output: Path) -> str:
 
 
 def save_entities(report_id: int, file_id: int, version: int, markdown: str) -> str:
-    relative = Path(str(report_id)) / str(file_id) / "versions" / str(version) / "entities" / "document.md"
+    relative = (Path(str(report_id)) / str(file_id) / "versions" / str(version)
+                / "entities" / f"document-{uuid4().hex}.md")
     destination = artifact_path(str(relative))
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(markdown, encoding="utf-8")

@@ -10,6 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class EntityAttributes(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Identities are assigned by the application and preserved during review.
+    # The identity parser validates their format and pairing before this schema.
+    id: str | None = None
+    mnemonic: str | None = None
+
     # Entity type: monetary amount, date, document ID, contract number,
     # plain number, percentage, or ratio. The original text is inside the <ent> tag.
     t: Literal["amount", "date", "docid", "contract", "number", "pct", "ratio"]

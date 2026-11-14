@@ -56,3 +56,21 @@ def test_plain_markdown_and_repeated_entries_are_preserved():
     content = '# Title\n<ent t="number">1</ent> <ent t="number">1</ent>\n'
     assert prepare_entities(content) == content
     assert prepare_entities('# Plain markdown\n') == '# Plain markdown\n'
+
+
+def test_complete_identities_and_original_attribute_formatting_are_preserved():
+    content = ('Before <ent\n mnemonic="abandon-abandon"  id="0" t = "number" '
+               'value="1 &gt; 0">**1**</ent> <ent t="number">2</ent>\n')
+    assert prepare_entities(content) == content
+
+
+@pytest.mark.parametrize("content", [
+    '<ent id="0" mnemonic="broken" t="number">1</ent>',
+    '<ent id="0" mnemonic="abandon-abandon" t="number">1</ent>' * 2,
+    '<ent id="-1" mnemonic="abandon-abandon" t="number">1</ent>',
+    '<ent mnemonic="abandon-abandon" t="number">1</ent>',
+])
+def test_invalid_complete_or_partial_identities_are_rejected(content):
+    with pytest.raises(HTTPException) as error:
+        prepare_entities(content)
+    assert error.value.status_code == 422

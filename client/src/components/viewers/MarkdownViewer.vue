@@ -308,9 +308,26 @@ export default defineComponent({
     apply() {
       const entity = this.selected
       if (!this.entities || this.readonly || !entity?.range || this.valueError) return
-      const unit = this.draftUnit ? ` u="${escapeHtml(this.draftUnit)}"` : ''
-      const norm = this.draftNorm.trim() !== '1' ? ` n="${escapeHtml(this.draftNorm.trim())}"` : ''
-      const markup = `<ent t="${escapeHtml(this.draftType)}"${unit}${norm} value="${escapeHtml(this.draftValue)}">${entity.body}</ent>`
+      const attributes = {...entity.attributes}
+      if (entity.isNew || this.draftType !== (entity.attributes.t ?? 'number')) {
+        attributes.t = this.draftType
+      }
+      if (entity.isNew || this.draftValue !== (entity.attributes.value ?? '')) {
+        attributes.value = this.draftValue
+      }
+      const originalUnit = entity.attributes.u ?? (entity.attributes.t === 'amount' ? 'RUB' : '')
+      if (entity.isNew || this.draftUnit !== originalUnit) {
+        if (this.draftUnit) attributes.u = this.draftUnit
+        else delete attributes.u
+      }
+      if (entity.isNew || this.draftNorm.trim() !== (entity.attributes.n ?? '1').trim()) {
+        if (this.draftNorm.trim() !== '1') attributes.n = this.draftNorm.trim()
+        else delete attributes.n
+      }
+      const fields = Object.entries(attributes)
+          .filter((entry): entry is [string, string] => entry[1] !== null)
+          .map(([name, value]) => `${name}="${escapeHtml(value)}"`).join(' ')
+      const markup = `<ent ${fields}>${entity.body}</ent>`
       this.replaceEntity(markup)
     },
     removeEntity() {

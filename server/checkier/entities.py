@@ -23,7 +23,6 @@ MONTHS_RU = {
     "июль": 7, "август": 8, "сентябрь": 9, "октябрь": 10, "ноябрь": 11, "декабрь": 12,
 }
 
-
 # ---------------------------------------------------------------------------
 # Value normalization
 # ---------------------------------------------------------------------------
@@ -291,6 +290,11 @@ def build_registry(
                 loc=loc,
                 source_text=raw,
             )
+            # Application-reviewed tags already own their report-local identity.
+            # Draft parsing remains available for normalization and standalone runs.
+            if "id" in attrs and "mnemonic" in attrs:
+                entity.num = int(attrs["id"])
+                entity.mnemonic = attrs["mnemonic"]
             if "value" in attrs:
                 value = attrs["value"]
                 if t == "date":

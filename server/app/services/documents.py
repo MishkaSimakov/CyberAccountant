@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 from ..logging import create_file_log
 from .. import storage
 from ..database import session_scope
-from ..entities import prepare_entities
+from ..entities import assign_document_identities
 from ..entity_geometry import EntityNotFound, locate_entity
-from ..models import File
+from ..models import EntityFile, File
 from ..queue import enqueue_ocr
 from ..schemas.documents import Document, MarkdownEdit, MarkdownRevision
 from . import ServiceError
@@ -154,6 +154,7 @@ def delete_document(report_id: int, file_id: int) -> None:
         file = find_document(session, report_id, file_id)
         if file.status == "ocr_running":
             raise ServiceError(409, "Дождитесь завершения распознавания документа.")
+        session.execute(delete(EntityFile).where(EntityFile.report_id == report_id, EntityFile.file_id == file_id))
         session.execute(delete(File).where(File.report_id == report_id, File.file_id == file_id))
         sync_processing_status(session, report)
     shutil.rmtree(storage.storage_root() / str(report_id) / str(file_id), ignore_errors=True)
@@ -172,7 +173,8 @@ def edit_markdown(report_id: int, file_id: int, payload: MarkdownEdit) -> Markdo
             raise ServiceError(409, "Документ уже изменён. Откройте его заново.")
         if not payload.content.strip():
             raise ServiceError(422, "Текст документа не должен быть пустым.")
-        content = prepare_entities(payload.content)
+        previous = storage.artifact_path(file.entities_path or file.markdown_path).read_text(encoding="utf-8")
+        content = assign_document_identities(session, report_id, file_id, payload.content, previous)
         version = file.version + 1
         # User edits are preserved separately from regenerable OCR/extraction output.
         relative = Path(str(report_id)) / str(file_id) / "versions" / str(version) / "edited" / "document.md"

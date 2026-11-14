@@ -6,15 +6,18 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
+from fastapi import HTTPException
 from redis import Redis
 from rq import Queue, SimpleWorker
 from rq.job import Job
+from sqlalchemy import select
 
 from processing.common.llm import ModelClient
+from processing.entities.identifiers import assign_identities, read_identities
 
 from app import database, queue, storage
 from app.jobs import entities as job
-from app.models import File, Report
+from app.models import EntityFile, File, Report, ReportEntityCounter
 from app.services import entities, reports
 from test_documents import api, request, upload
 
@@ -24,6 +27,10 @@ SEGMENTS = [
     {"content": " руб.\n", "wrap": "", "type": "EOF"},
 ]
 TAGGED = '# Сумма\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+
+
+def canonical(num=0):
+    return assign_identities(TAGGED, range(num, num + 1))
 
 
 @pytest.fixture
@@ -181,15 +188,17 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     assert details["processing_status"] == "completed"
     assert details["available_actions"] == ["generate_requirements"]
     assert not details["blockers"]
-    for document in details["documents"]:
+    for index, document in enumerate(details["documents"]):
         assert document["status"] == "completed"
-        assert request("GET", path + f'/documents/{document["id"]}/markdown')[1]["content"] == TAGGED
+        assert request("GET", path + f'/documents/{document["id"]}/markdown')[1]["content"] == canonical(index)
         assert request("GET", path + f'/documents/{document["id"]}')[1]["status"] == "completed"
     with database.session_scope() as session:
-        for revision_id in revisions:
+        for index, revision_id in enumerate(revisions):
             file = session.get(File, revision_id)
             assert storage.artifact_path(file.markdown_path).read_text(encoding="utf-8") == MARKDOWN
-            assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == TAGGED
+            assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == canonical(index)
+            assert session.get(EntityFile, (report_id, index)).file_id == file.file_id
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 2
 
 
 @pytest.mark.parametrize("per_document", [False, True])
@@ -288,7 +297,7 @@ def test_date_normalization_finishes_before_extraction_is_completed(ready, monke
         file = session.get(File, revisions[0])
         assert file.status == "completed"
         assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == (
-            '<ent t="date" value="2026-01-01">Январь 2026</ent>'
+            '<ent id="0" mnemonic="abandon-abandon" t="date" value="2026-01-01">Январь 2026</ent>'
         )
 
 
@@ -363,6 +372,14 @@ def test_extraction_calls_run_outside_report_transaction(ready, monkeypatch):
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(job.process_entities, revisions))
     assert request("GET", f"/reports/{report_id}")[1]["processing_status"] == "completed"
+    with database.session_scope() as session:
+        files = reports.report_documents(session, report_id)
+        identities = [identity for file in files for identity in read_identities(
+            storage.artifact_path(file.entities_path).read_text(encoding="utf-8"))]
+        assert {identity.num for identity in identities} == {0, 1}
+        assert len({identity.mnemonic for identity in identities}) == 2
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 2
+        assert len(list(session.scalars(select(EntityFile)))) == 2
 
 
 def test_real_rq_uses_separate_entities_queue(ready, monkeypatch):
@@ -397,7 +414,8 @@ def test_review_edits_preserve_revisions_and_checkier_fields(ready):
     with database.session_scope() as session:
         file_id = session.get(File, revisions[0]).file_id
     markdown_path = path + f"/documents/{file_id}/markdown"
-    content = '<ent t="amount" u="RUB_K" n="1000" value="250000.00">100,00</ent>'
+    content = ('<ent id="0" mnemonic="abandon-abandon" t="amount" '
+               'u="RUB_K" n="1000" value="250000.00">100,00</ent>')
     status, result = request("POST", markdown_path, {"content": content, "base_revision": 1})
     assert status == 200
     assert result == {"content": content, "revision": 2}
@@ -410,7 +428,7 @@ def test_review_edits_preserve_revisions_and_checkier_fields(ready):
     with database.session_scope() as session:
         original = session.get(File, revisions[0])
         assert storage.artifact_path(original.markdown_path).read_text(encoding="utf-8") == MARKDOWN
-        assert storage.artifact_path(original.entities_path).read_text(encoding="utf-8") == TAGGED
+        assert storage.artifact_path(original.entities_path).read_text(encoding="utf-8") == canonical()
         edited = reports.report_documents(session, report_id)[0]
         assert edited.version == 2 and edited.status == "completed"
         assert "/edited/" in edited.entities_path
@@ -456,4 +474,120 @@ def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
     assert pending == [edited_id, revisions[1]]
     job.process_entities(revisions[0])  # The old OCR revision must stay obsolete.
     job.process_entities(edited_id)
-    assert request("GET", markdown_path)[1]["content"] == TAGGED
+    assert request("GET", markdown_path)[1]["content"] == canonical()
+
+
+@pytest.mark.parametrize("change", ["stage", "revision", "requeued", "new_run", "deleted"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_stale_extraction_cannot_publish_or_mark_replacement_failed(ready, monkeypatch, change, fails):
+    report_id, revisions, _ = ready
+    request("POST", f"/reports/{report_id}/run-entity-extraction")
+
+    def normalize(*args, **kwargs):
+        with database.session_scope() as session:
+            file = session.get(File, revisions[0])
+            if change == "stage":
+                session.get(Report, report_id).stage = "documents"
+            elif change == "revision":
+                session.add(File(file_id=file.file_id, report_id=report_id, version=2, name=file.name,
+                                 path=file.path, hash=file.hash, role=file.role, size=file.size,
+                                 content_type=file.content_type, markdown_path=file.markdown_path,
+                                 status="ocr_completed"))
+            elif change == "requeued":
+                file.status = "entities_queued"
+            elif change == "new_run":
+                file.status = "failed"
+            else:
+                session.delete(session.get(Report, report_id))
+        if change == "new_run":
+            # Another committed run has claimed the same revision. Its status
+            # matches the old run, but its updated_at claim is different.
+            with database.session_scope() as session:
+                session.get(File, revisions[0]).status = "entities_running"
+        if fails:
+            raise RuntimeError("Obsolete normalization failed")
+        return TAGGED
+
+    monkeypatch.setattr(job, "normalize_document", normalize)
+    if fails:
+        with pytest.raises(RuntimeError, match="Obsolete normalization failed"):
+            job.process_entities(revisions[0])
+    else:
+        job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        assert session.get(ReportEntityCounter, report_id) is None
+        assert list(session.scalars(select(EntityFile))) == []
+        file = session.get(File, revisions[0])
+        if change == "deleted":
+            assert file is None
+        else:
+            assert file.entities_path is None
+            assert file.status == ("entities_queued" if change == "requeued" else "entities_running")
+            assert file.error is None
+    assert not list(storage.storage_root().rglob("entities/*.md"))
+
+
+def test_full_reextraction_assigns_new_ids_and_preserves_previous_artifact(ready):
+    report_id, revisions, _ = ready
+    request("POST", f"/reports/{report_id}/run-entity-extraction")
+    for revision in revisions:
+        job.process_entities(revision)
+    with database.session_scope() as session:
+        file = session.get(File, revisions[0])
+        previous_path = file.entities_path
+        document_id = file.file_id
+        file.status = "failed"
+    assert request("POST", f"/reports/{report_id}/documents/{document_id}/run-entity-extraction")[0] == 200
+    job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        file = session.get(File, revisions[0])
+        assert file.status == "completed"
+        assert file.entities_path != previous_path
+        assert storage.artifact_path(previous_path).read_text(encoding="utf-8") == canonical(0)
+        assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == canonical(2)
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 3
+        assert session.get(EntityFile, (report_id, 0)) is None
+        assert session.get(EntityFile, (report_id, 1)) is not None
+        assert session.get(EntityFile, (report_id, 2)).file_id == document_id
+    job.process_entities(revisions[0])  # A duplicate delivery must not consume IDs.
+    assert request("GET", f"/reports/{report_id}/documents/{document_id}/markdown")[1]["content"] == canonical(2)
+    with database.session_scope() as session:
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 3
+
+
+def test_failed_publication_rolls_back_ids_and_preserves_current_markup(ready, monkeypatch):
+    report_id, revisions, _ = ready
+    request("POST", f"/reports/{report_id}/run-entity-extraction")
+    job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        file = session.get(File, revisions[0])
+        previous_path = file.entities_path
+        document_id = file.file_id
+        file.status = "failed"
+    request("POST", f"/reports/{report_id}/documents/{document_id}/run-entity-extraction")
+
+    def fail(*args, **kwargs):
+        raise OSError("Storage unavailable")
+
+    monkeypatch.setattr(job, "save_entities", fail)
+    with pytest.raises(OSError, match="Storage unavailable"):
+        job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        file = session.get(File, revisions[0])
+        assert file.status == "failed"
+        assert file.entities_path == previous_path
+        assert storage.artifact_path(previous_path).read_text(encoding="utf-8") == canonical()
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 1
+        assert session.get(EntityFile, (report_id, 0)).file_id == document_id
+        assert session.get(EntityFile, (report_id, 1)) is None
+
+
+def test_extraction_processor_cannot_supply_its_own_identity(ready, monkeypatch):
+    report_id, revisions, _ = ready
+    request("POST", f"/reports/{report_id}/run-entity-extraction")
+    monkeypatch.setattr(job, "normalize_document", lambda *args, **kwargs: canonical())
+    with pytest.raises(HTTPException, match="идентификаторы"):
+        job.process_entities(revisions[0])
+    with database.session_scope() as session:
+        assert session.get(ReportEntityCounter, report_id) is None
+        assert session.get(File, revisions[0]).entities_path is None
