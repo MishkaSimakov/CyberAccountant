@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
 from html import unescape
 from pathlib import Path
@@ -116,40 +117,80 @@ def parse_amount(raw: str) -> Decimal | None:
         return None
 
 
-def parse_date(raw: str) -> date | None:
-    """Parse date strings in common formats:
-    - DD.MM.YYYY / DD.MM.YY
-    - DD month YYYY (Russian month names)
-    - YYYY-MM-DD
+def parse_date_interval(raw: str) -> tuple[date, date] | None:
+    """Resolve an exact date or complete month/quarter/year to inclusive days.
+
+    Incomplete and ambiguous expressions return None rather than acquiring
+    invented components. Quoted Russian days retain their quotation marks in
+    source markup but are ignored for parsing.
     """
-    text = raw.strip().strip('"').strip()
-    # ISO
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", text)
+    text = " ".join(raw.strip().split())
+    suffix = r"(?:\s*(?:г\.?|года?))?"
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
     if m:
         try:
-            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            day = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return day, day
         except ValueError:
             return None
-    # DD.MM.YYYY or DD.MM.YY
-    m = re.match(r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})", text)
+    m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{2,4})", text)
     if m:
-        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if y < 100:
-            y += 2000
+        d, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if year < 100:
+            year += 2000
         try:
-            return date(y, mo, d)
+            day = date(year, month, d)
+            return day, day
         except ValueError:
             return None
-    # DD month YYYY
-    m = re.match(r"(\d{1,2})\s+(\w+)\s+(\d{4})", text)
+    m = re.fullmatch(r'["«]?(\d{1,2})["»]?\s+(\w+)\s+(\d{4})' + suffix, text, re.IGNORECASE)
+    if m and m.group(2).lower() in MONTHS_RU:
+        try:
+            day = date(int(m.group(3)), MONTHS_RU[m.group(2).lower()], int(m.group(1)))
+            return day, day
+        except ValueError:
+            return None
+    m = re.fullmatch(r"(\w+)\s+(\d{4})" + suffix, text, re.IGNORECASE)
+    if m and m.group(1).lower() in MONTHS_RU:
+        year, month = int(m.group(2)), MONTHS_RU[m.group(1).lower()]
+        try:
+            return date(year, month, 1), date(year, month, calendar.monthrange(year, month)[1])
+        except ValueError:
+            return None
+    m = re.fullmatch(r"([1-4])(?:-й|-го)?\s+квартал\s+(\d{4})" + suffix, text, re.IGNORECASE)
     if m:
-        d, mon, y = int(m.group(1)), m.group(2).lower(), int(m.group(3))
-        if mon in MONTHS_RU:
-            try:
-                return date(y, MONTHS_RU[mon], d)
-            except ValueError:
-                return None
+        quarter, year = int(m.group(1)), int(m.group(2))
+        first_month = 3 * quarter - 2
+        last_month = first_month + 2
+        try:
+            return date(year, first_month, 1), date(year, last_month, calendar.monthrange(year, last_month)[1])
+        except ValueError:
+            return None
+    m = re.fullmatch(r"(\d{4})(?:\s*(?:г\.?|года?))?", text, re.IGNORECASE)
+    if m:
+        try:
+            return date(int(m.group(1)), 1, 1), date(int(m.group(1)), 12, 31)
+        except ValueError:
+            return None
     return None
+
+
+def parse_date(raw: str) -> date | None:
+    """Return the inclusive start day for compatibility with old callers."""
+    interval = parse_date_interval(raw)
+    return interval[0] if interval else None
+
+
+def parse_date_bound(raw: str, *, end: bool) -> date:
+    """Parse a timezone-free review timestamp and enforce its boundary time."""
+    try:
+        value = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid date bound {raw!r}; expected YYYY-MM-DDTHH:MM:SS") from exc
+    expected = time(23, 59, 59) if end else time(0, 0, 0)
+    if value.time() != expected:
+        raise ValueError(f"invalid date bound time in {raw!r}; expected {expected}")
+    return value.date()
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +213,7 @@ class Entity:
     loc: str = "body"  # body | filename
     source_text: str = ""  # the raw fragment inside the tag
     normalized_from: str = ""  # set when an LLM normalized an unparsable date raw
+    end_value: str | int | float | None = None  # inclusive date end ordinal
 
     def to_dict(self) -> dict:
         return {
@@ -188,6 +230,7 @@ class Entity:
             "loc": self.loc,
             "source_text": self.source_text,
             "normalized_from": self.normalized_from,
+            "end_value": self.end_value,
         }
 
     @property
@@ -216,6 +259,7 @@ class EntityRegistry:
         num = len(self.entities)
         mnemonic = self._sampler.next()
         value = self._normalize(type_, raw, norm)
+        interval = parse_date_interval(raw) if type_ == "date" else None
         ent = Entity(
             num=num,
             mnemonic=mnemonic,
@@ -229,6 +273,7 @@ class EntityRegistry:
             span=span,
             loc=loc,
             source_text=source_text,
+            end_value=interval[1].toordinal() if interval else None,
         )
         self.entities.append(ent)
         return ent
@@ -302,11 +347,28 @@ def build_registry(
                 loc=loc,
                 source_text=raw,
             )
-            if "value" in attrs:
+            if t == "date" and ("start" in attrs or "end" in attrs):
+                if "start" not in attrs or "end" not in attrs:
+                    raise ValueError(f"incomplete date interval for entity {entity.num}")
+                start_raw, end_raw = attrs["start"], attrs["end"]
+                if not start_raw and not end_raw:
+                    entity.value = entity.end_value = None
+                elif not start_raw or not end_raw:
+                    raise ValueError(f"incomplete date interval for entity {entity.num}")
+                else:
+                    start = parse_date_bound(start_raw, end=False)
+                    end = parse_date_bound(end_raw, end=True)
+                    if start > end:
+                        raise ValueError(f"reversed date interval for entity {entity.num}")
+                    entity.value = start.toordinal()
+                    entity.end_value = end.toordinal()
+            elif "value" in attrs:
                 value = attrs["value"]
                 if t == "date":
+                    # Legacy review markup stores one exact calendar day.
                     normalized_date = parse_date(value)
                     entity.value = normalized_date.toordinal() if normalized_date else None
+                    entity.end_value = entity.value
                 else:
                     entity.value = value if value else None
     return reg

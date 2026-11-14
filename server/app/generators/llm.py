@@ -10,4 +10,6 @@ def generate_llm(context: VerificationContext) -> list[dict]:
     settings = dict(context.scope, contract_number=report.contract_number,
                     period_start=report.period_start.isoformat() if report.period_start else None,
                     period_end=report.period_end.isoformat() if report.period_end else None)
-    return generate_relations(context.config, context.documents, context.registry, settings)
+    return generate_relations(
+        context.config, context.documents, context.registry, settings, mapping=context.mapping,
+    )

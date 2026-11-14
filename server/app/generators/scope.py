@@ -18,9 +18,11 @@ def generate_scope(context: VerificationContext) -> list[dict]:
             key = entity.mnemonic if context.config.id_style == "mnemonic" else f"#{entity.num}"
             if entity.type == "contract" and report.contract_number:
                 equation = f"{key} == {json.dumps(report.contract_number.strip(), ensure_ascii=False)}"
-            elif (entity.type == "date" and entity.loc == "body" and entity.value is not None
+            elif (entity.type == "date" and entity.loc == "body"
+                  and entity.value is not None and entity.end_value is not None
                   and report.period_start and report.period_end):
-                equation = f"{report.period_start:%d.%m.%Y} <= {key} && {key} <= {report.period_end:%d.%m.%Y}"
+                equation = (f"{report.period_start:%d.%m.%Y} <= start({key}) && "
+                            f"end({key}) <= {report.period_end:%d.%m.%Y}")
             else:
                 continue
             requirements.append({"equation": equation, "tag": "scope"})

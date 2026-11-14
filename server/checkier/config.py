@@ -23,6 +23,7 @@ def _model_from_env(name: str, default: str) -> str:
 ROLE_DIRS = {"данные": "data", "card": "card", "request": "request"}
 
 ID_STYLES = ("mnemonic", "numeric")
+RELATION_FILENAME_MODES = ("tagged", "raw", "none")
 
 
 @dataclass
@@ -39,6 +40,8 @@ class PipelineConfig:
     # "disabled" requests low/minimum effort; "enabled" uses the model default.
     # "exclude" relies on the client always filtering reasoning from output.
     reasoning: str = "disabled"
+    # Relation prompts: processed filename tags, raw original names, or neutral labels.
+    relation_filename_mode: str = "tagged"
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -46,6 +49,11 @@ class PipelineConfig:
         self.out_dir = Path(self.out_dir)
         if self.id_style not in ID_STYLES:
             raise ValueError(f"id_style must be one of {ID_STYLES}, got {self.id_style!r}")
+        if self.relation_filename_mode not in RELATION_FILENAME_MODES:
+            raise ValueError(
+                f"relation_filename_mode must be one of {RELATION_FILENAME_MODES}, "
+                f"got {self.relation_filename_mode!r}"
+            )
 
     # -- artifact paths -----------------------------------------------------
     @property

@@ -1,6 +1,7 @@
 """Structured-output transport, parsing, and truncation safeguards."""
 
 import json
+from typing import Any, cast
 
 import jsonschema
 import pytest
@@ -59,6 +60,15 @@ def test_schema_uses_responses_text_format(monkeypatch):
             "strict": True,
         }
     }
+
+
+def test_natural_language_schema_is_rejected_before_transport(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Natural-language schema must not reach the provider")
+
+    monkeypatch.setattr("checkier.llm._post", unexpected)
+    with pytest.raises(LLMError, match="JSON Schema object"):
+        call_llm("Return an answer", "model", schema=cast(Any, "Return any JSON object"))
 
 
 def test_schema_rejection_never_falls_back_to_plain_prompting(monkeypatch):

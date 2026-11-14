@@ -71,6 +71,14 @@ def test_parse_function():
     assert ast.func == "norm"
 
 
+@pytest.mark.parametrize("function", ["start", "end"])
+def test_parse_date_bound_accessors(function):
+    ast = parse(f"{function}(a-b) == 01.01.2026")
+    assert isinstance(ast, BinOp)
+    assert isinstance(ast.left, Id)
+    assert ast.left.func == function
+
+
 def test_eval_ground():
     ast = parse("2 + 3 * 4")
     assert evaluate(ast, {}) == Decimal(14)

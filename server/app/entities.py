@@ -29,4 +29,4 @@ def prepare_entities(content: str) -> str:
             raise ValueError("Некорректная разметка сущностей.")
         return ENT_RE.sub(replace, content)
     except ValueError as error:
-        raise HTTPException(422, "Проверьте разметку <ent> и атрибуты t, u, n, value.") from error
+        raise HTTPException(422, "Проверьте разметку <ent> и атрибуты t, u, n, value, start, end.") from error

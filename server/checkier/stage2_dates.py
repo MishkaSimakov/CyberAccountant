@@ -1,19 +1,8 @@
-"""Stage 2b: LLM normalization of period-style dates.
-
-The deterministic parser handles DD.MM.YYYY and "DD month YYYY", but not
-period labels like "Январь 2026" or "1 квартал 2026 г." — they get
-``value = None`` and stay unknowns in the solver. This stage collects all
-such date entities and asks the model for concrete dates in one batch call:
-
-    "Январь 2026"  ->  "01.01.2026"        (first day of the period)
-    "1 квартал 2026" -> "01.01.2026"
-    "2026 год" -> "01.01.2026"
-
-Every normalized entity records provenance in ``Entity.normalized_from``.
-"""
+"""Stage 2b: fallback LLM normalization of unresolved date intervals."""
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Callable
 
 from checkier.config import PipelineConfig
@@ -22,17 +11,19 @@ from checkier.llm import call_llm_json
 from checkier.schemas import DATE_NORM_SCHEMA
 
 DATE_NORM_PROMPT = """\
-You normalize Russian accounting period expressions to concrete dates.
+You normalize Russian accounting date and period expressions to inclusive
+calendar-day intervals.
 
 Rules:
-- "Month YYYY" -> first day of that month ("Январь 2026" -> "01.01.2026")
-- "N квартал YYYY" -> first day of the quarter ("2 квартал 2026" -> "01.04.2026")
-- "YYYY год" / just "YYYY" -> "01.01.YYYY"
-- A full date passes through unchanged.
-- normalized is in DD.MM.YYYY format, or null if the date cannot be determined.
-- If an expression lacks a year or is ambiguous, return null. Do not invent missing date parts.
+- A full date has equal start/end bounds.
+- "Month YYYY" -> first through last day of that month.
+- "N квартал YYYY" -> first through last day of that quarter.
+- "YYYY год" / just "YYYY" -> 01.01.YYYY through 31.12.YYYY.
+- start/end use DD.MM.YYYY. If unresolved, BOTH must be null.
+- If an expression lacks a year or is ambiguous, return null/null. Do not
+  invent missing date parts. Never return only one bound or reverse the bounds.
 
-Return a JSON array with ONE entry per input raw string:
+Return a JSON array with ONE entry per input raw string.
 
 TASK
 Normalize each of the following expressions:
@@ -49,12 +40,11 @@ def run_date_normalization(
         registry: EntityRegistry,
         on_token: Callable[[str], None] | None = None,
 ) -> list[Entity]:
-    """Normalize date entities whose raw text the deterministic parser could
-    not handle. Mutates the registry (sets ``value`` + ``normalized_from``);
-    returns the list of changed entities. Persists nothing — the caller
-    saves the registry if it wants to keep the result.
-    """
-    cands = [e for e in registry.entities if e.type == "date" and e.value is None]
+    """Resolve both date bounds, retaining ``normalized_from`` provenance."""
+    cands = [
+        e for e in registry.entities
+        if e.type == "date" and (e.value is None or e.end_value is None)
+    ]
     if not cands:
         return []
     raws = sorted({e.raw for e in cands})
@@ -69,19 +59,31 @@ def run_date_normalization(
         reasoning=cfg.reasoning,
     )
     entries = data if isinstance(data, list) else data.get("normalizations", [])
-    by_raw: dict[str, str] = {}
+    by_raw: dict[str, tuple[date, date] | None] = {}
     for item in entries:
-        if isinstance(item, dict) and item.get("raw") and item.get("normalized"):
-            by_raw[str(item["raw"])] = str(item["normalized"]).strip()
+        if isinstance(item, dict) and item.get("raw"):
+            start, end = item.get("start"), item.get("end")
+            if (start is None) != (end is None):
+                raise ValueError(f"incomplete normalized date interval for {item['raw']!r}")
+            if start is None:
+                by_raw[str(item["raw"])] = None
+                continue
+            if not isinstance(start, str) or not isinstance(end, str):
+                raise ValueError(f"invalid normalized date interval for {item['raw']!r}")
+            start_day, end_day = parse_date(start), parse_date(end)
+            if start_day is None or end_day is None:
+                raise ValueError(f"invalid normalized date interval for {item['raw']!r}")
+            if start_day > end_day:
+                raise ValueError(f"reversed normalized date interval for {item['raw']!r}")
+            by_raw[str(item["raw"])] = (start_day, end_day)
     changed: list[Entity] = []
     for e in cands:
-        norm = by_raw.get(e.raw)
-        if not norm:
+        bounds = by_raw.get(e.raw)
+        if bounds is None:
             continue
-        d = parse_date(norm)
-        if d is None:
-            continue
-        e.value = d.toordinal()
+        start, end = bounds
+        e.value = start.toordinal()
+        e.end_value = end.toordinal()
         e.normalized_from = e.raw
         changed.append(e)
     return changed

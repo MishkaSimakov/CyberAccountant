@@ -104,7 +104,8 @@ class Pipeline:
         replaced = self._replaced or self.replace()
         reg = self._registry or self.registry()
         scope = self._scope or self.scope()
-        self._relations_raw = run_relations(self.cfg, replaced, reg, scope)
+        mapping = self._mapping or self._load_mapping()
+        self._relations_raw = run_relations(self.cfg, replaced, reg, scope, mapping=mapping)
         return self._relations_raw
 
     def solve(self):

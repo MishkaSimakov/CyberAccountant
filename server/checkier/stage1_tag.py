@@ -1,43 +1,24 @@
-"""Stage 1: LLM-based entity tagging.
+"""Stage 1: two-request entity wrapping and metadata extraction.
 
-The model returns a JSON array of alternating segments that reconstruct the
-document exactly::
-
-    [
-      {"content": "# АКТ № ", "wrap": "ОРГ-0603", "type": "contract"},
-      {"content": "\n| **Дата** | ", "wrap": "03.06.2026", "type": "date"},
-      {"content": " |\n| **Договор** | ", "wrap": "24/03/15-01", "type": "contract"},
-      {"content": " |", "wrap": "", "type": "EOF"}
-    ]
-
-Concatenating every ``content`` then ``wrap`` in array order yields the
-original document; every non-EOF entry with a non-empty ``wrap`` is an
-entity. ``type`` is one of amount | date | docid | contract | number |
-pct | ratio.
-
-Optional attributes ``unit`` (u) and ``norm`` (n) ride on wrap entries::
-
-    {"content": "Сумма: ", "wrap": "245 000,00", "type": "amount",
-     "unit": "RUB", "norm": "1"}
-
-A progress callback receives :class:`TagProgress` after every file.
+Request 1 returns only a segment stream that reconstructs the processed
+filename header and OCR document exactly. Request 2 receives deterministic
+per-document IDs in XML-like markup and returns closed, ID-keyed metadata under
+an on-the-fly JSON Schema. Dates use inclusive, timezone-free day timestamps.
 """
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from html import escape
 from pathlib import Path
 from typing import Callable
 
 from checkier.config import PipelineConfig
 from checkier.llm import call_llm_json
-from checkier.schemas import TAGGING_SCHEMA
-
-
-# ---------------------------------------------------------------------------
-# Progress reporting (swap these callbacks for a frontend later)
-# ---------------------------------------------------------------------------
+from checkier.schemas import TAG_TYPES, WRAPPING_SCHEMA, entity_metadata_schema
 
 
 @dataclass
@@ -78,103 +59,96 @@ DATE_FORMAT_EXAMPLES = [
 ]
 DATE_FORMAT_EXAMPLES_TEXT = "\n".join(f"- {example}" for example in DATE_FORMAT_EXAMPLES)
 
-TAG_PROMPT = f"""\
-You extract numerical entities from accounting documents.
-
-Entity types:
-- amount    - monetary sums: "245 000,00 руб.", "10 862 418,06"
-- date      - calendar dates: "28.01.2026", "Январь 2026", "16 августа 2025 г."
-- docid     - document / registry identifiers: "ВЕД-ЗП-2026-01", "УПР-55", "КЛ-31", "3/1"
-- contract  - contract numbers: "24/03/15-01"
-- number    - any other plain number (counts, codes, coefficients, table cells)
-- pct       - percentages: "30%"
-- ratio     - dimensionless ratios / fractions
+TAG_PROMPT = """\
+You identify numerical entities in accounting documents. This request performs
+WRAPPING ONLY: do not classify entities and do not normalize their values.
 
 DATE / PERIOD FORMATS
-Wrap each complete expression as ONE date entity:
-{DATE_FORMAT_EXAMPLES_TEXT}
+Wrap each complete expression as ONE entity:
+%%DATE_FORMAT_EXAMPLES%%
 
 A quoted day + month + year + optional "г." is ONE date, never a separate
 number and month/year entity. For a range such as 01.05.2026–10.05.2026,
 wrap the two dates separately and leave the dash outside the tags.
 
-Optional attributes for amount/date/docid entries:
-- unit  - RUB (default), RUB_K (thousand rubles), USD, EUR, person_month, ...
-- norm  - multiplier to base unit (1000 for RUB_K), default 1
-
 TASK
-Read the document at the bottom and output a JSON array of segments that
-rebuilds it exactly.
+Read the processed filename header and document at the bottom. Output a JSON
+array of segments that rebuilds both exactly.
 
 REQUIRED OUTPUT FORMAT (no other text, no markdown fence, no commentary):
-[{{"content":"...","wrap":"...","type":"..."}}, ..., {{"content":"...","wrap":"","type":"EOF"}}]
+[{"content":"...","wrap":"...","type":"entity"}, ..., {"content":"...","wrap":"","type":"EOF"}]
 
-Each WRAP entry: {{"content": "text before the entity", "wrap": "ENTITY TEXT",
-"type": "TYPE"}} with optional "unit" / "norm". The final entry is
-{{"content": "remaining text", "wrap": "", "type": "EOF"}}.
+Each entity entry contains the text before the entity in "content" and the exact
+entity text in "wrap". The final entry contains all remaining text, an empty
+"wrap", and type "EOF". No unit, norm, value, entity-class, start, or end fields
+are allowed in this request.
 
 Concatenating every "content" then its "wrap" (in array order) MUST give back
-the document character-for-character.
+the input character-for-character.
 
 Rules:
-- Tag EVERY occurrence, including inside tables, headers and the filename title line.
-- Do not tag a bare year inside running text unless it is a full date or period label.
+- Wrap every amount, date/period, document identifier, contract number, count,
+  coefficient, percentage, and ratio, including tables and the filename header.
+- Do not wrap a bare year inside running text unless it is a full date/period.
 - Keep all whitespace and punctuation exactly.
-- OUTPUT ONLY THE JSON ARRAY. Do NOT repeat the document. Do NOT add prose.
+- OUTPUT ONLY THE JSON ARRAY. Do NOT repeat the input or add prose.
 
 EXAMPLE
-Document:
+Input:
 ```
 # АКТ № ОРГ-0603
 
-| | |
-|---|---|
 | **Дата** | 03.06.2026 |
-| **Договор** | 24/03/15-01 |
 ```
 
 Output:
-```json
 [
-  {{"content": "# АКТ № ", "wrap": "ОРГ-0603", "type": "docid"}},
-  {{"content": "\\n\\n| | |\\n|---|---|\\n| **Дата** | ", "wrap": "03.06.2026", "type": "date"}},
-  {{"content": " |\\n| **Договор** | ", "wrap": "24/03/15-01", "type": "contract"}},
-  {{"content": " |\\n", "wrap": "", "type": "EOF"}}
+  {"content":"# АКТ № ","wrap":"ОРГ-0603","type":"entity"},
+  {"content":"\n\n| **Дата** | ","wrap":"03.06.2026","type":"entity"},
+  {"content":" |\n","wrap":"","type":"EOF"}
 ]
-```
 
-ANOTHER EXAMPLE (amounts with units)
-Document:
-```
-Стоимость: 245 000,00 руб. за январь 2026 года.
-```
-Output:
-```json
-[
-  {{"content": "Стоимость: ", "wrap": "245 000,00", "type": "amount", "unit": "RUB", "norm": "1"}},
-  {{"content": " руб. за ", "wrap": "январь 2026", "type": "date"}},
-  {{"content": " года.\\n", "wrap": "", "type": "EOF"}}
-]
-```
+NOW PROCESS THIS INPUT.
 
-NOW PROCESS THIS DOCUMENT.
-
-Filename: %%FILENAME%%
-
-Document:
-```
 %%CONTENT%%
-```
+""".replace("%%DATE_FORMAT_EXAMPLES%%", DATE_FORMAT_EXAMPLES_TEXT)
+
+METADATA_PROMPT = """\
+You classify and normalize entities in an XML-like accounting document.
+Every <ent id="..."> element is already wrapped. Do not add, remove, split, or
+merge entities. Return one metadata object for every supplied ID and no others.
+
+Metadata fields for every ID:
+- type: amount | date | docid | contract | number | pct | ratio
+- unit: RUB, RUB_K, USD, EUR, person_month, etc.; use "" when not applicable
+- norm: numeric multiplier to the base unit as a string, normally "1"
+- value: normalized non-date value as a string, or null if unresolved
+- start/end: inclusive date bounds, or null for non-dates and unresolved dates
+
+For date entities, value must be null. Return BOTH start and end, or BOTH null:
+- exact date: YYYY-MM-DDT00:00:00 through the same day at T23:59:59
+- month: first day at T00:00:00 through last day at T23:59:59
+- quarter/year: first through last inclusive calendar day using the same times
+- incomplete or ambiguous expressions: null/null; never invent missing parts
+
+For non-date entities, start and end must be null. Keep identifiers as their
+exact normalized string. Percentages omit the percent sign in value. Ratios use
+a decimal value when determinable. Return ONLY the JSON object required by the
+schema.
+
+INPUT
+%%MARKED%%
 """
 
 
-def _build_prompt(filename: str, content: str) -> str:
-    """Substitute placeholders without interpreting JSON braces in the template."""
-    return TAG_PROMPT.replace("%%FILENAME%%", filename).replace("%%CONTENT%%", content)
+def _build_prompt(filename: str, content: str) -> tuple[str, str]:
+    """Build request 1 without interpreting braces in document content."""
+    header = "# " + " ".join(filename.splitlines())
+    processed = f"{header}\n{content}"
+    return TAG_PROMPT.replace("%%CONTENT%%", processed), processed
 
 
 def _coerce_segments(data) -> list:
-    """Accept either {"segments": [...]} or a bare [...] and return the list."""
     if isinstance(data, dict) and "segments" in data:
         return data["segments"]
     if isinstance(data, list):
@@ -186,6 +160,8 @@ def _validate_segments(doc: str, segments: list) -> list[str]:
     """Check the segment stream rebuilds *doc* exactly. Returns problems."""
     problems: list[str] = []
     rebuilt_parts: list[str] = []
+    if not segments:
+        return ["segment array is empty"]
     for i, seg in enumerate(segments):
         if not isinstance(seg, dict):
             problems.append(f"segment {i} is not an object")
@@ -196,21 +172,14 @@ def _validate_segments(doc: str, segments: list) -> list[str]:
         if not isinstance(c, str) or not isinstance(w, str):
             problems.append(f"segment {i}: content/wrap must be strings")
             continue
-        rebuilt_parts.append(c)
-        rebuilt_parts.append(w)
+        rebuilt_parts.extend((c, w))
         if i < len(segments) - 1:
-            if not w:
-                problems.append(f"segment {i}: non-final wrap is empty")
-            if t in ("EOF", ""):
-                problems.append(f"segment {i}: EOF before end of array")
-        else:
-            if t != "EOF" or w != "":
-                problems.append(f"last segment must be EOF with empty wrap, got type={t!r}")
+            if not w or t != "entity":
+                problems.append(f"segment {i}: non-final entry must be a non-empty entity")
+        elif t != "EOF" or w != "":
+            problems.append(f"last segment must be EOF with empty wrap, got type={t!r}")
     rebuilt = "".join(rebuilt_parts)
-    # Trailing-whitespace-only differences are insignificant (model may add a
-    # final newline). Compare with trailing newlines stripped on both sides.
     if rebuilt.rstrip("\n") != doc.rstrip("\n"):
-        # locate divergence
         k = 0
         limit = min(len(rebuilt), len(doc))
         while k < limit and rebuilt[k] == doc[k]:
@@ -222,20 +191,88 @@ def _validate_segments(doc: str, segments: list) -> list[str]:
     return problems
 
 
-def _segments_to_tagged(segments: list) -> str:
-    """Render the segment stream as <ent ...> tagged markdown."""
+def _segments_to_marked(segments: list) -> tuple[str, list[str]]:
+    """Render deterministic temporary IDs for the metadata request."""
     out: list[str] = []
+    ids: list[str] = []
     for seg in segments:
-        if seg.get("type") == "EOF":
-            out.append(seg.get("content", ""))
-            continue
-        attrs = f't="{seg["type"]}"'
-        if seg.get("unit"):
-            attrs += f' u="{seg["unit"]}"'
-        if seg.get("norm") and seg["norm"] not in (None, "", "1"):
-            attrs += f' n="{seg["norm"]}"'
         out.append(seg.get("content", ""))
-        out.append(f"<ent {attrs}>{seg.get('wrap', '')}</ent>")
+        if seg.get("type") != "EOF":
+            entity_id = f"e{len(ids)}"
+            ids.append(entity_id)
+            out.append(f'<ent id="{entity_id}">{seg["wrap"]}</ent>')
+    return "".join(out), ids
+
+
+def _validate_timestamp(value: str, *, end: bool) -> None:
+    expected = "23:59:59" if end else "00:00:00"
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid ISO date bound {value!r}") from exc
+    if parsed.strftime("%H:%M:%S") != expected:
+        raise ValueError(f"date bound must end at T{expected}: {value!r}")
+
+
+def _validate_metadata(data, ids: list[str]) -> dict[str, dict]:
+    """Enforce exact IDs and semantic date/value constraints after validation."""
+    if not isinstance(data, dict) or set(data) != set(ids):
+        raise ValueError("metadata IDs do not exactly match wrapped entity IDs")
+    for entity_id in ids:
+        item = data[entity_id]
+        if not isinstance(item, dict):
+            raise ValueError(f"metadata {entity_id} is not an object")
+        if set(item) != {"type", "unit", "norm", "value", "start", "end"}:
+            raise ValueError(f"metadata {entity_id} has missing or extra fields")
+        if item.get("type") not in TAG_TYPES:
+            raise ValueError(f"metadata {entity_id} has an invalid entity type")
+        try:
+            norm = Decimal(str(item.get("norm", "")))
+        except InvalidOperation as exc:
+            raise ValueError(f"metadata {entity_id} has a non-numeric norm") from exc
+        if not norm.is_finite():
+            raise ValueError(f"metadata {entity_id} has a non-finite norm")
+        if not isinstance(item.get("unit"), str):
+            raise ValueError(f"metadata {entity_id} unit must be a string")
+        value, start, end = item.get("value"), item.get("start"), item.get("end")
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"metadata {entity_id} value must be a string or null")
+        if item["type"] == "date":
+            if value is not None:
+                raise ValueError(f"date metadata {entity_id} must use start/end, not value")
+            if (start is None) != (end is None):
+                raise ValueError(f"date metadata {entity_id} has an incomplete interval")
+            if start is not None:
+                _validate_timestamp(start, end=False)
+                _validate_timestamp(end, end=True)
+                if start > end:
+                    raise ValueError(f"date metadata {entity_id} has a reversed interval")
+        elif start is not None or end is not None:
+            raise ValueError(f"non-date metadata {entity_id} must not have date bounds")
+    return data
+
+
+def _segments_to_tagged(segments: list, metadata: dict[str, dict]) -> str:
+    """Merge validated metadata into saved <ent> markup."""
+    out: list[str] = []
+    index = 0
+    for seg in segments:
+        out.append(seg.get("content", ""))
+        if seg.get("type") == "EOF":
+            continue
+        item = metadata[f"e{index}"]
+        index += 1
+        attrs = [f't="{item["type"]}"']
+        if item["unit"]:
+            attrs.append(f'u="{escape(item["unit"], quote=True)}"')
+        if item["norm"] != "1":
+            attrs.append(f'n="{escape(item["norm"], quote=True)}"')
+        if item["type"] == "date":
+            attrs.append(f'start="{item["start"] or ""}"')
+            attrs.append(f'end="{item["end"] or ""}"')
+        else:
+            attrs.append(f'value="{escape(item["value"] or "", quote=True)}"')
+        out.append(f'<ent {" ".join(attrs)}>{seg["wrap"]}</ent>')
     return "".join(out)
 
 
@@ -266,43 +303,54 @@ def tag_document(
         markdown: str,
         on_token: Callable[[str], None] | None = None,
 ) -> tuple[str, int]:
-    """Extract entries from one document without filesystem access.
+    """Extract entries in two calls without changing the preserved OCR source.
 
-    Return (tagged_markdown, retries_used), or raise when extraction fails.
-    The caller owns persistence and scheduling.
+    Return (tagged_markdown_with_processed_filename, retries_used), or raise
+    when extraction fails. The caller owns persistence and scheduling.
     """
-    content = markdown
-    prompt = _build_prompt(filename, content)
+    prompt, processed = _build_prompt(filename, markdown)
     last_err: Exception | None = None
     for attempt in range(cfg.max_retries + 1):
         try:
             data = call_llm_json(
                 prompt,
                 model=cfg.tag_model,
-                schema=TAGGING_SCHEMA,
-                schema_name="tagged_document",
+                schema=WRAPPING_SCHEMA,
+                schema_name="entity_wrapping",
                 timeout=cfg.request_timeout,
                 on_token=on_token,
                 reasoning=cfg.reasoning,
             )
             segments = _coerce_segments(data)
-            problems = _validate_segments(content, segments)
+            problems = _validate_segments(processed, segments)
             if problems:
                 raise ValueError("; ".join(problems))
-            return _segments_to_tagged(segments), attempt
+            marked, ids = _segments_to_marked(segments)
+            if ids:
+                metadata = call_llm_json(
+                    METADATA_PROMPT.replace("%%MARKED%%", marked),
+                    model=cfg.tag_model,
+                    schema=entity_metadata_schema(ids),
+                    schema_name="entity_metadata",
+                    timeout=cfg.request_timeout,
+                    on_token=on_token,
+                    reasoning=cfg.reasoning,
+                )
+                metadata = _validate_metadata(metadata, ids)
+            else:
+                metadata = {}
+            tagged = _segments_to_tagged(segments, metadata)
+            return tagged.rstrip("\n") + "\n", attempt
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             if attempt < cfg.max_retries and _is_transient(exc):
                 continue
             if attempt < cfg.max_retries:
-                prompt = (
-                        _build_prompt(filename, content)
-                        + "\n\nYour previous answer was wrong. Common mistake: repeating the "
-                          "document text instead of outputting the JSON segment array. "
-                          "You MUST output ONLY a JSON array of objects like "
-                          '[{"content":"...","wrap":"...","type":"..."}]. No prose, no document.\n'
-                          "Validation error from previous attempt:\n"
-                        + str(last_err)[:1500]
+                prompt, processed = _build_prompt(filename, markdown)
+                prompt += (
+                    "\n\nYour previous answer was wrong. Return ONLY the wrapping JSON array. "
+                    "Do not add metadata to this first request.\nValidation error:\n"
+                    + str(last_err)[:1500]
                 )
             else:
                 break
@@ -315,12 +363,7 @@ def run_tag(
         on_progress: TagCallback | None = None,
         on_token: Callable[[str, str], None] | None = None,
 ) -> dict[str, tuple[str, str]]:
-    """Tag all non-duplicate files. Returns {h8: (role, tagged_text)}.
-
-    on_progress: called after each file finishes (TagProgress, TagStats).
-    on_token: called with (file, token) for every streamed LLM token so the
-    caller can show live output while a file is being generated.
-    """
+    """Tag all non-duplicate files. Returns {h8: (role, tagged_text)}."""
     cfg.tagged_dir.mkdir(parents=True, exist_ok=True)
     todo = [
         (h8, entry["role"], Path(entry["original"]).name)

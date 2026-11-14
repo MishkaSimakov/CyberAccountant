@@ -197,6 +197,8 @@ def call_llm(
     reasoning: "disabled" requests minimum effort ("low"), "enabled" uses
     the model default, and "exclude" hides reasoning from parsed output.
     """
+    if schema is not None and not isinstance(schema, dict):
+        raise LLMError("schema must be a JSON Schema object, not natural language")
     payload: dict = {"model": model, "input": prompt}
     # Portable APIs do not guarantee that reasoning can be fully disabled.
     if reasoning == "disabled":
