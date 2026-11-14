@@ -61,6 +61,26 @@ def test_tag_document_uses_wrapping_then_exact_id_metadata(tmp_path, monkeypatch
     assert _tag_one(cfg, "file1", "акт.pdf") == (tagged, 0)
 
 
+@pytest.mark.parametrize("ending", ["", "\n", "\n\n\n"])
+def test_tag_document_canonicalizes_trailing_newlines(tmp_path, monkeypatch, ending):
+    cfg = PipelineConfig(data_dir=tmp_path / "missing", out_dir=tmp_path / "out")
+
+    def respond(prompt, **kwargs):
+        if kwargs["schema_name"] == "entity_wrapping":
+            return [
+                {"content": "# акт.pdf\nИтого: ", "wrap": "100,00", "type": "entity"},
+                {"content": " руб." + ending, "wrap": "", "type": "EOF"},
+            ]
+        return metadata()
+
+    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", respond)
+    tagged, retries = tag_document(cfg, "акт.pdf", "Итого: 100,00 руб.\n")
+    assert tagged == (
+        '# акт.pdf\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+    )
+    assert retries == 0
+
+
 def test_quoted_date_is_one_entity_with_inclusive_bounds(tmp_path, monkeypatch):
     cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path)
     schemas = []

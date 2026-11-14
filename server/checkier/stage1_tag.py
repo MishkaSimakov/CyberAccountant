@@ -339,7 +339,8 @@ def tag_document(
                 metadata = _validate_metadata(metadata, ids)
             else:
                 metadata = {}
-            return _segments_to_tagged(segments, metadata), attempt
+            tagged = _segments_to_tagged(segments, metadata)
+            return tagged.rstrip("\n") + "\n", attempt
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             if attempt < cfg.max_retries and _is_transient(exc):
