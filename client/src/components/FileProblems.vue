@@ -3,19 +3,24 @@ import {defineComponent, type PropType} from 'vue'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faChevronDown} from '@fortawesome/free-solid-svg-icons/faChevronDown'
 import {faFileLines} from '@fortawesome/free-solid-svg-icons/faFileLines'
-import type {ReportDocument, VerificationResult} from '../api'
+import type {ReportDocument, VerifiedEntity, VerifiedRequirement, VerificationResult} from '../api'
 import RequirementText from './RequirementText.vue'
+import RequirementDetails from './RequirementDetails.vue'
+import RequirementStatus from './RequirementStatus.vue'
 
 interface FileProblem {
   title: string
-  description: string
+  description?: string
+  requirements?: VerifiedRequirement[]
 }
 
 export default defineComponent({
-  components: {FontAwesomeIcon, RequirementText},
+  components: {FontAwesomeIcon, RequirementText, RequirementDetails, RequirementStatus},
   props: {
     files: {type: Object as PropType<VerificationResult['files']>, required: true},
     documents: {type: Array as PropType<ReportDocument[]>, required: true},
+    requirements: {type: Array as PropType<VerifiedRequirement[]>, required: true},
+    entities: {type: Object as PropType<Record<number, VerifiedEntity>>, required: true},
     entityDocuments: {type: Object as PropType<Record<number, number>>, required: true},
   },
   emits: {select: (id: number) => Number.isInteger(id)},
@@ -31,9 +36,11 @@ export default defineComponent({
         grouped.set(id, problems)
       }
       for (const [id, reasons] of Object.entries(this.files.out_of_scope)) {
-        for (const reason of reasons) {
-          add(id, {title: 'Документ вне рамок проверки', description: reason})
-        }
+        const requirements = this.requirements.filter(requirement =>
+            requirement.kind === 'formula' && requirement.tag === 'scope' && requirement.verdict === 'false'
+            && reasons.includes(requirement.equation)
+            && requirement.ids_related.some(entityId => String(this.entityDocuments[entityId]) === id))
+        if (requirements.length) add(id, {title: 'Документ вне рамок проверки', requirements})
       }
       for (const [id, original] of Object.entries(this.files.duplicates)) {
         add(id, {title: 'Дубликат', description: `Совпадает с файлом «${this.fileName(original)}».`})
@@ -77,9 +84,34 @@ export default defineComponent({
                              aria-hidden="true"/>
           </summary>
           <ul class="space-y-4 border-t border-slate-100 p-4 sm:pl-11">
-            <li v-for="(problem, index) in file.problems" :key="index">
+            <li v-for="problem in file.problems" :key="problem.title">
               <p class="text-sm font-medium text-amber-800">{{ problem.title }}</p>
-              <RequirementText :text="problem.description" :entity-documents="entityDocuments"
+              <ul v-if="problem.requirements?.length" class="mt-2 divide-y divide-slate-200 rounded border border-slate-200">
+                <li v-for="requirement in problem.requirements" :key="requirement.id">
+                  <details class="group/requirement">
+                    <summary
+                        class="flex cursor-pointer list-none items-start gap-3 p-4 hover:bg-slate-50 focus-visible:outline-blue-500 [&::-webkit-details-marker]:hidden">
+                      <span class="pt-1 text-sm text-slate-400"><span class="sr-only">Требование </span>{{
+                          requirement.id
+                        }}</span>
+                      <RequirementText :text="requirement.text || 'Название не указано'"
+                                       :entity-documents="entityDocuments"
+                                       class="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm font-medium leading-7"
+                                       :class="requirement.silenced ? 'text-slate-500' : 'text-slate-800'"
+                                       @select="$emit('select', $event)"/>
+                      <RequirementStatus :requirement="requirement"/>
+                      <FontAwesomeIcon :icon="faChevronDown"
+                                       class="mt-2 size-3 shrink-0 text-slate-400 transition-transform group-open/requirement:rotate-180 motion-reduce:transition-none"
+                                       aria-hidden="true"/>
+                    </summary>
+                    <RequirementDetails :requirement="requirement" :entities="entities"
+                                        :entity-documents="entityDocuments" class="border-t border-slate-100 p-4"
+                                        @select="$emit('select', $event)"/>
+                  </details>
+                </li>
+              </ul>
+              <RequirementText v-else-if="problem.description" :text="problem.description"
+                               :entity-documents="entityDocuments"
                                class="mt-1 block whitespace-pre-wrap break-words text-sm leading-7 text-slate-700"
                                @select="$emit('select', $event)"/>
             </li>

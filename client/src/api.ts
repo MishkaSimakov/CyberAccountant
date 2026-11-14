@@ -152,9 +152,19 @@ export interface FieldVerdict {
     diff: string | null
 }
 
+export interface VerifiedEntity {
+    num: number
+    raw: string
+    type: string
+    unit: string
+    value: string | number | null
+    end_value: string | number | null
+}
+
 export interface VerificationResult {
     requirement_results: RequirementResult[]
     card: { cells: FieldVerdict[] }
+    entities: VerifiedEntity[]
     entity_documents: Record<number, number>
     files: {
         duplicates: Record<string, string>
