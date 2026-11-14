@@ -7,7 +7,14 @@ import pytest
 
 from checkier import Pipeline, PipelineConfig, tag_document
 from checkier.schemas import entity_metadata_schema
-from checkier.stage1_tag import TAG_PROMPT, _tag_one, _validate_metadata
+from checkier.stage1_tag import (
+    TAG_PROMPT,
+    _bounded_edit_distance,
+    _repair_segments,
+    _tag_one,
+    _validate_metadata,
+    _validate_segments,
+)
 
 
 def metadata(**changes):
@@ -154,6 +161,208 @@ def test_tag_document_raises_on_reconstruction_failure(tmp_path, monkeypatch):
     ])
     with pytest.raises(RuntimeError, match="tagging failed for акт.pdf"):
         tag_document(cfg, "акт.pdf", "original document")
+
+
+@pytest.mark.parametrize(("left", "right", "distance"), [
+    ("", "", 0),
+    ("", "abc", 3),
+    ("abc", "", 3),
+    ("abc", "abc", 0),
+    ("kitten", "sitting", 3),
+    ("abc", "xbc", 1),
+    ("abc", "abx", 1),
+    ("abc", "bcx", 2),
+    ("г.", "т.", 1),
+    (" |  | ", " | ", 3),
+])
+def test_bounded_edit_distance(left, right, distance):
+    for limit in range(5):
+        assert _bounded_edit_distance(left, right, limit) == min(distance, limit + 1)
+
+
+@pytest.mark.parametrize("copied", ["Итого ", "Иттого: ", "Итого; "])
+def test_repair_restores_source_gaps_without_changing_wraps(copied):
+    segments = [
+        {"content": copied, "wrap": "100,00", "type": "entity"},
+        {"content": " руб!\n\n", "wrap": "", "type": "EOF"},
+    ]
+    original = copy.deepcopy(segments)
+    source = "Итого: 100,00 руб.\n"
+    repaired = _repair_segments(source, segments)
+    assert repaired is not None
+    assert "".join(seg["content"] + seg["wrap"] for seg in repaired) == source
+    assert [seg["wrap"] for seg in repaired] == [seg["wrap"] for seg in segments]
+    assert segments == original
+
+
+def test_repair_removes_two_surplus_table_separators():
+    segments = [
+        {"content": "| ", "wrap": "1", "type": "entity"},
+        {"content": " | label |  |  | ", "wrap": "2", "type": "entity"},
+        {"content": " | other |  |  | ", "wrap": "3", "type": "entity"},
+        {"content": " |\n", "wrap": "", "type": "EOF"},
+    ]
+    source = "| 1 | label |  | 2 | other |  | 3 |\n"
+    repaired = _repair_segments(source, segments)
+    assert repaired is not None
+    assert _validate_segments(source, repaired) == []
+
+
+@pytest.mark.parametrize(("source", "segments"), [
+    ("Май 2026 т.", [
+        {"content": "", "wrap": "Май 2026 г.", "type": "entity"},
+        {"content": "", "wrap": "", "type": "EOF"},
+    ]),
+    ("100", [
+        {"content": "xxxx", "wrap": "100", "type": "entity"},
+        {"content": "", "wrap": "", "type": "EOF"},
+    ]),
+    ("100", [
+        {"content": "", "wrap": "100", "type": "entity"},
+        {"content": "xxxx", "wrap": "", "type": "EOF"},
+    ]),
+    ("100 200", [
+        {"content": "xxx", "wrap": "100", "type": "entity"},
+        {"content": " xxx", "wrap": "200", "type": "entity"},
+        {"content": "x", "wrap": "", "type": "EOF"},
+    ]),
+    ("1a1", [
+        {"content": "", "wrap": "1", "type": "entity"},
+        {"content": "a1x", "wrap": "", "type": "EOF"},
+    ]),
+    ("1a1b2", [
+        {"content": "", "wrap": "1", "type": "entity"},
+        {"content": "b", "wrap": "2", "type": "entity"},
+        {"content": "", "wrap": "", "type": "EOF"},
+    ]),
+    ("200 100", [
+        {"content": "", "wrap": "100", "type": "entity"},
+        {"content": " ", "wrap": "200", "type": "entity"},
+        {"content": "", "wrap": "", "type": "EOF"},
+    ]),
+])
+def test_repair_rejects_changed_wraps_excess_edits_and_ambiguous_placements(source, segments):
+    assert _repair_segments(source, segments) is None
+
+
+@pytest.mark.parametrize("distance", [1, 5, 20, 200])
+def test_repair_uses_later_identical_wrap_to_disambiguate_earlier_occurrence(distance):
+    padding = "long " * distance
+    segments = [
+        {"content": "", "wrap": "1", "type": "entity"},
+        {"content": "xxa1" + padding, "wrap": "1", "type": "entity"},
+        {"content": "", "wrap": "", "type": "EOF"},
+    ]
+    repaired = _repair_segments("1a1" + padding + "1", segments)
+    assert repaired is not None
+    # The first wrap has two locally feasible matches. The second wrap rules
+    # out the later one, whose following gap would need four deletions.
+    assert [seg["content"] for seg in repaired] == ["", "a1" + padding, ""]
+
+
+@pytest.mark.parametrize("distance", [0, 1, 3, 20, 200])
+@pytest.mark.parametrize("entity_count", [2, 5, 20])
+def test_repair_matches_identical_amounts_across_cells_and_distant_rows(distance, entity_count):
+    gaps = [
+        f"| row {i}: " + "context " * distance + "0,00 (reference) | amount: "
+        for i in range(entity_count)
+    ]
+    segments = [
+        {"content": gap + (" | " if i < 2 else ""), "wrap": "0,00", "type": "entity"}
+        for i, gap in enumerate(gaps)
+    ]
+    segments.append({"content": " | 0,00 (reference)\n", "wrap": "", "type": "EOF"})
+    source = "".join(gap + "0,00" for gap in gaps) + segments[-1]["content"]
+
+    repaired = _repair_segments(source, segments)
+
+    assert repaired is not None
+    assert [seg["content"] for seg in repaired[:-1]] == gaps
+    assert [seg["wrap"] for seg in repaired[:-1]] == ["0,00"] * entity_count
+    assert _validate_segments(source, repaired) == []
+
+
+@pytest.mark.parametrize("separator", ["", " ", " | ", "context " * 200])
+def test_repair_matches_consecutive_identical_amounts_without_skipping_occurrences(separator):
+    segments = [
+        {"content": "", "wrap": "0,00", "type": "entity"},
+        {"content": separator + "|", "wrap": "0,00", "type": "entity"},
+        {"content": separator + "|", "wrap": "0,00", "type": "entity"},
+        {"content": "", "wrap": "", "type": "EOF"},
+    ]
+    source = separator.join(["0,00"] * 3)
+    repaired = _repair_segments(source, segments)
+    assert repaired is not None
+    assert [seg["content"] for seg in repaired] == ["", separator, separator, ""]
+    assert _validate_segments(source, repaired) == []
+
+
+def test_repair_rejects_ambiguous_placements_of_multiple_identical_wraps():
+    segments = [
+        {"content": "", "wrap": "1", "type": "entity"},
+        {"content": "b", "wrap": "1", "type": "entity"},
+        {"content": "", "wrap": "", "type": "EOF"},
+    ]
+    # More than one pair of occurrences fits; picking the cheapest is unsafe.
+    assert _repair_segments("1a1b1", segments) is None
+
+
+@pytest.mark.parametrize("segments", [
+    [],
+    [None],
+    [{"content": "", "wrap": "", "type": "entity"}],
+    [{"content": 1, "wrap": "", "type": "EOF"}],
+    [{"wrap": "", "type": "EOF"}],
+    [
+        {"content": "", "wrap": "", "type": "entity"},
+        {"content": "", "wrap": "", "type": "EOF"},
+    ],
+])
+def test_repair_rejects_invalid_segment_structure(segments):
+    assert _repair_segments("", segments) is None
+
+
+def test_tag_document_repairs_gaps_without_repeating_wrapping(tmp_path, monkeypatch):
+    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path, max_retries=0)
+    calls = []
+
+    def respond(prompt, **kwargs):
+        calls.append(kwargs["schema_name"])
+        if kwargs["schema_name"] == "entity_wrapping":
+            return [
+                {"content": "# акт.pdf\nИтого: | ", "wrap": "100,00", "type": "entity"},
+                {"content": " руб.\n", "wrap": "", "type": "EOF"},
+            ]
+        assert '<ent id="e0">100,00</ent>' in prompt
+        assert "Итого: | " not in prompt
+        return metadata()
+
+    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", respond)
+    tagged, retries = tag_document(cfg, "акт.pdf", "Итого: 100,00 руб.\n")
+    assert tagged == (
+        '# акт.pdf\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+    )
+    assert retries == 0
+    assert calls == ["entity_wrapping", "entity_metadata"]
+
+
+def test_tag_document_retries_when_gap_repair_is_ambiguous(tmp_path, monkeypatch):
+    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path, max_retries=1)
+    calls = []
+
+    def respond(prompt, **kwargs):
+        calls.append(kwargs["schema_name"])
+        if kwargs["schema_name"] == "entity_metadata":
+            return metadata()
+        return [
+            {"content": "# акт.pdf\n", "wrap": "1", "type": "entity"},
+            {"content": "a1x" if len(calls) == 1 else "a1", "wrap": "", "type": "EOF"},
+        ]
+
+    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", respond)
+    _, retries = tag_document(cfg, "акт.pdf", "1a1")
+    assert retries == 1
+    assert calls == ["entity_wrapping", "entity_wrapping", "entity_metadata"]
 
 
 def test_pipeline_resumes_from_extracted_documents(tmp_path, monkeypatch):

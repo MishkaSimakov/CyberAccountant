@@ -156,29 +156,35 @@ def _coerce_segments(data) -> list:
     raise ValueError(f"unexpected JSON shape: {type(data).__name__}")
 
 
-def _validate_segments(doc: str, segments: list) -> list[str]:
-    """Check the segment stream rebuilds *doc* exactly. Returns problems."""
+def _validate_segment_shape(segments: list) -> list[str]:
+    """Check segment structure before interpreting its text."""
     problems: list[str] = []
-    rebuilt_parts: list[str] = []
     if not segments:
         return ["segment array is empty"]
     for i, seg in enumerate(segments):
         if not isinstance(seg, dict):
             problems.append(f"segment {i} is not an object")
             continue
-        c = seg.get("content", "")
-        w = seg.get("wrap", "")
+        c = seg.get("content")
+        w = seg.get("wrap")
         t = seg.get("type", "")
         if not isinstance(c, str) or not isinstance(w, str):
             problems.append(f"segment {i}: content/wrap must be strings")
             continue
-        rebuilt_parts.extend((c, w))
         if i < len(segments) - 1:
             if not w or t != "entity":
                 problems.append(f"segment {i}: non-final entry must be a non-empty entity")
         elif t != "EOF" or w != "":
             problems.append(f"last segment must be EOF with empty wrap, got type={t!r}")
-    rebuilt = "".join(rebuilt_parts)
+    return problems
+
+
+def _validate_segments(doc: str, segments: list) -> list[str]:
+    """Check the segment stream rebuilds *doc* exactly. Returns problems."""
+    problems = _validate_segment_shape(segments)
+    if problems:
+        return problems
+    rebuilt = "".join(seg["content"] + seg["wrap"] for seg in segments)
     if rebuilt.rstrip("\n") != doc.rstrip("\n"):
         k = 0
         limit = min(len(rebuilt), len(doc))
@@ -189,6 +195,81 @@ def _validate_segments(doc: str, segments: list) -> list[str]:
             f"expected {doc[k:k + 40]!r}, got {rebuilt[k:k + 40]!r}"
         )
     return problems
+
+
+def _bounded_edit_distance(left: str, right: str, limit: int) -> int:
+    """Return Levenshtein distance, or limit + 1 when the limit is exceeded."""
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > limit:
+        return limit + 1
+    previous = {j: j for j in range(min(len(right), limit) + 1)}
+    for i, char in enumerate(left, 1):
+        current = {0: i} if i <= limit else {}
+        for j in range(max(1, i - limit), min(len(right), i + limit) + 1):
+            current[j] = min(
+                previous.get(j, limit + 1) + 1,
+                current.get(j - 1, limit + 1) + 1,
+                previous.get(j - 1, limit + 1) + (char != right[j - 1]),
+            )
+        if not current or min(current.values()) > limit:
+            return limit + 1
+        previous = current
+    return min(previous.get(len(right), limit + 1), limit + 1)
+
+
+def _repair_segments(
+        doc: str, segments: list, *, gap_limit: int = 3, total_limit: int = 6,
+) -> list | None:
+    """Restore gaps only when exactly one bounded placement of exact wraps exists."""
+    if _validate_segment_shape(segments):
+        return None
+    # (source cursor, spent edits) -> (path count capped at two, one placement).
+    # Keep every feasible cost, not just the cheapest: a costlier path is still
+    # an ambiguity. Different edit scripts for the same gaps are not paths.
+    states = {(0, 0): (1, ())}
+    for seg in segments[:-1]:
+        content, wrap = seg["content"], seg["wrap"]
+        following = {}
+        for (cursor, spent), (count, starts) in states.items():
+            limit = min(gap_limit, total_limit - spent)
+            expected = cursor + len(content)
+            for start in range(
+                    max(cursor, expected - limit),
+                    min(len(doc) - len(wrap), expected + limit) + 1,
+            ):
+                if not doc.startswith(wrap, start):
+                    continue
+                cost = _bounded_edit_distance(content, doc[cursor:start], limit)
+                if cost > limit:
+                    continue
+                key = (start + len(wrap), spent + cost)
+                prior_count, _ = following.get(key, (0, ()))
+                following[key] = (min(2, prior_count + count), starts + (start,))
+        states = following
+        if not states:
+            return None
+
+    matches = 0
+    placement = ()
+    tail = segments[-1]["content"].rstrip("\n")
+    for (cursor, spent), (count, starts) in states.items():
+        limit = min(gap_limit, total_limit - spent)
+        if _bounded_edit_distance(tail, doc[cursor:].rstrip("\n"), limit) <= limit:
+            matches += count
+            if matches > 1:
+                return None
+            placement = starts
+    if matches != 1:
+        return None
+
+    repaired = []
+    cursor = 0
+    for seg, start in zip(segments[:-1], placement):
+        repaired.append(dict(seg, content=doc[cursor:start]))
+        cursor = start + len(seg["wrap"])
+    repaired.append(dict(segments[-1], content=doc[cursor:]))
+    return repaired
 
 
 def _segments_to_marked(segments: list) -> tuple[str, list[str]]:
@@ -324,6 +405,11 @@ def tag_document(
             segments = _coerce_segments(data)
             problems = _validate_segments(processed, segments)
             if problems:
+                repaired = _repair_segments(processed, segments)
+                if repaired is not None:
+                    segments = repaired
+                    problems = _validate_segments(processed, segments)
+            if problems:
                 raise ValueError("; ".join(problems))
             marked, ids = _segments_to_marked(segments)
             if ids:
@@ -348,9 +434,9 @@ def tag_document(
             if attempt < cfg.max_retries:
                 prompt, processed = _build_prompt(filename, markdown)
                 prompt += (
-                    "\n\nYour previous answer was wrong. Return ONLY the wrapping JSON array. "
-                    "Do not add metadata to this first request.\nValidation error:\n"
-                    + str(last_err)[:1500]
+                        "\n\nYour previous answer was wrong. Return ONLY the wrapping JSON array. "
+                        "Do not add metadata to this first request.\nValidation error:\n"
+                        + str(last_err)[:1500]
                 )
             else:
                 break
