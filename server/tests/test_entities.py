@@ -21,9 +21,9 @@ from test_documents import api, request, upload
 MARKDOWN = "# Сумма\nИтого: 100,00 руб.\n"
 
 
-def tagged(filename):
+def tagged():
     return (
-        f"# {filename}\n# Сумма\nИтого: "
+        "# Сумма\nИтого: "
         '<ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
     )
 
@@ -95,7 +95,7 @@ def test_extraction_preserves_full_model_logs_across_runs(ready, monkeypatch):
             log = content.decode("utf-8")
             assert log.count("\nRUN ") == run
             assert log.count("--- MODEL PROMPT |") == run * 9
-            assert f"# {document['name']}\n{MARKDOWN}" in log
+            assert f"# {document['name']}\n" not in log
             assert MARKDOWN in log
             assert content.count(output.encode("utf-8")) == run * 9
             assert log.count("ERROR (RuntimeError): tagging failed") == run
@@ -195,13 +195,13 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     assert not details["blockers"]
     for document in details["documents"]:
         assert document["status"] == "completed"
-        assert request("GET", path + f'/documents/{document["id"]}/markdown')[1]["content"] == tagged(document["name"])
+        assert request("GET", path + f'/documents/{document["id"]}/markdown')[1]["content"] == tagged()
         assert request("GET", path + f'/documents/{document["id"]}')[1]["status"] == "completed"
     with database.session_scope() as session:
         for revision_id in revisions:
             file = session.get(File, revision_id)
             assert storage.artifact_path(file.markdown_path).read_text(encoding="utf-8") == MARKDOWN
-            assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == tagged(file.name)
+            assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == tagged()
 
 
 @pytest.mark.parametrize("per_document", [False, True])
@@ -422,7 +422,7 @@ def test_review_edits_preserve_revisions_and_checkier_fields(ready):
     with database.session_scope() as session:
         original = session.get(File, revisions[0])
         assert storage.artifact_path(original.markdown_path).read_text(encoding="utf-8") == MARKDOWN
-        assert storage.artifact_path(original.entities_path).read_text(encoding="utf-8") == tagged(original.name)
+        assert storage.artifact_path(original.entities_path).read_text(encoding="utf-8") == tagged()
         edited = reports.report_documents(session, report_id)[0]
         assert edited.version == 2 and edited.status == "completed"
         assert "/edited/" in edited.entities_path
@@ -450,7 +450,6 @@ def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
     path = f"/reports/{report_id}"
     with database.session_scope() as session:
         file_id = session.get(File, revisions[0]).file_id
-        filename = session.get(File, revisions[0]).name
     markdown_path = path + f"/documents/{file_id}/markdown"
     content = MARKDOWN + "\n"
     status, result = request("POST", markdown_path, {"content": content, "base_revision": 1})
@@ -469,4 +468,4 @@ def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
     assert pending == [edited_id, revisions[1]]
     job.process_entities(revisions[0])  # The old OCR revision must stay obsolete.
     job.process_entities(edited_id)
-    assert request("GET", markdown_path)[1]["content"] == tagged(filename)
+    assert request("GET", markdown_path)[1]["content"] == tagged()

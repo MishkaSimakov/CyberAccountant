@@ -45,7 +45,7 @@ def test_tag_document_uses_wrapping_then_exact_id_metadata(tmp_path, monkeypatch
         if kwargs["schema_name"] == "entity_wrapping":
             assert set(kwargs["schema"]["items"]["properties"]) == {"content", "wrap", "type"}
             return [
-                {"content": "# акт.pdf\nИтого: ", "wrap": "100,00", "type": "entity"},
+                {"content": "Итого: ", "wrap": "100,00", "type": "entity"},
                 {"content": " руб.\n", "wrap": "", "type": "EOF"},
             ]
         assert kwargs["schema_name"] == "entity_metadata"
@@ -56,11 +56,12 @@ def test_tag_document_uses_wrapping_then_exact_id_metadata(tmp_path, monkeypatch
     monkeypatch.setattr("checkier.stage1_tag.call_llm_json", respond)
     tagged, retries = tag_document(cfg, "акт.pdf", "Итого: 100,00 руб.\n")
     assert tagged == (
-        '# акт.pdf\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+        'Итого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
     )
     assert retries == 0
     assert len(calls) == 2
-    assert "# акт.pdf\nИтого: 100,00 руб." in calls[0][0]
+    assert all("акт.pdf" not in prompt for prompt, _ in calls)
+    assert "Итого: 100,00 руб." in calls[0][0]
     assert not cfg.out_dir.exists()
 
     cfg.files_dir.mkdir(parents=True)
@@ -75,7 +76,7 @@ def test_tag_document_canonicalizes_trailing_newlines(tmp_path, monkeypatch, end
     def respond(prompt, **kwargs):
         if kwargs["schema_name"] == "entity_wrapping":
             return [
-                {"content": "# акт.pdf\nИтого: ", "wrap": "100,00", "type": "entity"},
+                {"content": "Итого: ", "wrap": "100,00", "type": "entity"},
                 {"content": " руб." + ending, "wrap": "", "type": "EOF"},
             ]
         return metadata()
@@ -83,7 +84,7 @@ def test_tag_document_canonicalizes_trailing_newlines(tmp_path, monkeypatch, end
     monkeypatch.setattr("checkier.stage1_tag.call_llm_json", respond)
     tagged, retries = tag_document(cfg, "акт.pdf", "Итого: 100,00 руб.\n")
     assert tagged == (
-        '# акт.pdf\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+        'Итого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
     )
     assert retries == 0
 
@@ -96,7 +97,7 @@ def test_quoted_date_is_one_entity_with_inclusive_bounds(tmp_path, monkeypatch):
         schemas.append(kwargs["schema"])
         if kwargs["schema_name"] == "entity_wrapping":
             return [
-                {"content": '# date.md\nНачало: ', "wrap": '"10" мая 2026 г.', "type": "entity"},
+                {"content": 'Начало: ', "wrap": '"10" мая 2026 г.', "type": "entity"},
                 {"content": "\n", "wrap": "", "type": "EOF"},
             ]
         return {"e0": {
@@ -108,9 +109,9 @@ def test_quoted_date_is_one_entity_with_inclusive_bounds(tmp_path, monkeypatch):
     tagged, _ = tag_document(cfg, "date.md", 'Начало: "10" мая 2026 г.\n')
     assert tagged.count("<ent ") == 1
     assert (
-        '<ent t="date" start="2026-05-10T00:00:00" end="2026-05-10T23:59:59">'
-        '"10" мая 2026 г.</ent>'
-    ) in tagged
+               '<ent t="date" start="2026-05-10T00:00:00" end="2026-05-10T23:59:59">'
+               '"10" мая 2026 г.</ent>'
+           ) in tagged
     assert schemas[1] == entity_metadata_schema(["e0"])
 
 
@@ -125,10 +126,10 @@ def test_dynamic_metadata_schema_is_closed_and_id_keyed():
     }
     jsonschema.validate(valid, schema)
     for invalid in (
-        {"e0": valid["e0"]},
-        dict(valid, e2=valid["e0"]),
-        {"e0": dict(valid["e0"], extra="bad"), "e1": valid["e1"]},
-        {"e0": dict(valid["e0"], value=42), "e1": valid["e1"]},
+            {"e0": valid["e0"]},
+            dict(valid, e2=valid["e0"]),
+            {"e0": dict(valid["e0"], extra="bad"), "e1": valid["e1"]},
+            {"e0": dict(valid["e0"], value=42), "e1": valid["e1"]},
     ):
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(invalid, schema)
@@ -327,10 +328,11 @@ def test_tag_document_repairs_gaps_without_repeating_wrapping(tmp_path, monkeypa
     calls = []
 
     def respond(prompt, **kwargs):
+        assert "акт.pdf" not in prompt
         calls.append(kwargs["schema_name"])
         if kwargs["schema_name"] == "entity_wrapping":
             return [
-                {"content": "# акт.pdf\nИтого: | ", "wrap": "100,00", "type": "entity"},
+                {"content": "Итого: | ", "wrap": "100,00", "type": "entity"},
                 {"content": " руб.\n", "wrap": "", "type": "EOF"},
             ]
         assert '<ent id="e0">100,00</ent>' in prompt
@@ -340,7 +342,7 @@ def test_tag_document_repairs_gaps_without_repeating_wrapping(tmp_path, monkeypa
     monkeypatch.setattr("checkier.stage1_tag.call_llm_json", respond)
     tagged, retries = tag_document(cfg, "акт.pdf", "Итого: 100,00 руб.\n")
     assert tagged == (
-        '# акт.pdf\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+        'Итого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
     )
     assert retries == 0
     assert calls == ["entity_wrapping", "entity_metadata"]
@@ -351,11 +353,12 @@ def test_tag_document_retries_when_gap_repair_is_ambiguous(tmp_path, monkeypatch
     calls = []
 
     def respond(prompt, **kwargs):
+        assert "акт.pdf" not in prompt
         calls.append(kwargs["schema_name"])
         if kwargs["schema_name"] == "entity_metadata":
             return metadata()
         return [
-            {"content": "# акт.pdf\n", "wrap": "1", "type": "entity"},
+            {"content": "", "wrap": "1", "type": "entity"},
             {"content": "a1x" if len(calls) == 1 else "a1", "wrap": "", "type": "EOF"},
         ]
 

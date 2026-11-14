@@ -1,7 +1,7 @@
 """Stage 1: two-request entity wrapping and metadata extraction.
 
-Request 1 returns only a segment stream that reconstructs the processed
-filename header and OCR document exactly. Request 2 receives deterministic
+Request 1 returns only a segment stream that reconstructs the OCR document
+exactly. Request 2 receives deterministic
 per-document IDs in XML-like markup and returns closed, ID-keyed metadata under
 an on-the-fly JSON Schema. Dates use inclusive, timezone-free day timestamps.
 """
@@ -72,8 +72,8 @@ number and month/year entity. For a range such as 01.05.2026–10.05.2026,
 wrap the two dates separately and leave the dash outside the tags.
 
 TASK
-Read the processed filename header and document at the bottom. Output a JSON
-array of segments that rebuilds both exactly.
+Read the document at the bottom. Output a JSON array of segments that rebuilds
+the document exactly.
 
 REQUIRED OUTPUT FORMAT (no other text, no markdown fence, no commentary):
 [{"content":"...","wrap":"...","type":"entity"}, ..., {"content":"...","wrap":"","type":"EOF"}]
@@ -88,7 +88,7 @@ the input character-for-character.
 
 Rules:
 - Wrap every amount, date/period, document identifier, contract number, count,
-  coefficient, percentage, and ratio, including tables and the filename header.
+  coefficient, percentage, and ratio, including tables and document headings.
 - Do not wrap a bare year inside running text unless it is a full date/period.
 - Keep all whitespace and punctuation exactly.
 - OUTPUT ONLY THE JSON ARRAY. Do NOT repeat the input or add prose.
@@ -125,6 +125,22 @@ Metadata fields for every ID:
 - value: normalized non-date value as a string, or null if unresolved
 - start/end: inclusive date bounds, or null for non-dates and unresolved dates
 
+Identifier types:
+- docid: identifies an accounting document, such as an invoice, act, payment
+  order, or insurance calculation. Examples: "Документ: ВЗН-2026-05",
+  "Акт № 118", "Счет № 174". References to other accounting documents also
+  use docid.
+- contract: identifies the agreement under which work, costs, or payments
+  occur. Use for identifiers labeled "Договор" or "Контракт", and "Проект"
+  when the project reference identifies that agreement.
+- Choose the type from the surrounding meaning, not punctuation or numeric
+  pattern. Do not classify an agreement reference as docid merely because an
+  agreement is itself a document.
+
+Example:
+Документ: ВЗН-2026-05 | Проект: 24/03/15-01 | Период: Май 2026
+ВЗН-2026-05 is docid; 24/03/15-01 is contract; Май 2026 is date.
+
 For date entities, value must be null. Return BOTH start and end, or BOTH null:
 - exact date: YYYY-MM-DDT00:00:00 through the same day at T23:59:59
 - month: first day at T00:00:00 through last day at T23:59:59
@@ -141,11 +157,9 @@ INPUT
 """
 
 
-def _build_prompt(filename: str, content: str) -> tuple[str, str]:
+def _build_prompt(content: str) -> tuple[str, str]:
     """Build request 1 without interpreting braces in document content."""
-    header = "# " + " ".join(filename.splitlines())
-    processed = f"{header}\n{content}"
-    return TAG_PROMPT.replace("%%CONTENT%%", processed), processed
+    return TAG_PROMPT.replace("%%CONTENT%%", content), content
 
 
 def _coerce_segments(data) -> list:
@@ -386,10 +400,10 @@ def tag_document(
 ) -> tuple[str, int]:
     """Extract entries in two calls without changing the preserved OCR source.
 
-    Return (tagged_markdown_with_processed_filename, retries_used), or raise
+    Return (tagged_markdown, retries_used), or raise
     when extraction fails. The caller owns persistence and scheduling.
     """
-    prompt, processed = _build_prompt(filename, markdown)
+    prompt, processed = _build_prompt(markdown)
     last_err: Exception | None = None
     for attempt in range(cfg.max_retries + 1):
         try:
@@ -432,7 +446,7 @@ def tag_document(
             if attempt < cfg.max_retries and _is_transient(exc):
                 continue
             if attempt < cfg.max_retries:
-                prompt, processed = _build_prompt(filename, markdown)
+                prompt, processed = _build_prompt(markdown)
                 prompt += (
                         "\n\nYour previous answer was wrong. Return ONLY the wrapping JSON array. "
                         "Do not add metadata to this first request.\nValidation error:\n"
