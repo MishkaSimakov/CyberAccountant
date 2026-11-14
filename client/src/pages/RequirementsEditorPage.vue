@@ -1,5 +1,6 @@
 <script lang="ts">
 import {defineComponent} from 'vue'
+import {RouterLink} from 'vue-router'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faPen} from '@fortawesome/free-solid-svg-icons/faPen'
 import {faPlus} from '@fortawesome/free-solid-svg-icons/faPlus'
@@ -19,7 +20,7 @@ import RequirementText from '../components/RequirementText.vue'
 import MarkdownEditor from '../components/MarkdownEditor.vue'
 
 export default defineComponent({
-  components: {FontAwesomeIcon, ReportHeader, RequirementEditor, RequirementText, MarkdownEditor},
+  components: {RouterLink, FontAwesomeIcon, ReportHeader, RequirementEditor, RequirementText, MarkdownEditor},
   props: {reportId: {type: Number, required: true}},
   data() {
     return {
@@ -145,10 +146,16 @@ export default defineComponent({
           <p class="mt-2 text-sm text-slate-500">Добавьте, исправьте или удалите требования, затем запустите
             проверку.</p>
         </div>
-        <button type="button" :disabled="!canVerify"
-                class="cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                @click="verify">{{ starting ? 'Запускаем…' : 'Начать проверку →' }}
-        </button>
+        <div class="flex flex-wrap justify-end gap-3">
+          <RouterLink :to="{name: 'report', params: {reportId}, query: {view: 'entities'}}"
+                      class="rounded border border-slate-300 bg-white px-4 py-2 hover:bg-slate-50 focus-visible:outline-blue-500">
+            Просмотреть файлы и сущности
+          </RouterLink>
+          <button type="button" :disabled="!canVerify"
+                  class="cursor-pointer rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  @click="verify">{{ starting ? 'Запускаем…' : 'Начать проверку →' }}
+          </button>
+        </div>
       </div>
       <div v-if="error" class="mt-4 rounded bg-red-50 p-4 text-red-700" role="alert">
         {{ error }}
