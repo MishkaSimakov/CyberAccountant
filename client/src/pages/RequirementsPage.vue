@@ -1,5 +1,6 @@
 <script lang="ts">
 import {defineComponent} from 'vue'
+import {RouterLink} from 'vue-router'
 import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
@@ -27,6 +28,7 @@ import FileProblems from '../components/FileProblems.vue'
 
 export default defineComponent({
   components: {
+    RouterLink,
     FontAwesomeIcon,
     ReportHeader,
     RequirementsResults,
@@ -155,6 +157,10 @@ export default defineComponent({
            class="rounded border border-slate-300 bg-white px-4 py-2 hover:bg-slate-50 focus-visible:outline-blue-500">
           Скачать все файлы (ZIP)
         </a>
+        <RouterLink :to="{name: 'report', params: {reportId}, query: {view: 'entities'}}"
+                    class="rounded border border-slate-300 bg-white px-4 py-2 hover:bg-slate-50 focus-visible:outline-blue-500">
+          Просмотреть файлы и сущности
+        </RouterLink>
         <button type="button" :disabled="editing || $store.state.requirements.saving.length > 0"
                 class="cursor-pointer rounded border border-slate-300 bg-white px-4 py-2 hover:bg-slate-50 disabled:opacity-50"
                 @click="edit">{{ editing ? 'Открываем…' : 'Редактировать требования' }}
