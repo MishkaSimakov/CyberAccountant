@@ -30,22 +30,6 @@ def artifact_path(relative_path: str) -> Path:
     return storage_root() / relative_path
 
 
-def create_file_log(report_id: int, file_id: int) -> str:
-    relative = f"{report_id}/{file_id}/processing.log"
-    destination = artifact_path(relative)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.touch(exist_ok=True)
-    return relative
-
-
-def create_report_log(report_id: int) -> str:
-    relative = f"{report_id}/processing.log"
-    destination = artifact_path(relative)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.touch(exist_ok=True)
-    return relative
-
-
 def save_verification_result(report_id: int, result: dict) -> str:
     relative = f"{report_id}/verification/report-{uuid4().hex}.json"
     destination = artifact_path(relative)
@@ -99,7 +83,8 @@ def save_ocr(report_id: int, file_id: int, version: int, output: Path) -> str:
 
 
 def save_entities(report_id: int, file_id: int, version: int, markdown: str) -> str:
-    relative = Path(str(report_id)) / str(file_id) / "versions" / str(version) / "entities" / "document.md"
+    relative = (Path(str(report_id)) / str(file_id) / "versions" / str(version)
+                / "entities" / f"document-{uuid4().hex}.md")
     destination = artifact_path(str(relative))
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(markdown, encoding="utf-8")

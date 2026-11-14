@@ -29,8 +29,8 @@ __pycache__/
 # OCR output can be regenerated from the preserved originals.
 /storage/*/*/versions/*/ocr/
 
-# Extracted entries can be regenerated from OCR markdown.
-/storage/*/*/versions/*/entities/
+# Canonical entities/ Markdown and edited/ revisions preserve assigned identities.
+# They cannot be regenerated from OCR and must not be cleaned.
 
 # Verification artifacts can be regenerated from the reviewed document revisions.
 /storage/*/verification/

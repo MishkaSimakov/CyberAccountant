@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 
 from checkier.config import PipelineConfig
-from checkier.entities import ENT_RE, EntityRegistry
+from processing.common.markup import ENT_RE, parse_tag_attrs
+from processing.common.registry import EntityRegistry
+
 
 def run_replace(
         cfg: PipelineConfig,
@@ -34,6 +36,8 @@ def run_replace(
             ent = entities[idx] if idx < len(entities) else None
             idx += 1
             if ent is None:
+                return m.group(0)
+            if "id" in parse_tag_attrs(m.group(1)):
                 return m.group(0)
             eid = ent.mnemonic if cfg.id_style == "mnemonic" else str(ent.num)
             return f'<ent id="{eid}" {m.group(1)}>{m.group(2)}</ent>'

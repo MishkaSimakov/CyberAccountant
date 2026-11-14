@@ -2,9 +2,9 @@
 
 import pytest
 
-from checkier.config import PipelineConfig
-from checkier.entities import build_registry
-from checkier.report import build_report, format_report_text
+from entity_fixtures import registry_from_drafts as build_registry
+from checkier.report import format_report_text
+from processing.verification.results import build_report
 from checkier.solver import Relation
 
 
@@ -18,11 +18,10 @@ from checkier.solver import Relation
     ("scope", "false", "request", False),
 ])
 def test_out_of_scope_is_derived_only_from_failed_scope_formulas(tmp_path, tag, status, role, excluded):
-    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path)
     registry = build_registry({})
     relation = Relation(index=0, equation='value == "TARGET"', tag=tag, status=status,
                         source="custom", involved_files=["file"])
-    result = build_report(cfg, {"file": {"role": role}}, registry, [relation], [], [], [], {})
+    result = build_report({"file": {"role": role}}, registry, [relation], [], [], [], {})
     assert result["files"]["out_of_scope"] == ({"file": [relation.equation]} if excluded else {})
     assert result["summary"]["out_of_scope"] == int(excluded)
 
@@ -84,3 +83,22 @@ def test_format_report_text_renders_all_sections():
     assert "skipped, 1 of 3" in text
     assert "нет печати" in text
     assert "данные/09_акт.md" in text  # mapping resolves obfuscated names
+
+
+def test_direct_evaluation_overrides_constraint_acceptance_in_summary_and_findings():
+    from processing.verification.evaluation import EvaluationResult
+
+    relation = Relation(0, '#0 == "TARGET"', tag="scope", status="accepted", requirement_id=71)
+    evaluation = EvaluationResult(71, "false", files=("2",))
+    result = build_report({"2": {"role": "data"}}, build_registry({}), [relation], [], [], [], {},
+                          evaluations={71: evaluation})
+    assert result["summary"]["relations_false"] == 1
+    assert result["summary"]["requirements_false"] == 1
+    assert result["files"]["out_of_scope"] == {"2": [relation.equation]}
+    assert relation.status == "accepted"
+
+
+def test_console_formatter_accepts_canonical_numeric_assertion_references():
+    report = _sample_report()
+    report["fishy"][0]["ids_related"] = [0, 1]
+    assert "ids: 0, 1" in format_report_text(report)

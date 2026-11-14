@@ -11,34 +11,48 @@ from rq import Queue, SimpleWorker
 from rq.job import Job
 from sqlalchemy import func, select
 
-from checkier import llm
+from processing.common import llm
+from processing.common.llm import ModelClient
 
-from app import database, queue, storage, verification
-from app.jobs.verification import process_requirement_generation, process_verification
+from app import database, queue, storage
+from processing.verification import processor as verification_stage
+from app.jobs.verification import prepare_verification_input
+from processing.verification.processor import Verifier
+import logging
+from app.jobs.verification import process_verification
+from app.jobs import requirements as requirement_job
+from app.jobs.requirements import process_requirement_generation
+from processing.common.requirements import FormulaDefinition, AssertionDefinition
+from processing.common.errors import ProcessingValidationError
+from processing.requirements.processor import RequirementsProcessor
+from types import SimpleNamespace
 from app.models import EntityFile, File, Report, Requirement, VerificationResult
-from app.services import requirements, reports
+from app.services import requirements, reports, verification
 from test_documents import api, request, upload
+from entity_fixtures import finalize_drafts
+from processing.common.markup import parse_entity_tags
 
 
 @pytest.mark.parametrize("label, matches", [("3 этап, 2026 г.", True), ("3 этап, 2025 г.", False)])
 def test_prepare_verification_uses_exact_report_target(tmp_path, monkeypatch, label, matches):
     monkeypatch.setattr(storage, "artifact_path", lambda path: tmp_path / path)
-    text = '| 3 этап, 2026 г. | <ent t="amount">100</ent> |\n'
+    text = finalize_drafts('| 3 этап, 2026 г. | <ent t="amount">100</ent> |\n')
     (tmp_path / "card.md").write_text(text, encoding="utf-8")
     report = Report(id=1, target_row=label)
-    file = File(file_id=1, name="card.pdf", role="final_report", version=1, entities_path="card.md")
+    file = File(report_id=1, file_id=1, name="card.pdf", role="final_report", version=1, entities_path="card.md")
 
     if matches:
-        context = verification.prepare_verification(report, [file])
-        assert context.scope["target_row"] == [0]
-        assert context.scope["target_label"] == label
+        source = prepare_verification_input(report, [file])
+        output = Verifier().process(source, logger=logging.getLogger(__name__))
+        assert output.report["scope"]["target_row"] == (0,)
+        assert output.report["scope"]["target_label"] == label
     else:
         with pytest.raises(ValueError, match="Не удалось найти проверяемую строку"):
-            verification.prepare_verification(report, [file])
+            Verifier().process(prepare_verification_input(report, [file]), logger=logging.getLogger(__name__))
 
 
 @pytest.fixture
-def reviewed(api, monkeypatch):
+def reviewed(api, monkeypatch, llm_client):
     report_id, revisions = api
     upload(report_id, role="final_report", content=b"report")
     upload(report_id, content=b"supporting")
@@ -47,18 +61,22 @@ def reviewed(api, monkeypatch):
         report.stage = "entities"
         report.processing_status = "completed"
         report.target_row = "Итого"
+        next_id = 0
         for revision_id, text in zip(revisions, [
             'Итого: <ent t="amount" u="RUB_K" n="1000" value="110">0,11</ent>',
             'Сумма: <ent t="amount" u="RUB" value="100">100</ent>',
         ]):
             file = session.get(File, revision_id)
+            count = len(parse_entity_tags(text))
+            text = finalize_drafts(text, next_id)
+            next_id += count
             file.entities_path = storage.save_entities(report_id, file.file_id, file.version, text)
             file.markdown_path = file.entities_path
             file.status = "completed"
     pending = []
-    monkeypatch.setattr(requirements, "enqueue_verification", pending.append)
+    monkeypatch.setattr(verification, "enqueue_verification", pending.append)
     monkeypatch.setattr(requirements, "enqueue_requirement_generation", pending.append)
-    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", lambda *args, **kwargs: [
+    monkeypatch.setattr(llm_client, "call_llm_json", lambda *args, **kwargs: [
         {"equation": "#0 == #1", "tag": "agg"},
     ])
     return report_id, revisions, pending
@@ -69,7 +87,7 @@ def generate(report_id):
     process_requirement_generation(report_id)
 
 
-def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch):
+def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch, llm_client):
     report_id, revisions, pending = reviewed
     path = f"/reports/{report_id}"
     prompts = []
@@ -81,7 +99,7 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
             assert session.scalar(select(func.count()).select_from(Requirement)) == 0
         return [{"equation": "#0 == #1", "tag": "agg"}]
 
-    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", generate)
+    monkeypatch.setattr(llm_client, "call_llm_json", generate)
     assert request("GET", path)[1]["available_actions"] == ["generate_requirements"]
     assert request("GET", path + "/requirements")[1] == {"requirements": [], "entity_documents": {}}
     assert request("GET", path + "/verification-result")[0] == 409
@@ -129,7 +147,8 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
     with database.session_scope() as session:
         file = session.get(File, revisions[0])
         file_id = file.file_id
-        assert 'id="0"' not in storage.artifact_path(file.entities_path).read_text(encoding="utf-8")
+        assert 'id="0"' in storage.artifact_path(file.entities_path).read_text(encoding="utf-8")
+        assert 'mnemonic="abandon-abandon"' in storage.artifact_path(file.entities_path).read_text(encoding="utf-8")
         assert session.get(EntityFile, (report_id, 0)).file_id == file_id
         record = session.get(VerificationResult, report_id)
         assert json.loads(storage.artifact_path(record.path).read_text()) == result
@@ -150,38 +169,43 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
 def test_generators_share_context_and_all_requirements_reach_one_solver(reviewed, monkeypatch):
     report_id, revisions, _ = reviewed
     with database.session_scope() as session:
+        next_id = 0
         for revision_id, text in zip(revisions, [
             'Итого: <ent t="amount" value="70">70</ent> <ent t="amount" value="30">30</ent>',
             'Сумма: <ent t="amount" value="100">100</ent> Разница: <ent t="amount" value="40">40</ent>',
         ]):
             file = session.get(File, revision_id)
+            count = len(parse_entity_tags(text))
+            text = finalize_drafts(text, next_id)
+            next_id += count
             storage.artifact_path(file.entities_path).write_text(text, encoding="utf-8")
     contexts = []
 
-    def first(context):
+    def first(context, *, logger):
         contexts.append(context)
-        return [{"equation": "#0 + #1 == #2"}]
+        return [FormulaDefinition(equation="#0 + #1 == #2", source="first")]
 
-    def second(context):
+    def second(context, *, logger):
         contexts.append(context)
-        return [{"equation": "#0 - #1 == #3"}]
+        return [FormulaDefinition(equation="#0 - #1 == #3", source="second")]
 
-    monkeypatch.setattr(verification, "GENERATORS", {"first": first, "second": second})
-    original = verification.solve_system
+    monkeypatch.setattr(requirement_job, "create_requirement_processor", lambda: RequirementsProcessor(
+        generators=[SimpleNamespace(generate=first), SimpleNamespace(generate=second)]))
+    original = verification_stage.Solver.solve
     calls = []
 
-    def solve(all_requirements, registry, **kwargs):
-        calls.append(all_requirements)
+    def solve(solver):
+        calls.append(solver.relations)
         assert len(contexts) == 2
-        return original(all_requirements, registry, **kwargs)
+        return original(solver)
 
-    monkeypatch.setattr(verification, "solve_system", solve)
+    monkeypatch.setattr(verification_stage.Solver, "solve", solve)
     generate(report_id)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     process_verification(report_id)
     assert contexts[0] is contexts[1]
     assert len(calls) == 1
-    assert {item["source"] for item in calls[0]} == {"first", "second"}
+    assert {item.source for item in calls[0]} == {"first", "second"}
     cells = request("GET", f"/reports/{report_id}/verification-result")[1]["card"]["cells"]
     assert len(cells) == 2 and all(item["status"] == "ok" for item in cells)
 
@@ -195,12 +219,12 @@ def test_scope_requirements_are_published_and_failures_exclude_files(reviewed):
         file = session.get(File, revisions[1])
         document_id = str(file.file_id)
         storage.artifact_path(file.entities_path).write_text(
-            'Сумма: <ent t="amount" value="100">100</ent> '
-            'Договор: <ent t="contract">OTHER</ent> '
-            'Дата: <ent t="date">03.06.2026</ent>', encoding="utf-8")
+            finalize_drafts('Сумма: <ent t="amount" value="100">100</ent> '
+                            'Договор: <ent t="contract">OTHER</ent> '
+                            'Дата: <ent t="date">03.06.2026</ent>', 1), encoding="utf-8")
 
     generate(report_id)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     process_verification(report_id)
     definitions = request("GET", f"/reports/{report_id}/requirements")[1]["requirements"]
     checks = [item for item in definitions if item["tag"] == "scope"]
@@ -216,12 +240,12 @@ def test_scope_requirements_are_published_and_failures_exclude_files(reviewed):
 
 def test_failed_generation_is_retryable_without_partial_results(reviewed, monkeypatch):
     report_id, _, pending = reviewed
-    original = verification.GENERATORS
+    original = requirement_job.create_requirement_processor
 
-    def fail(_context):
+    def fail(_context, *, logger):
         raise RuntimeError("LLM unavailable")
 
-    monkeypatch.setattr(verification, "GENERATORS", {"llm": fail})
+    monkeypatch.setattr(requirement_job, "create_requirement_processor", lambda: SimpleNamespace(process=fail))
     requirements.generate_requirements(report_id)
     with pytest.raises(RuntimeError, match="LLM unavailable"):
         process_requirement_generation(report_id)
@@ -231,29 +255,29 @@ def test_failed_generation_is_retryable_without_partial_results(reviewed, monkey
         assert session.scalar(select(func.count()).select_from(Requirement)) == 0
         assert session.scalar(select(func.count()).select_from(EntityFile)) == 0
         assert session.get(VerificationResult, report_id) is None
-    monkeypatch.setattr(verification, "GENERATORS", original)
+    monkeypatch.setattr(requirement_job, "create_requirement_processor", original)
     generate(report_id)
     assert pending == [report_id, report_id]
     assert reports.report_details(report_id)["stage"] == "requirements"
     assert reports.report_details(report_id)["processing_status"] == "completed"
 
 
-def test_requirement_model_calls_append_to_one_report_log_across_failed_runs(reviewed, monkeypatch):
+def test_requirement_model_calls_append_to_one_report_log_across_failed_runs(reviewed, monkeypatch, llm_client):
     report_id, revisions, _ = reviewed
     path = f"/reports/{report_id}"
     prompts = []
     outputs = []
     failing = True
 
-    def respond(payload, timeout):
-        prompts.append(payload["input"])
+    def respond(prompt, options, **kwargs):
+        prompts.append(prompt)
         output = ("Некорректный ответ\r\n" * 4_000 if failing
                   else '[{"equation": "#0 == #1", "tag": "agg"}]')
         outputs.append(output)
-        return {"output_text": output}
+        return output
 
-    monkeypatch.setattr(llm, "_post", respond)
-    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", llm.call_llm_json)
+    monkeypatch.setattr(llm_client.adapter, "generate", respond)
+    monkeypatch.setattr(llm_client, "call_llm_json", ModelClient.call_llm_json.__get__(llm_client))
     with database.session_scope() as session:
         log_path = session.get(Report, report_id).log_path
         assert log_path
@@ -296,7 +320,7 @@ def test_requirement_model_calls_append_to_one_report_log_across_failed_runs(rev
 
 def test_report_log_endpoint_serves_plain_text_and_handles_missing_logs(api):
     from app.api.reports import report_log
-    from checkier.file_log import append_log
+    from app.logging import append_log
 
     report_id, _ = api
     path = f"/reports/{report_id}/log"
@@ -335,7 +359,7 @@ def test_enqueue_failure_and_incomplete_documents(reviewed, monkeypatch):
 def test_requirement_annotations_are_partial_and_scoped(reviewed):
     report_id, _, _ = reviewed
     generate(report_id)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     process_verification(report_id)
     item = requirements.report_requirements(report_id).requirements[-1]
     result = request("GET", f"/reports/{report_id}/verification-result")[1]
@@ -350,50 +374,42 @@ def test_requirement_annotations_are_partial_and_scoped(reviewed):
     assert request("POST", f'/reports/{other["id"]}/run-verification')[0] == 409
 
 
-def test_invalid_generated_formulas_require_correction_before_verification(reviewed, monkeypatch):
+@pytest.mark.parametrize("raw", [
+    {"equation": "#999 == #0"}, {"equation": "#0 + #1"}, {"equation": "32.01.2026 == #0"},
+    {"evidence": "Unknown", "ids_related": ["999"], "verdict": "unverifiable"},
+])
+def test_invalid_generated_definitions_are_rejected_before_publication(reviewed, monkeypatch, llm_client, raw):
     report_id, _, _ = reviewed
-    monkeypatch.setattr("checkier.stage5_relations.call_llm_json", lambda *args, **kwargs: [
-        {"equation": "#999 == #0"},
-        {"equation": "#0 + #1"},
-        {"equation": "32.01.2026 == #0"},
-        {"evidence": "Missing evidence", "ids_related": ["0"], "verdict": "unverifiable"},
-    ])
-    generate(report_id)
-    path = f"/reports/{report_id}"
-    definitions = request("GET", path + "/requirements")[1]["requirements"]
-    assert request("POST", path + "/run-verification")[0] == 422
-    for item in definitions[:3]:
-        assert request("DELETE", path + f'/requirements/{item["id"]}')[0] == 204
-    requirements.run_verification(report_id)
-    process_verification(report_id)
-    result = request("GET", path + "/verification-result")[1]
-    assert result["requirement_results"][0]["verdict"] == "unverifiable"
-    definition = requirements.report_requirements(report_id).requirements[0]
-    assert definition.kind == "assertion"
-    assert definition.condition is None
-    assert definition.text == "Missing evidence"
+    monkeypatch.setattr(llm_client, "call_llm_json", lambda *args, **kwargs: [raw])
+    with pytest.raises(ProcessingValidationError):
+        generate(report_id)
+    assert reports.report_details(report_id)["processing_status"] == "failed"
+    assert requirements.report_requirements(report_id).requirements == []
 
 
 def test_assertions_do_not_constrain_formulas_and_keep_requirement_ids(reviewed, monkeypatch):
     report_id, _, _ = reviewed
-    monkeypatch.setattr(verification, "GENERATORS", {"mixed": lambda context: [
-        {"kind": "assertion", "condition": False, "text": "Missing signature", "ids_related": [1]},
-        {"equation": "#0 == #1", "text": "Сумма по документам", "tag": "agg"},
-        {"kind": "assertion", "condition": True, "text": "Signature present", "ids_related": [0]},
-        {"kind": "assertion", "condition": None, "text": "Insufficient data", "ids_related": [0]},
-        {"kind": "assertion", "condition": False, "text": "Unknown entity", "ids_related": [999]},
-    ]})
+
+    def mixed(source, **kwargs):
+        return [
+            AssertionDefinition(condition=False, text="Missing signature", ids_related=(1,), source="mixed"),
+            FormulaDefinition(equation="#0 == #1", text="Сумма по документам", tag="agg", source="mixed"),
+            AssertionDefinition(condition=True, text="Signature present", ids_related=(0,), source="mixed"),
+            AssertionDefinition(condition=None, text="Insufficient data", ids_related=(0,), source="mixed"),
+        ]
+
+    monkeypatch.setattr(requirement_job, "create_requirement_processor", lambda: RequirementsProcessor(
+        generators=[SimpleNamespace(generate=mixed)]))
     generate(report_id)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     process_verification(report_id)
     definitions = requirements.report_requirements(report_id).requirements
     result = request("GET", f"/reports/{report_id}/verification-result")[1]
     outcomes = result["requirement_results"]
     assert [item["requirement_id"] for item in outcomes] == [item.id for item in definitions]
-    assert [item["verdict"] for item in outcomes] == ["false", "false", "true", "unverifiable", "error"]
+    assert [item["verdict"] for item in outcomes] == ["false", "false", "true", "unverifiable"]
     assert result["card"]["cells"][0]["expected"] == "100"
     assert definitions[1].text == "Сумма по документам"
-    assert outcomes[-1]["error"] == "Unknown entity IDs: [999]"
 
 
 def test_result_write_failure_keeps_definitions_and_can_be_retried(reviewed, monkeypatch):
@@ -405,7 +421,7 @@ def test_result_write_failure_keeps_definitions_and_can_be_retried(reviewed, mon
 
     monkeypatch.setattr(storage, "save_verification_result", fail)
     generate(report_id)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     with pytest.raises(OSError, match="disk full"):
         process_verification(report_id)
     with database.session_scope() as session:
@@ -413,7 +429,7 @@ def test_result_write_failure_keeps_definitions_and_can_be_retried(reviewed, mon
         assert session.get(VerificationResult, report_id) is None
     assert request("GET", f"/reports/{report_id}/verification-result")[0] == 409
     monkeypatch.setattr(storage, "save_verification_result", original)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     process_verification(report_id)
     result = request("GET", f"/reports/{report_id}/verification-result")[1]
     definitions = requirements.report_requirements(report_id).requirements
@@ -429,10 +445,10 @@ def test_real_rq_processes_verification(reviewed, monkeypatch):
     connection = Redis.from_url(url)
     test_queue = Queue("test-verification-" + uuid4().hex, connection=connection)
     monkeypatch.setattr(queue, "verification_queue", lambda: test_queue)
-    monkeypatch.setattr(requirements, "enqueue_verification", queue.enqueue_verification)
+    monkeypatch.setattr(verification, "enqueue_verification", queue.enqueue_verification)
     generate(report_id)
     try:
-        requirements.run_verification(report_id)
+        verification.run_verification(report_id)
         job_id = test_queue.job_ids[0]
         SimpleWorker([test_queue], connection=connection).work(burst=True, logging_level="WARNING")
         assert Job.fetch(job_id, connection=connection).is_finished
@@ -459,10 +475,15 @@ def test_requirement_editor_crud_validation_and_rerun_publish_new_path(reviewed,
     assert request("PUT", formula_path, {"kind": "formula", "equation": "#999 == 1"})[0] == 422
     assert request("PUT", formula_path, {"kind": "formula", "equation": "#0 == #1 + 10", "text": "Updated"})[0] == 200
     assert request("PATCH", formula_path, {"notes": "Keep this", "silenced": True})[0] == 200
+    assert request("POST", path + "/requirements", {
+        "kind": "assertion", "text": "Unknown reference", "condition": None, "ids_related": [999],
+    })[0] == 422
     status, assertion = request("POST", path + "/requirements", {
         "kind": "assertion", "text": "Signature is present", "condition": False,
+        "ids_related": ["#1", "abandon-abandon"],
     })
     assert status == 201 and assertion["source"] == "manual"
+    assert assertion["ids_related"] == [1, 0]
     assertion_path = path + f'/requirements/{assertion["id"]}'
     assert request("PUT", assertion_path, {
         "kind": "assertion", "text": "Signature was reviewed", "condition": True,
@@ -477,8 +498,7 @@ def test_requirement_editor_crud_validation_and_rerun_publish_new_path(reviewed,
     def forbidden(_context):
         pytest.fail("Verification must not regenerate requirements")
 
-    monkeypatch.setattr("app.generators.llm.generate_relations", forbidden)
-    monkeypatch.setattr(verification, "GENERATORS", {"llm": forbidden})
+    monkeypatch.setattr(requirement_job, "create_requirement_processor", forbidden)
     assert request("POST", path + "/run-verification")[0] == 200
     assert request("PUT", formula_path, {"kind": "formula", "equation": "#0 == 10"})[0] == 409
     assert request("DELETE", assertion_path)[0] == 409
@@ -512,7 +532,7 @@ def test_requirement_editor_crud_validation_and_rerun_publish_new_path(reviewed,
 def test_failed_rerun_keeps_previous_published_path_and_saved_edits(reviewed, monkeypatch):
     report_id, _, _ = reviewed
     generate(report_id)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     process_verification(report_id)
     with database.session_scope() as session:
         first_path = session.get(VerificationResult, report_id).path
@@ -526,7 +546,7 @@ def test_failed_rerun_keeps_previous_published_path_and_saved_edits(reviewed, mo
         raise OSError("disk full")
 
     monkeypatch.setattr(storage, "save_verification_result", fail)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     with pytest.raises(OSError, match="disk full"):
         process_verification(report_id)
     with database.session_scope() as session:
@@ -534,7 +554,7 @@ def test_failed_rerun_keeps_previous_published_path_and_saved_edits(reviewed, mo
         assert storage.artifact_path(first_path).is_file()
     assert request("GET", path + "/verification-result")[0] == 409
     monkeypatch.setattr(storage, "save_verification_result", original)
-    requirements.run_verification(report_id)
+    verification.run_verification(report_id)
     process_verification(report_id)
     assert request("GET", path + "/verification-result")[1]["card"]["cells"][0]["expected"] == "101"
 
@@ -558,7 +578,153 @@ def test_empty_edited_requirements_are_not_regenerated(reviewed, monkeypatch):
     generate(report_id)
     item = requirements.report_requirements(report_id).requirements[0]
     requirements.delete_requirement(report_id, item.id)
-    monkeypatch.setattr(verification, "GENERATORS", {"forbidden": lambda _: pytest.fail("Regenerated requirements")})
-    requirements.run_verification(report_id)
+    monkeypatch.setattr(requirement_job, "create_requirement_processor",
+                        lambda: pytest.fail("Regenerated requirements"))
+    verification.run_verification(report_id)
     process_verification(report_id)
     assert request("GET", f"/reports/{report_id}/verification-result")[1]["requirement_results"] == []
+
+
+@pytest.mark.parametrize("change", ["stage", "revision", "scope", "artifact", "requeued", "new_run", "deleted"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_stale_generation_cannot_publish_or_fail_a_replacement(reviewed, monkeypatch, change, fails):
+    report_id, revisions, _ = reviewed
+    requirements.generate_requirements(report_id)
+
+    def process(source, *, logger):
+        with database.session_scope() as session:
+            report = session.get(Report, report_id)
+            file = session.get(File, revisions[0])
+            if change == "stage":
+                report.stage = "entities"
+            elif change == "revision":
+                session.add(File(file_id=file.file_id, report_id=report_id, version=2, name=file.name,
+                                 path=file.path, hash=file.hash, role=file.role, size=file.size,
+                                 content_type=file.content_type, entities_path=file.entities_path, status="completed"))
+            elif change == "scope":
+                report.contract_number = "Changed contract"
+            elif change == "artifact":
+                file.entities_path = storage.save_entities(report_id, file.file_id, 2,
+                                                           source.corpus.documents[0].markdown)
+            elif change == "requeued":
+                report.processing_status = "queued"
+            elif change == "new_run":
+                report.processing_status = "failed"
+            else:
+                session.delete(report)
+        if change == "new_run":
+            with database.session_scope() as session:
+                session.get(Report, report_id).processing_status = "running"
+        if fails:
+            raise RuntimeError("Obsolete generation failed")
+        from processing.requirements.interface import RequirementOutput
+        return RequirementOutput((FormulaDefinition(equation="#0 == #1", source="mock"),))
+
+    monkeypatch.setattr(requirement_job, "create_requirement_processor", lambda: SimpleNamespace(process=process))
+    if fails:
+        with pytest.raises(RuntimeError, match="Obsolete generation failed"):
+            process_requirement_generation(report_id)
+    else:
+        process_requirement_generation(report_id)
+    with database.session_scope() as session:
+        assert session.scalar(select(func.count()).select_from(Requirement)) == 0
+        assert session.scalar(select(func.count()).select_from(EntityFile)) == 0
+        current = session.get(Report, report_id)
+        if change == "deleted":
+            assert current is None
+        else:
+            assert current.processing_status == ("queued" if change == "requeued" else "running")
+
+
+def test_generation_queue_uses_dedicated_job(monkeypatch):
+    calls = []
+    monkeypatch.setattr(queue, "verification_queue", lambda: SimpleNamespace(enqueue=lambda *args: calls.append(args)))
+    queue.enqueue_requirement_generation(12)
+    assert calls == [("app.jobs.requirements.process_requirement_generation", 12)]
+
+
+@pytest.mark.parametrize("change", ["stage", "revision", "scope", "artifact", "definition", "added", "removed",
+                                    "requeued", "new_run", "deleted"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_stale_verification_cannot_publish_or_fail_a_replacement(reviewed, monkeypatch, change, fails):
+    from app.jobs import verification as verification_job
+
+    report_id, revisions, _ = reviewed
+    generate(report_id)
+    verification.run_verification(report_id)
+
+    def process(source, *, logger):
+        with database.session_scope() as session:
+            report = session.get(Report, report_id)
+            file = session.get(File, revisions[0])
+            definition = session.scalar(select(Requirement).where(Requirement.report_id == report_id))
+            if change == "stage":
+                report.stage = "entities"
+            elif change == "revision":
+                session.add(File(file_id=file.file_id, report_id=report_id, version=2, name=file.name,
+                                 path=file.path, hash=file.hash, role=file.role, size=file.size,
+                                 content_type=file.content_type, entities_path=file.entities_path, status="completed"))
+            elif change == "scope":
+                report.target_row = "Changed row"
+            elif change == "artifact":
+                file.entities_path = storage.save_entities(report_id, file.file_id, 2,
+                                                           source.corpus.documents[0].markdown)
+            elif change == "definition":
+                definition.json_data = {"kind": "formula", "equation": "#0 == 110"}
+            elif change == "added":
+                session.add(Requirement(report_id=report_id, source="manual", json_data={
+                    "kind": "formula", "equation": "#0 == 110"}))
+            elif change == "removed":
+                session.delete(definition)
+            elif change == "requeued":
+                report.processing_status = "queued"
+            elif change == "new_run":
+                report.processing_status = "failed"
+            else:
+                session.delete(report)
+        if change == "new_run":
+            with database.session_scope() as session:
+                session.get(Report, report_id).processing_status = "running"
+        if fails:
+            raise RuntimeError("Obsolete verification failed")
+        return Verifier().process(source, logger=logger)
+
+    monkeypatch.setattr(verification_job, "create_verification_processor", lambda: SimpleNamespace(process=process))
+    if fails:
+        with pytest.raises(RuntimeError, match="Obsolete verification failed"):
+            process_verification(report_id)
+    else:
+        process_verification(report_id)
+    with database.session_scope() as session:
+        assert session.get(VerificationResult, report_id) is None
+        current = session.get(Report, report_id)
+        if change == "deleted":
+            assert current is None
+        else:
+            assert current.processing_status == ("queued" if change == "requeued" else "running")
+
+
+def test_verification_processor_is_replaceable_and_silencing_is_metadata(reviewed, monkeypatch):
+    from app.jobs import verification as verification_job
+
+    report_id, _, _ = reviewed
+    generate(report_id)
+    item = requirements.report_requirements(report_id).requirements[0]
+    verification.run_verification(report_id)
+    calls = []
+
+    def process(source, *, logger):
+        calls.append(source)
+        with database.session_scope() as session:
+            definition = session.get(Requirement, item.id)
+            definition.is_silenced, definition.note = True, "Reviewed warning"
+        return Verifier().process(source, logger=logger)
+
+    monkeypatch.setattr(verification_job, "create_verification_processor", lambda: SimpleNamespace(process=process))
+    process_verification(report_id)
+    assert len(calls) == 1
+    assert calls[0].requirements[0].id == item.id
+    assert reports.report_details(report_id)["processing_status"] == "completed"
+    result = request("GET", f"/reports/{report_id}/verification-result")[1]
+    assert result["requirement_results"][0]["verdict"] == "false"
+    assert requirements.report_requirements(report_id).requirements[0].silenced is True

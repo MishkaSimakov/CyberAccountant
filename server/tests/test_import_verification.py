@@ -10,23 +10,26 @@ from sqlalchemy import func, select
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import import_verification as importer
-from app import database, storage, verification
-from app.models import EntityFile, File, Report, Requirement
-from app.services import documents, requirements, reports
-from checkier.formula import FormulaError
+from app import database, storage
+from app.jobs import verification as verification_job
+from app.models import EntityFile, File, Report, ReportEntityCounter, Requirement
+from app.schemas.documents import MarkdownEdit
+from processing.entities.identifiers import mnemonic_for_id, read_identities
+from app.services import documents, requirements, reports, verification
+from processing.common.formula import FormulaError
 
 
 @pytest.fixture
 def bundle(tmp_path):
     entities = tmp_path / "entities"
     (tmp_path / "23.md").write_text('Итого: <ent id="700" t="amount">110</ent>', encoding="utf-8")
-    write_document(entities, "1", '<ent id="alpha-beta" t="amount">100</ent>')
+    write_document(entities, "1", '<ent id="10" mnemonic="abandon-access" t="amount">100</ent>')
     path = tmp_path / "requirements.json"
     path.write_text(json.dumps({"requirements": [
-        {"id": 90, "kind": "formula", "equation": '#700 == alpha-beta && "#700" == "#700"',
+        {"id": 90, "kind": "formula", "equation": '#700 == abandon-access && "#700" == "#700"',
          "tag": "agg", "source": "friend", "notes": "Reviewed", "silenced": True},
         {"id": 91, "kind": "assertion", "text": "Signature missing", "condition": False,
-         "ids_related": ["#700", "alpha-beta"]},
+         "ids_related": ["#700", "abandon-access"]},
     ]}), encoding="utf-8")
     return path, entities
 
@@ -43,8 +46,8 @@ def test_remaps_explicit_ids_without_replacing_string_literals(bundle):
     docs = importer.load_documents(entities, path.parent / "23.md")
     definitions, registry = importer.remap_requirements(importer.load_requirements(path), docs,
                                                         {"23.md": "9", "1.md": "10"})
-    assert definitions[0]["equation"] == '#1 == #0 && "#700" == "#700"'
-    assert definitions[1]["ids_related"] == [1, 0]
+    assert definitions[0]["equation"] == '#700 == #10 && "#700" == "#700"'
+    assert definitions[1]["ids_related"] == [700, 10]
     assert [(entity.file, entity.raw) for entity in registry.entities] == [("10", "100"), ("9", "110")]
 
 
@@ -73,7 +76,6 @@ def test_missing_final_report_raises(bundle):
 
 
 @pytest.mark.parametrize("markup, message", [
-    ('<ent t="amount">100</ent>', "without an id"),
     ('<ent id="700" t="amount">100</ent>', "Duplicate entity ID"),
     ('<ent id="-1" t="amount">100</ent>', "Invalid entity ID"),
     ('<ent id="1" id="2" t="amount">100</ent>', "duplicate entity attributes"),
@@ -114,8 +116,8 @@ def test_import_publishes_report_and_preserves_inputs(db, bundle, tmp_path, monk
     # Cross the 9/10 boundary: registry ordering sorts database file IDs as strings.
     for index in range(10):
         write_document(entities, f"extra-{index}", f'<ent id="{index}" t="number">{index}</ent>')
-    monkeypatch.setattr(verification, "generate_requirements", lambda _: pytest.fail("Must use supplied requirements"))
-    monkeypatch.setattr(verification, "generate_llm", lambda _: pytest.fail("Must not call LLM"))
+    monkeypatch.setattr("app.jobs.requirements.create_requirement_processor",
+                        lambda: pytest.fail("Must use supplied requirements"))
     report_id, result_path = importer.import_bundle(path, entities, path.parent / "23.md",
                                                     name="Friend's bundle", target_row="Итого")
     result = json.loads(result_path.read_text(encoding="utf-8"))
@@ -143,7 +145,19 @@ def test_import_publishes_report_and_preserves_inputs(db, bundle, tmp_path, monk
     card = next(file for file in files if file.role == "final_report")
     assert card.version == 1
     assert '<ent id="' in documents.document_markdown(report_id, card.file_id).content
-    assert requirements.verification_result_file(report_id) == result_path
+    assert verification.verification_result_file(report_id) == result_path
+    with database.session_scope() as session:
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 701
+        canonical = storage.artifact_path(card.entities_path).read_text(encoding="utf-8")
+        assert read_identities(canonical)[0].num == 700
+        assert read_identities(canonical)[0].mnemonic == mnemonic_for_id(700)
+        session.get(Report, report_id).stage = "entities"
+    saved = documents.edit_markdown(report_id, card.file_id, MarkdownEdit(
+        content=canonical + '\n<ent t="number">1</ent>', base_revision=1))
+    assert [identity.num for identity in read_identities(saved.content)] == [700, 701]
+    with database.session_scope() as session:
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 702
+        assert session.get(EntityFile, (report_id, 701)).file_id == card.file_id
 
 
 def test_verification_failure_propagates_without_retry(db, bundle, tmp_path, monkeypatch):
@@ -155,7 +169,7 @@ def test_verification_failure_propagates_without_retry(db, bundle, tmp_path, mon
         calls.append(args)
         raise RuntimeError("Solver failed")
 
-    monkeypatch.setattr(verification, "solve_system", fail)
+    monkeypatch.setattr(verification_job, "create_verification_processor", fail)
     with pytest.raises(RuntimeError, match="Solver failed"):
         importer.import_bundle(path, entities, path.parent / "23.md")
     assert len(calls) == 1
@@ -176,3 +190,58 @@ def test_cli_prints_result_url(db, bundle, tmp_path, monkeypatch, capsys):
     assert f"http://localhost:8000/reports/{report_id}/requirements" in output
     assert '"mismatch": 1' in output
     assert "JSON: " in output
+
+
+@pytest.mark.parametrize("identity", ['id="abandon-access"', 'mnemonic="abandon-access"', ''])
+def test_import_allocates_missing_numeric_identities(db, bundle, tmp_path, monkeypatch, identity):
+    path, entities = bundle
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    write_document(entities, "1", f'<ent {identity} t="amount">100</ent>')
+    if not identity:
+        path.write_text(json.dumps([{"kind": "formula", "equation": "#700 == 110"}]), encoding="utf-8")
+    report_id, _ = importer.import_bundle(path, entities, path.parent / "23.md")
+    with database.session_scope() as session:
+        files = reports.report_documents(session, report_id)
+        supporting = next(file for file in files if file.role == "supporting")
+        canonical = storage.artifact_path(supporting.entities_path).read_text(encoding="utf-8")
+        identity_, = read_identities(canonical)
+        assert identity_.num == 701
+        assert identity_.mnemonic == ("abandon-access" if identity else mnemonic_for_id(701))
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 702
+        if identity:
+            formula = next(session.scalars(select(Requirement))).json_data["equation"]
+            assert formula == '#700 == #701 && "#700" == "#700"'
+
+
+def test_import_preserves_complete_supplied_pairs_and_future_additions(db, bundle, tmp_path, monkeypatch):
+    path, entities = bundle
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    final = path.parent / "23.md"
+    original = 'Итого: <ent id="700" mnemonic="abandon-abandon" t="amount">110</ent>'
+    final.write_text(original, encoding="utf-8")
+    report_id, _ = importer.import_bundle(path, entities, final)
+    with database.session_scope() as session:
+        card = next(file for file in reports.report_documents(session, report_id) if file.role == "final_report")
+        canonical = storage.artifact_path(card.entities_path).read_text(encoding="utf-8")
+        assert read_identities(canonical)[0].num == 700
+        assert read_identities(canonical)[0].mnemonic == "abandon-abandon"
+        assert storage.artifact_path(card.path).read_text(encoding="utf-8") == original
+        session.get(Report, report_id).stage = "entities"
+    result = documents.edit_markdown(report_id, card.file_id, MarkdownEdit(
+        content=canonical + '<ent t="number">2</ent>', base_revision=1))
+    assert [identity.num for identity in read_identities(result.content)] == [700, 701]
+
+
+@pytest.mark.parametrize("markup", [
+    '<ent id="10" mnemonic="abandon-abandon" t="amount">100</ent>',
+    '<ent id="10" mnemonic="not-a-word" t="amount">100</ent>',
+    '<ent id="abandon-access" mnemonic="abandon-able" t="amount">100</ent>',
+])
+def test_conflicting_import_mnemonics_fail_before_persistence(bundle, monkeypatch, markup):
+    path, entities = bundle
+    final = path.parent / "23.md"
+    final.write_text('Итого: <ent id="700" mnemonic="abandon-abandon" t="amount">110</ent>', encoding="utf-8")
+    write_document(entities, "1", markup)
+    monkeypatch.setattr(importer, "session_scope", lambda: pytest.fail("Must validate before accessing database"))
+    with pytest.raises(ValueError):
+        importer.import_bundle(path, entities, final)

@@ -8,11 +8,12 @@ from typing import BinaryIO
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from ..logging import create_file_log
 from .. import storage
 from ..database import session_scope
-from ..entities import prepare_entities
+from ..entities import assign_document_identities
 from ..entity_geometry import EntityNotFound, locate_entity
-from ..models import File
+from ..models import EntityFile, File
 from ..queue import enqueue_ocr
 from ..schemas.documents import Document, MarkdownEdit, MarkdownRevision
 from . import ServiceError
@@ -56,7 +57,7 @@ def upload_document(report_id: int, filename: str, stream: BinaryIO, role: str) 
             session.flush()
             file.path = storage.save_original(staged, report_id, file.file_id, suffix)
             original = storage.artifact_path(file.path)
-            file.log_path = storage.create_file_log(report_id, file.file_id)
+            file.log_path = create_file_log(report_id, file.file_id)
             sync_processing_status(session, report)
             result = document_response(file)
             revision_id = file.id
@@ -110,8 +111,8 @@ def entity_geometry(report_id: int, file_id: int, entity_id: int) -> dict:
     with session_scope() as session:
         report = find_report(session, report_id)
         file = find_document(session, report_id, file_id)
-        tagged = storage.artifact_path(f'{report_id}/verification/replaced/{file_id}.md')
-        if report.stage not in {'requirements', 'verification'} or not tagged.is_file():
+        tagged = storage.artifact_path(file.entities_path) if file.entities_path else None
+        if report.stage not in {'entities', 'requirements', 'verification'} or tagged is None or not tagged.is_file():
             raise ServiceError(404, 'Сущности для этого документа ещё не подготовлены.')
         if not file.pdf_path or not storage.artifact_path(file.pdf_path).is_file():
             raise ServiceError(409, 'PDF документа ещё не готов.')
@@ -139,9 +140,6 @@ def document_markdown(report_id: int, file_id: int) -> MarkdownRevision:
         if not file.markdown_path:
             raise ServiceError(409, "Распознавание документа ещё не завершено.")
         source = storage.artifact_path(file.entities_path or file.markdown_path)
-        if report.stage in {"requirements", "verification"} and storage.artifact_path(
-                f"{report_id}/verification/replaced/{file_id}.md").is_file():
-            source = storage.artifact_path(f"{report_id}/verification/replaced/{file_id}.md")
         return MarkdownRevision(content=source.read_text(encoding="utf-8"),
                                 revision=file.version)
 
@@ -153,6 +151,7 @@ def delete_document(report_id: int, file_id: int) -> None:
         file = find_document(session, report_id, file_id)
         if file.status == "ocr_running":
             raise ServiceError(409, "Дождитесь завершения распознавания документа.")
+        session.execute(delete(EntityFile).where(EntityFile.report_id == report_id, EntityFile.file_id == file_id))
         session.execute(delete(File).where(File.report_id == report_id, File.file_id == file_id))
         sync_processing_status(session, report)
     shutil.rmtree(storage.storage_root() / str(report_id) / str(file_id), ignore_errors=True)
@@ -171,7 +170,8 @@ def edit_markdown(report_id: int, file_id: int, payload: MarkdownEdit) -> Markdo
             raise ServiceError(409, "Документ уже изменён. Откройте его заново.")
         if not payload.content.strip():
             raise ServiceError(422, "Текст документа не должен быть пустым.")
-        content = prepare_entities(payload.content)
+        previous = storage.artifact_path(file.entities_path or file.markdown_path).read_text(encoding="utf-8")
+        content = assign_document_identities(session, report_id, file_id, payload.content, previous)
         version = file.version + 1
         # User edits are preserved separately from regenerable OCR/extraction output.
         relative = Path(str(report_id)) / str(file_id) / "versions" / str(version) / "edited" / "document.md"

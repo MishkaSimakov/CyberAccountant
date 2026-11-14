@@ -4,19 +4,25 @@ Run from the repo root:
     uv run python scripts/verify_tag.py
 """
 import sys
+import logging
 import traceback
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "server"))
 
 import requests
 
+from infrastructure.llm import HttpModelAdapter
+from processing.common.llm import ModelClient
 from checkier.config import PipelineConfig, load_api_credentials
 from checkier.stage1_tag import TagStats, TagProgress, run_tag
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
     url, key = load_api_credentials()
+    client = ModelClient(HttpModelAdapter(url, key))
     print(f"API endpoint: {url}")
 
     # 1. connectivity
@@ -59,7 +65,7 @@ def main() -> None:
 
     print("\nTagging 2 files (streaming model output)...\n")
     try:
-        tagged = run_tag(cfg, mapping, on_progress=show, on_token=stream)
+        tagged = run_tag(cfg, mapping, on_progress=show, on_token=stream, client=client, logger=logger)
     except Exception:
         traceback.print_exc()
         return

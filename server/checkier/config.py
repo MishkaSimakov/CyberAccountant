@@ -8,10 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-DEFAULT_TAG_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
-# DEFAULT_REL_MODEL = "~deepseek/deepseek-pro-latest"
-# DEFAULT_REL_MODEL = "deepseek/deepseek-v4.1-flash-20261017"
-DEFAULT_REL_MODEL = "deepseek/deepseek-v4-pro-20260813"
+DEFAULT_TAG_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+DEFAULT_REL_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 
 
 def _model_from_env(name: str, default: str) -> str:

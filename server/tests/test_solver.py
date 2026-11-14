@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from checkier.entities import EntityRegistry
+from entity_fixtures import EntityRegistry
 from checkier.solver import solve_system
 
 

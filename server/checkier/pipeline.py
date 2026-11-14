@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from checkier.config import PipelineConfig
-from checkier.entities import EntityRegistry
-from checkier.report import build_report
+from processing.common.llm import ModelClient
+from processing.common.registry import EntityRegistry
+from processing.verification.results import build_report
 from checkier.solver import solve_system
 from checkier.stage0_ingest import run_ingest
 from checkier.stage1_tag import run_tag
-from checkier.stage2_registry import run_registry
-from checkier.stage2_dates import run_date_normalization
+from checkier.entity_adapter import run_registry, normalize_dates
 from checkier.stage3_replace import run_replace
 from checkier.stage5_relations import run_relations
 
@@ -25,6 +26,8 @@ class Pipeline:
             self,
             cfg: PipelineConfig,
             *,
+            client: ModelClient,
+            logger: logging.Logger | logging.LoggerAdapter | None = None,
             mapping: dict | None = None,
             tagged: dict[str, tuple[str, str]] | None = None,
     ) -> None:
@@ -33,7 +36,9 @@ class Pipeline:
         Supplied documents are saved in the usual stage layout so scope
         detection can read them without ingesting or tagging again.
         """
+        self.client = client
         self.cfg = cfg
+        self.logger = logger if logger is not None else logging.getLogger(__name__)
         self._mapping = mapping
         self._tagged = tagged
         if mapping is not None:
@@ -65,7 +70,7 @@ class Pipeline:
         ):
             return self._tagged
         self._tagged = run_tag(
-            self.cfg, mapping, on_progress=on_progress, on_token=on_token
+            self.cfg, mapping, on_progress=on_progress, on_token=on_token, client=self.client, logger=self.logger
         )
         return self._tagged
 
@@ -80,10 +85,9 @@ class Pipeline:
         """LLM-normalize period-style date raws ('Январь 2026' -> ordinal of
         01.01.2026) for date entities the deterministic parser could not
         handle. Saves the registry; call after ``registry()``."""
-        reg = self._registry or self.registry()
-        changed = run_date_normalization(self.cfg, reg, on_token=on_token)
-        if changed:
-            reg.save(self.cfg.entities_path)
+        self.registry()
+        self._registry, changed = normalize_dates(self.cfg, self._tagged, on_token=on_token,
+                                                  client=self.client, logger=self.logger)
         return changed
 
     def replace(self) -> dict[str, str]:
@@ -104,7 +108,7 @@ class Pipeline:
         replaced = self._replaced or self.replace()
         reg = self._registry or self.registry()
         scope = self._scope or self.scope()
-        self._relations_raw = run_relations(self.cfg, replaced, reg, scope)
+        self._relations_raw = run_relations(self.cfg, replaced, reg, scope, client=self.client, logger=self.logger)
         return self._relations_raw
 
     def solve(self):
@@ -122,9 +126,12 @@ class Pipeline:
         reg = self._registry or self.registry()
         relations, fishy, verdicts, dangling = self.solve()
         scope = self._scope or self.scope()
-        return build_report(
-            self.cfg, mapping, reg, relations, fishy, verdicts, dangling, scope
+        report = build_report(
+            mapping, reg, relations, fishy, verdicts, dangling, scope, id_style=self.cfg.id_style
         )
+        self.cfg.report_path.parent.mkdir(parents=True, exist_ok=True)
+        self.cfg.report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        return report
 
     def run_all(self) -> dict:
         self.ingest()

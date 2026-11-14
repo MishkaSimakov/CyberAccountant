@@ -2,11 +2,14 @@
 
 from datetime import date
 import json
+import logging
 
 import pytest
 
-from checkier import PipelineConfig, normalize_document
-from checkier.entities import ENT_RE, build_registry, parse_tag_attrs
+from processing.entities.normalization import normalize_document
+from processing.entities.options import EntityOptions
+from processing.common.markup import ENT_RE, parse_tag_attrs
+from entity_fixtures import registry_from_drafts as build_registry
 
 
 @pytest.mark.parametrize("type_,raw,attributes,value", [
@@ -23,56 +26,57 @@ from checkier.entities import ENT_RE, build_registry, parse_tag_attrs
     ("docid", 'Акт "А" & Б', "", 'Акт "А" & Б'),
     ("amount", "неизвестно", "", ""),
 ])
-def test_normalized_values_preserve_source_text(tmp_path, type_, raw, attributes, value):
-    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path / "unused")
+def test_normalized_values_preserve_source_text(tmp_path, type_, raw, attributes, value, llm_client):
+    cfg = EntityOptions()
     tagged = f'До <ent t="{type_}"{attributes}>{raw}</ent> после\n'
-    result = normalize_document(cfg, tagged)
+    result = normalize_document(cfg, tagged, client=llm_client, logger=logging.getLogger(__name__))
     match = ENT_RE.search(result)
     assert match.group(2) == raw
     assert parse_tag_attrs(match.group(1))["value"] == value
     assert ENT_RE.sub(lambda match: match.group(2), result) == f"До {raw} после\n"
-    assert normalize_document(cfg, result) == result
-    assert not cfg.out_dir.exists()
+    assert normalize_document(cfg, result, client=llm_client, logger=logging.getLogger(__name__)) == result
+    assert list(tmp_path.iterdir()) == []
 
 
-def test_period_dates_are_normalized_before_review_and_reused(tmp_path, monkeypatch):
-    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path)
+def test_period_dates_are_normalized_before_review_and_reused(tmp_path, monkeypatch, llm_client):
+    cfg = EntityOptions()
     calls = []
 
-    def normalize(prompt, **kwargs):
+    def normalize(prompt, *args, **kwargs):
         calls.append(prompt)
         return [{"raw": "Январь 2026", "normalized": "01.01.2026"}]
 
-    monkeypatch.setattr("checkier.stage2_dates.call_llm_json", normalize)
+    monkeypatch.setattr(llm_client, "call_llm_json", normalize)
     tagged = '<ent t="date">Январь 2026</ent>'
-    result = normalize_document(cfg, tagged)
+    result = normalize_document(cfg, tagged, client=llm_client, logger=logging.getLogger(__name__))
     assert result == '<ent t="date" value="2026-01-01">Январь 2026</ent>'
     assert len(calls) == 1
     registry = build_registry({"file": ("data", result)})
     assert registry.entities[0].value == date(2026, 1, 1).toordinal()
-    assert normalize_document(cfg, result) == result
+    assert normalize_document(cfg, result, client=llm_client, logger=logging.getLogger(__name__)) == result
     assert len(calls) == 1  # Saved dates do not need another LLM call.
 
 
-def test_registry_uses_reviewed_value_without_scaling_twice(tmp_path):
-    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path)
+def test_registry_uses_reviewed_value_without_scaling_twice(tmp_path, llm_client):
+    cfg = EntityOptions()
     tagged = '<ent t="amount" u="RUB_K" n="1000">245,00</ent>'
-    normalized = normalize_document(cfg, tagged)
+    normalized = normalize_document(cfg, tagged, client=llm_client, logger=logging.getLogger(__name__))
     assert build_registry({"file": ("data", normalized)}).entities[0].value == "245000.00"
     reviewed = normalized.replace('value="245000.00"', 'value="250000.00"')
     assert build_registry({"file": ("data", reviewed)}).entities[0].value == "250000.00"
 
 
-def test_unresolved_date_is_explicit(tmp_path, monkeypatch):
-    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path)
-    monkeypatch.setattr("checkier.stage2_dates.call_llm_json", lambda *args, **kwargs: [])
-    assert normalize_document(cfg, '<ent t="date">неизвестно</ent>') == (
-        '<ent t="date" value="">неизвестно</ent>'
-    )
+def test_unresolved_date_is_explicit(tmp_path, monkeypatch, llm_client):
+    cfg = EntityOptions()
+    monkeypatch.setattr(llm_client, "call_llm_json", lambda *args, **kwargs: [])
+    assert normalize_document(cfg, '<ent t="date">неизвестно</ent>', client=llm_client,
+                              logger=logging.getLogger(__name__)) == (
+               '<ent t="date" value="">неизвестно</ent>'
+           )
 
 
-def test_null_date_normalization_preserves_other_entities(tmp_path, monkeypatch):
-    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path)
+def test_null_date_normalization_preserves_other_entities(tmp_path, monkeypatch, llm_client):
+    cfg = EntityOptions()
     calls = []
 
     def response(*args, **kwargs):
@@ -82,11 +86,11 @@ def test_null_date_normalization_preserves_other_entities(tmp_path, monkeypatch)
             {"raw": "Январь 2026", "normalized": "01.01.2026"},
         ])
 
-    monkeypatch.setattr("checkier.llm.call_llm", response)
+    monkeypatch.setattr(llm_client, "call_llm", response)
     tagged = ('Период: <ent t="date">Январь</ent>\n'
               '<ent t="date">Январь 2026</ent>\n'
               'Итого: <ent t="amount">100,00</ent>')
-    result = normalize_document(cfg, tagged)
+    result = normalize_document(cfg, tagged, client=llm_client, logger=logging.getLogger(__name__))
     assert result == ('Период: <ent t="date" value="">Январь</ent>\n'
                       '<ent t="date" value="2026-01-01">Январь 2026</ent>\n'
                       'Итого: <ent t="amount" value="100.00">100,00</ent>')

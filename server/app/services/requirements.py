@@ -1,17 +1,18 @@
-"""Manage editable requirements and queue verification of saved definitions."""
+"""Manage generation, editing and annotations of saved requirement definitions."""
 
 import logging
-from pathlib import Path
 
 from sqlalchemy import select
 
 from ..database import session_scope
-from .. import storage
-from ..models import EntityFile, Requirement, VerificationResult
-from ..queue import enqueue_requirement_generation, enqueue_verification
+from ..models import EntityFile, Requirement
+from ..queue import enqueue_requirement_generation
 from ..schemas.requirements import (RequirementDefinition, RequirementResponse, RequirementsResponse,
                                     RequirementUpdate, FormulaValidationResponse, requirement_adapter)
-from ..verification import validate_formula, validation_registry
+from processing.common.requirements import AssertionDefinition
+from processing.common.errors import ProcessingValidationError
+from processing.requirements.validation import validate_formula, validate_definition
+from .corpus import validation_registry
 from . import ServiceError
 from .reports import blockers_for, find_report, report_documents
 
@@ -59,33 +60,6 @@ def edit_requirements(report_id: int) -> None:
         report.processing_status = "completed"
 
 
-def run_verification(report_id: int) -> None:
-    with session_scope() as session:
-        report = find_report(session, report_id, lock=True)
-        if report.stage == "verification" and report.processing_status != "failed":
-            return
-        if not (report.stage == "verification" and report.processing_status == "failed"):
-            require_editing(report)
-        registry = validation_registry(report_documents(session, report_id))
-        for requirement in session.scalars(select(Requirement).where(Requirement.report_id == report_id)):
-            if requirement.json_data["kind"] == "formula":
-                error = validate_formula(requirement.json_data["equation"], registry)
-                if error:
-                    raise ServiceError(422, f"Требование {requirement.id}: {error}")
-        report.stage = "verification"
-        report.processing_status = "queued"
-
-    try:
-        enqueue_verification(report_id)
-    except Exception:
-        logger.exception("Could not enqueue verification for report %s", report_id)
-        with session_scope() as session:
-            report = find_report(session, report_id, lock=True)
-            if report.stage == "verification" and report.processing_status == "queued":
-                report.processing_status = "failed"
-        raise ServiceError(503, "Не удалось поставить проверку в очередь. Повторите проверку.") from None
-
-
 def requirement_response(requirement: Requirement) -> RequirementResponse:
     return requirement_adapter.validate_python(dict(
         **requirement.json_data, id=requirement.id, text=requirement.text, source=requirement.source,
@@ -104,17 +78,6 @@ def report_requirements(report_id: int) -> RequirementsResponse:
                 select(EntityFile).where(EntityFile.report_id == report_id)
             )},
         )
-
-
-def verification_result_file(report_id: int) -> Path:
-    with session_scope() as session:
-        report = find_report(session, report_id)
-        if report.stage != "verification" or report.processing_status != "completed":
-            raise ServiceError(409, "Дождитесь завершения проверки требований.")
-        result = session.get(VerificationResult, report_id)
-        if result is None or not storage.artifact_path(result.path).is_file():
-            raise ServiceError(404, "Результат проверки не найден.")
-        return storage.artifact_path(result.path)
 
 
 def update_requirement(report_id: int, requirement_id: int, payload: RequirementUpdate) -> RequirementResponse:
@@ -146,10 +109,19 @@ def save_requirement(report_id: int, payload: RequirementDefinition,
                      requirement_id: int | None = None) -> RequirementResponse:
     with session_scope() as session:
         require_editing(find_report(session, report_id, lock=True))
+        registry = validation_registry(report_documents(session, report_id))
         if payload.kind == "formula":
-            error = validate_formula(payload.equation, validation_registry(report_documents(session, report_id)))
+            error = validate_formula(payload.equation, registry)
             if error:
                 raise ServiceError(422, error)
+        else:
+            try:
+                validated = validate_definition(AssertionDefinition(condition=payload.condition,
+                                                                    ids_related=tuple(payload.ids_related),
+                                                                    text=payload.text), registry)
+                payload = payload.model_copy(update={"ids_related": list(validated.ids_related)})
+            except ProcessingValidationError as exc:
+                raise ServiceError(422, str(exc)) from exc
         if requirement_id is None:
             requirement = Requirement(report_id=report_id, source="manual")
             session.add(requirement)

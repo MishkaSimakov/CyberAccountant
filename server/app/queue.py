@@ -39,4 +39,4 @@ def enqueue_verification(report_id: int) -> None:
 
 
 def enqueue_requirement_generation(report_id: int) -> None:
-    verification_queue().enqueue("app.jobs.verification.process_requirement_generation", report_id)
+    verification_queue().enqueue("app.jobs.requirements.process_requirement_generation", report_id)

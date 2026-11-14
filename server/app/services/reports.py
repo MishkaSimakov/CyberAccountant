@@ -5,12 +5,13 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..logging import create_report_log
 from .. import storage
 from ..database import session_scope
 from ..models import File, Report
 from ..schemas.documents import Document
 from ..schemas.reports import Report as ReportResponse, ReportCreate
-from ..target_row import find_target_row_spans
+from processing.verification.target_row import find_target_row_spans
 from . import ServiceError
 
 
@@ -110,7 +111,7 @@ def create_report(payload: ReportCreate) -> ReportResponse:
         report = Report(**payload.model_dump())
         session.add(report)
         session.flush()
-        report.log_path = storage.create_report_log(report.id)
+        report.log_path = create_report_log(report.id)
         result = ReportResponse.model_validate(report, from_attributes=True)
     return result
 
