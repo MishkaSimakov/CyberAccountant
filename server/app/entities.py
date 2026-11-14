@@ -5,7 +5,8 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from processing.entities.identifiers import assign_identities, read_identities
-from processing.entities.markup import parse_entity_tags, validate_markup
+from processing.common.markup import parse_entity_tags
+from processing.entities.markup import validate_markup
 
 from .entity_ids import reserve_entity_ids
 from .models import EntityFile

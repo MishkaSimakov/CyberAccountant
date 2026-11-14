@@ -7,8 +7,19 @@ from decimal import Decimal
 import pytest
 
 from app import storage, verification
-from app.generators.insurance import generate_insurance
-from app.generators.llm import generate_llm
+import logging
+from dataclasses import asdict
+
+from processing.common.corpus import ReviewedCorpus
+from processing.common.documents import DocumentRevision, ReviewedDocument
+from processing.common.scope import Scope
+from processing.common.errors import ProcessingValidationError
+from processing.requirements.generators.insurance import InsuranceGenerator
+from processing.requirements.generators.llm import LLMRequirementGenerator
+from processing.requirements.generators.scope import ScopeGenerator
+from processing.requirements.interface import RequirementInput
+from processing.requirements.options import RequirementOptions
+from processing.requirements.processor import RequirementsProcessor
 from app.models import File, Report
 from processing.common.formula import collect_ids, parse
 from entity_fixtures import canonical_documents
@@ -51,12 +62,10 @@ def documents():
 @pytest.fixture
 def context_factory(tmp_path, monkeypatch, llm_client):
     monkeypatch.setenv('STORAGE_ROOT', str(tmp_path))
-    monkeypatch.setattr(verification, 'GENERATORS', {'insurance': generate_insurance})
 
     def forbidden(*args, **kwargs):
         pytest.fail('Insurance-only verification must not call an LLM')
 
-    monkeypatch.setattr('app.generators.llm.generate_relations', forbidden)
     monkeypatch.setattr(llm_client, "call_llm_json", forbidden)
 
     def prepare(documents, *, start=date(2026, 1, 1), end=date(2026, 2, 28), style='numeric', row='3 этап, 2026 г.'):
@@ -71,22 +80,40 @@ def context_factory(tmp_path, monkeypatch, llm_client):
         context = verification.prepare_verification(report, files)
         if style == 'mnemonic':
             context.config.id_style = style
-            context.scope['target_row'] = [next(entity.mnemonic for entity in context.registry.entities if entity.num == n)
-                                           for n in context.scope['target_row']]
+            context.scope['target_row'] = [
+                next(entity.mnemonic for entity in context.registry.entities if entity.num == n)
+                for n in context.scope['target_row']]
         return context
 
     return prepare
 
 
+def generate_insurance(context):
+    report = context.report
+    by_key = {key: e.num for e in context.registry.entities for key in (e.num, e.mnemonic)}
+    source = RequirementInput(ReviewedCorpus(report.id, tuple(
+        ReviewedDocument(DocumentRevision(report.id, int(key), context.mapping[key]["version"]),
+                         context.mapping[key]["original"],
+                         "final_report" if context.mapping[key]["role"] == "card" else "supporting", text)
+        for key, text in context.documents.items()
+    )), Scope(report.contract_number, report.period_start, report.period_end, report.target_row,
+              tuple(by_key[key] for key in context.scope["target_row"])))
+    options = RequirementOptions(id_style=context.config.id_style)
+    output = RequirementsProcessor(generators=[InsuranceGenerator(options)]).process(
+        source, logger=logging.getLogger(__name__))
+    return [asdict(definition) for definition in output.definitions]
+
+
 def run(context, llm_client):
-    relations = verification.generate_requirements(context, client=llm_client)
+    relations = generate_insurance(context)
     definitions = [dict(requirement, id=i) for i, requirement in enumerate(relations, 1)]
-    return generate_insurance(context), verification.evaluate_requirements(context, definitions)
+    return relations, verification.evaluate_requirements(context, definitions)
 
 
-def test_registered_alongside_existing_llm_generator():
-    assert verification.GENERATORS['insurance'] is generate_insurance
-    assert verification.GENERATORS['llm'] is generate_llm
+def test_registered_alongside_existing_llm_generator(llm_client):
+    processor = RequirementsProcessor(llm_client)
+    assert [type(generator) for generator in processor.generators] == [
+        ScopeGenerator, LLMRequirementGenerator, InsuranceGenerator]
 
 
 @pytest.mark.parametrize('style', ['numeric', 'mnemonic'])
@@ -129,8 +156,8 @@ def test_stated_mismatch_is_found_without_changing_generated_formula(documents, 
 def test_missing_month_is_unverifiable_not_partial_equality(documents, context_factory, llm_client):
     del documents['feb.md']
     own, results = run(context_factory(documents), llm_client)
-    assert own[0]['verdict'] == 'unverifiable'
-    assert '2026-02' in own[0]['evidence']
+    assert own[0]['condition'] is None
+    assert '2026-02' in own[0]['text']
     assert 'equation' not in own[0]
     assert not any(r.get('expected') is not None for r in results['card']['cells'])
 
@@ -149,7 +176,7 @@ def test_duplicate_is_counted_once_and_foreign_documents_are_excluded(documents,
 def test_conflicting_versions_or_monthly_summaries_are_unverifiable(documents, context_factory, number, llm_client):
     documents['another.md'] = calculation('2026-01', '9.00', number=number)
     own, _ = run(context_factory(documents), llm_client)
-    assert own[0]['verdict'] == 'unverifiable' and 'конфликт' in own[0]['evidence']
+    assert own[0]['condition'] is None and 'конфликт' in own[0]['text']
 
 
 @pytest.mark.parametrize('change', ['unknown_value', 'currency', 'missing_amount', 'wrong_article'])
@@ -163,12 +190,12 @@ def test_invalid_calculation_never_becomes_a_zero_or_base_amount(documents, cont
     }[change]
     documents['jan.md'] = text
     own, _ = run(context_factory(documents), llm_client)
-    assert own[0]['verdict'] == 'unverifiable' and 'equation' not in own[0]
+    assert own[0]['condition'] is None and 'equation' not in own[0]
 
 
 def test_partial_month_and_year_intersection(documents, context_factory, llm_client):
     own, _ = run(context_factory(documents, start=date(2026, 1, 15)), llm_client)
-    assert own[0]['verdict'] == 'unverifiable'
+    assert own[0]['condition'] is None
     own, results = run(context_factory(documents, start=date(2025, 8, 1)), llm_client)
     assert 'equation' in own[0]  # The requested 2026 row excludes the previous year.
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
@@ -205,22 +232,22 @@ def test_normalized_thousands_are_not_multiplied_a_second_time(documents, contex
 def test_untagged_insurance_document_cannot_be_silently_ignored(documents, context_factory, llm_client):
     documents['unreadable.md'] = 'РАСЧЁТ СТРАХОВЫХ ВЗНОСОВ\nРеквизиты не распознаны'
     own, _ = run(context_factory(documents), llm_client)
-    assert own[0]['verdict'] == 'unverifiable' and 'equation' not in own[0]
+    assert own[0]['condition'] is None and 'equation' not in own[0]
 
 
 def test_non_ruble_target_is_unverifiable(documents, context_factory, llm_client):
     documents['card.md'] = documents['card.md'].replace(tag('amount', '15.00', unit='RUB'),
                                                         tag('amount', '15.00', unit='USD'))
     own, _ = run(context_factory(documents), llm_client)
-    assert own[0]['verdict'] == 'unverifiable' and 'рублях' in own[0]['evidence']
+    assert own[0]['condition'] is None and 'рублях' in own[0]['text']
 
 
-@pytest.mark.parametrize('start, end', [(None, None), (0, 1), (date(2026, 1, 1), None)])
+@pytest.mark.parametrize('start, end', [(None, None)])
 def test_missing_or_invalid_report_period_cannot_generate_empty_sum(documents, context_factory, start, end):
     context = context_factory(documents)
     context.report.period_start, context.report.period_end = start, end
     own = generate_insurance(context)
-    assert own[0]['verdict'] == 'unverifiable' and 'equation' not in own[0]
+    assert own[0]['condition'] is None and 'equation' not in own[0]
 
 
 @pytest.mark.parametrize('style', ['numeric', 'mnemonic'])
@@ -261,3 +288,9 @@ def test_numeric_text_is_not_interpreted_as_row_position(documents, context_fact
     own, results = run(context, llm_client)
     assert 'equation' in own[0]
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
+
+
+@pytest.mark.parametrize("start,end", [(date(2026, 1, 1), None), (date(2026, 2, 1), date(2026, 1, 1))])
+def test_invalid_period_is_rejected_at_stage_boundary(start, end):
+    with pytest.raises(ProcessingValidationError):
+        Scope(period_start=start, period_end=end)

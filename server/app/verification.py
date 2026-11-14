@@ -1,25 +1,19 @@
-"""Prepare one corpus, collect generator outputs, and evaluate them together."""
+"""Prepare canonical inputs and evaluate saved requirement definitions."""
 
 import logging
 
 from checkier import PipelineConfig
-from processing.common.llm import ModelClient
 from processing.common.documents import DocumentRevision
 from processing.common.registry import EntityRegistry
 from processing.entities.corpus import build_registry
-from processing.common.formula import BinOp, FormulaError, collect_ids, parse
+from processing.common.formula import collect_ids
 from checkier.report import build_report
 from checkier.solver import solve_system
 
 from . import storage
-from .generators.insurance import generate_insurance
-from .generators.llm import generate_llm
-from .generators.scope import generate_scope
 from .models import File, Report
 from .target_row import find_target_row_keys
 from .verification_context import VerificationContext
-
-GENERATORS = {"scope": generate_scope, "llm": generate_llm, "insurance": generate_insurance}
 
 
 def validation_registry(files: list[File]) -> EntityRegistry:
@@ -27,31 +21,7 @@ def validation_registry(files: list[File]) -> EntityRegistry:
         "card" if file.role == "final_report" else "data",
         storage.artifact_path(file.entities_path).read_text(encoding="utf-8"),
     ) for file in files}, revisions={str(file.file_id): DocumentRevision(file.report_id, file.file_id, file.version)
-                                    for file in files})
-
-
-def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
-    """Check syntax and references without running the solver or any LLM calls."""
-
-    def boolean_expression(node):
-        if not isinstance(node, BinOp):
-            return False
-        if node.op in {"&&", "||"}:
-            return boolean_expression(node.left) and boolean_expression(node.right)
-        return node.op in {"==", "!=", "<", "<=", ">", ">="}
-
-    try:
-        ast = parse(equation)
-        if not boolean_expression(ast):
-            return "Формула должна содержать сравнение, например #0 == #1 + #2."
-        known = {key for entity in registry.entities for key in (entity.num, entity.mnemonic)}
-        unknown = collect_ids(ast) - known
-        if unknown:
-            return "Неизвестные сущности: " + ", ".join(f"#{key}" if isinstance(key, int) else key
-                                                        for key in sorted(unknown, key=str))
-    except (FormulaError, ValueError, RecursionError) as exc:
-        return str(exc)
-    return None
+                                     for file in files})
 
 
 def prepare_verification(report: Report, files: list[File]) -> VerificationContext:
@@ -73,31 +43,6 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
     scope = {"target_row": sorted(target_row) if target_row else None, "target_label": report.target_row}
     documents = {key: text for key, (_role, text) in tagged.items()}
     return VerificationContext(cfg, documents, registry, scope, mapping, report)
-
-
-def generate_requirements(context: VerificationContext, *, client: ModelClient,
-                          logger: logging.Logger | logging.LoggerAdapter | None = None) -> list[dict]:
-    """Every generator receives the same prepared documents, IDs, and scope."""
-    logger = logger if logger is not None else logging.getLogger(__name__)
-    generated = []
-    for name, generate in GENERATORS.items():
-        logger.info("Generating requirements with %s", name)
-        options = {"client": client} if name == "llm" else {}
-        generated.extend(dict(requirement, source=name) for requirement in generate(context, logger=logger, **options))
-        logger.info("Generator %s completed", name)
-    by_key = {key: entity.num for entity in context.registry.entities
-              for key in (entity.num, str(entity.num), f"#{entity.num}", entity.mnemonic)}
-    requirements = []
-    for raw in generated:
-        if "equation" in raw:
-            definition = dict(kind="formula", equation=raw["equation"], tag=raw.get("tag"), text=raw.get("text"))
-        else:
-            condition = (raw["condition"] if raw.get("kind") == "assertion"
-                         else {"true": True, "false": False, "unverifiable": None}[raw["verdict"]])
-            definition = dict(kind="assertion", condition=condition, text=raw.get("text", raw.get("evidence")),
-                              ids_related=[by_key.get(key, key) for key in raw["ids_related"]])
-        requirements.append(dict(definition, source=raw["source"]))
-    return requirements
 
 
 def evaluate_requirements(context: VerificationContext, requirements: list[dict], *,

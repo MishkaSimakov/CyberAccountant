@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from checkier.config import PipelineConfig
-from processing.entities.markup import ENT_RE, parse_tag_attrs
+from processing.common.markup import ENT_RE, parse_tag_attrs
 from processing.common.registry import EntityRegistry
 
 

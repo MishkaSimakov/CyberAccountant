@@ -10,7 +10,7 @@ import pytest
 
 from processing.common import llm
 from app.logging import append_log, file_log_run
-from checkier.schemas import RELATIONS_SCHEMA
+from processing.requirements.schemas import RELATIONS_SCHEMA
 
 
 @pytest.mark.parametrize("prefix,suffix", [

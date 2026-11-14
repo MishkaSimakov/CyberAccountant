@@ -6,7 +6,7 @@ from html import escape
 from processing.common.registry import EntityRegistry as CanonicalRegistry, RegistryEntity
 from processing.entities.corpus import build_registry, parse_drafts
 from processing.entities.identifiers import assign_identities, mnemonic_for_id, read_identities
-from processing.entities.markup import parse_entity_tags
+from processing.common.markup import parse_entity_tags
 from processing.entities.values import recorded_value
 
 

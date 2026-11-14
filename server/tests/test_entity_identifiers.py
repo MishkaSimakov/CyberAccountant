@@ -9,7 +9,7 @@ from processing.entities.identifiers import (
     MNEMONIC_CAPACITY, WORD_COUNT, assign_identities, id_for_mnemonic,
     mnemonic_for_id, mnemonic_words, read_identities,
 )
-from processing.entities.markup import parse_entity_tags
+from processing.common.markup import parse_entity_tags
 
 
 def tag(num, mnemonic=None, body="1"):

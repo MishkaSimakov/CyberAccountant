@@ -8,7 +8,7 @@ import pytest
 
 from processing.entities.normalization import normalize_document
 from processing.entities.options import EntityOptions
-from processing.entities.markup import ENT_RE, parse_tag_attrs
+from processing.common.markup import ENT_RE, parse_tag_attrs
 from entity_fixtures import registry_from_drafts as build_registry
 
 
@@ -69,9 +69,10 @@ def test_registry_uses_reviewed_value_without_scaling_twice(tmp_path, llm_client
 def test_unresolved_date_is_explicit(tmp_path, monkeypatch, llm_client):
     cfg = EntityOptions()
     monkeypatch.setattr(llm_client, "call_llm_json", lambda *args, **kwargs: [])
-    assert normalize_document(cfg, '<ent t="date">неизвестно</ent>', client=llm_client, logger=logging.getLogger(__name__)) == (
-        '<ent t="date" value="">неизвестно</ent>'
-    )
+    assert normalize_document(cfg, '<ent t="date">неизвестно</ent>', client=llm_client,
+                              logger=logging.getLogger(__name__)) == (
+               '<ent t="date" value="">неизвестно</ent>'
+           )
 
 
 def test_null_date_normalization_preserves_other_entities(tmp_path, monkeypatch, llm_client):

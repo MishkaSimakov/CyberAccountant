@@ -13,7 +13,7 @@ from importlib import resources
 from processing.common.entities import EntityIdentity
 from processing.common.errors import ProcessingValidationError
 
-from .markup import EntityTag, parse_entity_tags
+from processing.common.markup import EntityTag, parse_entity_tags
 
 WORD_COUNT = 2048
 MNEMONIC_CAPACITY = WORD_COUNT ** 2

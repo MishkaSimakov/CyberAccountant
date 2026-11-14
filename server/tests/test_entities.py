@@ -454,7 +454,7 @@ def test_edit_requires_finished_processing_and_editable_stage(ready):
     assert request("POST", markdown_path, payload)[0] == 409
 
 
-def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
+def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch, llm_client):
     report_id, revisions, pending = ready
     path = f"/reports/{report_id}"
     with database.session_scope() as session:
@@ -476,8 +476,11 @@ def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
     assert request("POST", path + "/run-entity-extraction")[0] == 200
     assert pending == [edited_id, revisions[1]]
     job.process_entities(revisions[0])  # The old OCR revision must stay obsolete.
+    edited_segments = [dict(segment) for segment in SEGMENTS]
+    edited_segments[-1]["content"] += "\n"
+    monkeypatch.setattr(llm_client, "call_llm_json", lambda *args, **kwargs: edited_segments)
     job.process_entities(edited_id)
-    assert request("GET", markdown_path)[1]["content"] == canonical()
+    assert request("GET", markdown_path)[1]["content"] == canonical() + "\n"
 
 
 @pytest.mark.parametrize("change", ["stage", "revision", "requeued", "new_run", "deleted"])

@@ -6,7 +6,16 @@ import pytest
 
 from app import verification
 from app.verification_context import VerificationContext
-from app.generators.scope import generate_scope
+import logging
+from dataclasses import asdict
+
+from processing.common.corpus import ReviewedCorpus
+from processing.common.documents import DocumentRevision, ReviewedDocument
+from processing.common.scope import Scope
+from processing.requirements.generators.scope import ScopeGenerator
+from processing.requirements.interface import RequirementInput
+from processing.requirements.options import RequirementOptions
+from processing.requirements.processor import RequirementsProcessor
 from app.models import Report
 from app.target_row import find_target_row_keys, find_target_row_spans
 from checkier.config import PipelineConfig
@@ -33,10 +42,14 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
     report = Report(contract_number="TARGET", period_start=date(2026, 1, 1), period_end=date(2026, 5, 31))
     scope = {"target_row": None, "target_label": None}
     context = VerificationContext(cfg, {}, registry, scope, mapping, report)
-    assert verification.GENERATORS["scope"] is generate_scope
-    monkeypatch.setattr(verification, "GENERATORS", {"scope": generate_scope})
-
-    requirements = verification.generate_requirements(context, client=llm_client)
+    source = RequirementInput(ReviewedCorpus(1, tuple(
+        ReviewedDocument(DocumentRevision(1, int(key), 1), key,
+                         "final_report" if role == "card" else "supporting", markdown)
+        for key, (role, markdown) in tagged.items() if key != "6"
+    )), Scope(report.contract_number, report.period_start, report.period_end))
+    processor = RequirementsProcessor(generators=[ScopeGenerator(RequirementOptions(id_style=style))])
+    requirements = [asdict(definition) for definition in processor.process(
+        source, logger=logging.getLogger(__name__)).definitions]
     assert len(requirements) == 8
     assert all(requirement["source"] == requirement["tag"] == "scope" for requirement in requirements)
     assert scope == {"target_row": None, "target_label": None}
@@ -54,8 +67,7 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
     assert verification.evaluate_requirements(context, definitions)["files"]["out_of_scope"] == {}
 
     # Removing all scope requirements also removes all inferred exclusions.
-    monkeypatch.setattr(verification, "GENERATORS", {})
-    assert verification.generate_requirements(context, client=llm_client) == []
+    assert RequirementsProcessor(generators=[]).process(source, logger=logging.getLogger(__name__)).definitions == ()
     assert verification.evaluate_requirements(context, [])["files"]["out_of_scope"] == {}
 
 

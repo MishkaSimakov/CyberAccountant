@@ -10,7 +10,7 @@ from processing.common.errors import ProcessingValidationError
 from processing.common.llm import ModelClient
 from processing.entities.corpus import parse_drafts
 from processing.entities.interface import EntityInput, EntityOutput, EntityProcessor
-from processing.entities.markup import parse_entity_tags
+from processing.common.markup import parse_entity_tags
 from processing.entities.normalization import normalize_document
 from processing.entities.options import EntityOptions
 from processing.entities.processor import LLMEntityProcessor

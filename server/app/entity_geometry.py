@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Literal, TypedDict
 
-from processing.entities.markup import ENT_RE, parse_tag_attrs
+from processing.common.markup import ENT_RE, parse_tag_attrs
 from processing.entities.values import parse_amount
 
 

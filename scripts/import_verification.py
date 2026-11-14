@@ -33,11 +33,12 @@ from app.schemas.reports import ReportCreate
 from app.schemas.requirements import requirement_adapter
 from app.services.requirements import verification_result_file
 from app.target_row import find_target_row_spans
-from app.verification import validate_formula
+from processing.requirements.validation import validate_formula
 from processing.entities.corpus import build_registry
 from processing.common.formula import BinOp, collect_ids, parse, tokenize
 from processing.entities.identifiers import MNEMONIC_CAPACITY, id_for_mnemonic, mnemonic_for_id, read_identities
-from processing.entities.markup import parse_entity_tags, validate_attributes, validate_markup
+from processing.common.markup import parse_entity_tags
+from processing.entities.markup import validate_attributes, validate_markup
 
 REFERENCE_RE = re.compile(r"#\d+|[a-z]+-[a-z]+")
 
@@ -160,7 +161,8 @@ def canonicalize_documents(session, report_id: int, documents: list[Document]) -
             if "mnemonic" not in attrs:
                 attrs["mnemonic"] = mnemonic_for_id(num)
             fields = " ".join(f'{key}="{escape(value, quote=True)}"' for key, value in attrs.items())
-            pieces.extend((document.text[end:tag.span[0]], f"<ent {fields}>{document.text[slice(*tag.body_span)]}</ent>"))
+            pieces.extend(
+                (document.text[end:tag.span[0]], f"<ent {fields}>{document.text[slice(*tag.body_span)]}</ent>"))
             end = tag.span[1]
         pieces.append(document.text[end:])
         document.text = "".join(pieces)
@@ -181,7 +183,8 @@ def validate_inputs(requirements: list[dict], documents: list[Document]) -> None
 
     def is_boolean(node):
         return isinstance(node, BinOp) and (node.op in {"==", "!=", "<", "<=", ">", ">="}
-            or node.op in {"&&", "||"} and is_boolean(node.left) and is_boolean(node.right))
+                                            or node.op in {"&&", "||"} and is_boolean(node.left) and is_boolean(
+                    node.right))
 
     for requirement in requirements:
         if requirement["kind"] == "formula":

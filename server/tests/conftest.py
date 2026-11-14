@@ -41,5 +41,5 @@ def llm_client(monkeypatch):
 
     client = ModelClient(SimpleNamespace(generate=unexpected))
     monkeypatch.setattr("app.jobs.entities.create_model_client", lambda: client)
-    monkeypatch.setattr("app.jobs.verification.create_model_client", lambda: client)
+    monkeypatch.setattr("app.jobs.requirements.create_model_client", lambda: client)
     return client

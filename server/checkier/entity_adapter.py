@@ -4,7 +4,7 @@ import json
 
 from processing.entities.corpus import build_registry
 from processing.entities.identifiers import assign_identities, read_identities
-from processing.entities.markup import parse_entity_tags
+from processing.common.markup import parse_entity_tags
 from processing.entities.normalization import normalize_document
 from processing.entities.options import EntityOptions
 
@@ -31,7 +31,7 @@ def normalize_dates(cfg, tagged_docs, *, client, logger, on_token=None):
     previous = build_registry(tagged_docs)
     for key, (role, text) in tagged_docs.items():
         tagged_docs[key] = role, normalize_document(EntityOptions.from_settings(cfg), text, client=client,
-                                                   logger=logger, on_token=on_token)
+                                                    logger=logger, on_token=on_token)
     registry = run_registry(cfg, tagged_docs)
     old = {entity.num: entity.value for entity in previous.entities}
     return registry, [entity for entity in registry.entities if old[entity.num] != entity.value]

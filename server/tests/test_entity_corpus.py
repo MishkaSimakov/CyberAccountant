@@ -9,7 +9,7 @@ from processing.common import DocumentRevision, ReviewedCorpus, ReviewedDocument
 from processing.common.errors import ProcessingValidationError
 from processing.entities.corpus import build_corpus, build_registry, parse_drafts
 from processing.entities.identifiers import assign_identities
-from processing.entities.projection import project_markdown
+from processing.common.projection import project_markdown
 
 
 def tag(num, body="100", attrs='t="amount"'):

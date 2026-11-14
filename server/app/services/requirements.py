@@ -11,7 +11,10 @@ from ..models import EntityFile, Requirement, VerificationResult
 from ..queue import enqueue_requirement_generation, enqueue_verification
 from ..schemas.requirements import (RequirementDefinition, RequirementResponse, RequirementsResponse,
                                     RequirementUpdate, FormulaValidationResponse, requirement_adapter)
-from ..verification import validate_formula, validation_registry
+from processing.common.requirements import AssertionDefinition
+from processing.common.errors import ProcessingValidationError
+from processing.requirements.validation import validate_formula, validate_definition
+from ..verification import validation_registry
 from . import ServiceError
 from .reports import blockers_for, find_report, report_documents
 
@@ -146,10 +149,19 @@ def save_requirement(report_id: int, payload: RequirementDefinition,
                      requirement_id: int | None = None) -> RequirementResponse:
     with session_scope() as session:
         require_editing(find_report(session, report_id, lock=True))
+        registry = validation_registry(report_documents(session, report_id))
         if payload.kind == "formula":
-            error = validate_formula(payload.equation, validation_registry(report_documents(session, report_id)))
+            error = validate_formula(payload.equation, registry)
             if error:
                 raise ServiceError(422, error)
+        else:
+            try:
+                validated = validate_definition(AssertionDefinition(condition=payload.condition,
+                                                                    ids_related=tuple(payload.ids_related),
+                                                                    text=payload.text), registry)
+                payload = payload.model_copy(update={"ids_related": list(validated.ids_related)})
+            except ProcessingValidationError as exc:
+                raise ServiceError(422, str(exc)) from exc
         if requirement_id is None:
             requirement = Requirement(report_id=report_id, source="manual")
             session.add(requirement)

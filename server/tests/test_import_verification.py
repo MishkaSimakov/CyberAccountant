@@ -115,8 +115,8 @@ def test_import_publishes_report_and_preserves_inputs(db, bundle, tmp_path, monk
     # Cross the 9/10 boundary: registry ordering sorts database file IDs as strings.
     for index in range(10):
         write_document(entities, f"extra-{index}", f'<ent id="{index}" t="number">{index}</ent>')
-    monkeypatch.setattr(verification, "generate_requirements", lambda _: pytest.fail("Must use supplied requirements"))
-    monkeypatch.setattr(verification, "generate_llm", lambda _: pytest.fail("Must not call LLM"))
+    monkeypatch.setattr("app.jobs.requirements.create_requirement_processor",
+                        lambda: pytest.fail("Must use supplied requirements"))
     report_id, result_path = importer.import_bundle(path, entities, path.parent / "23.md",
                                                     name="Friend's bundle", target_row="Итого")
     result = json.loads(result_path.read_text(encoding="utf-8"))
