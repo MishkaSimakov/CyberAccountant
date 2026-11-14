@@ -40,7 +40,7 @@ export default defineComponent({
   data() {
     return {
       popupId: `entity-popup-${++nextPopupId}`,
-      attributeNames: ['t', 'u', 'n', 'value'] as const,
+      attributeNames: ['id', 't', 'u', 'n', 'value'] as const,
       selected: null as Entity | null,
       selection: null as Entity | null,
       selectionError: '',
