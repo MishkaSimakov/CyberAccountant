@@ -69,6 +69,31 @@ def generate(report_id):
     process_requirement_generation(report_id)
 
 
+def test_generated_requirement_ids_restart_for_each_report(reviewed):
+    report_id, _, _ = reviewed
+    with database.session_scope() as session:
+        other = Report(name="Other", stage="requirements", processing_status="completed")
+        session.add(other)
+        session.flush()
+        other_id = other.id
+        session.add(Requirement(report_id=other_id, requirement_id=1,
+                                json_data={"kind": "formula", "equation": "1 == 1"}))
+
+    generate(report_id)
+    assert [item.id for item in requirements.report_requirements(report_id).requirements] == [1]
+    payload = {"kind": "assertion", "text": "Manual", "condition": None}
+    for current_id in (report_id, other_id):
+        status, created = request("POST", f"/reports/{current_id}/requirements", payload)
+        assert status == 201 and created["id"] == 2
+
+    with database.session_scope() as session:
+        report = session.get(Report, report_id)
+        report.processing_status = "failed"
+    generate(report_id)
+    assert [item.id for item in requirements.report_requirements(report_id).requirements] == [1]
+    assert [item.id for item in requirements.report_requirements(other_id).requirements] == [1, 2]
+
+
 def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch):
     report_id, revisions, pending = reviewed
     path = f"/reports/{report_id}"
