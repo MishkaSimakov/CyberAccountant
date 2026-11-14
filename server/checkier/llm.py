@@ -202,7 +202,7 @@ def call_llm(
     payload: dict = {"model": model, "input": prompt}
     # Portable APIs do not guarantee that reasoning can be fully disabled.
     if reasoning == "disabled":
-        payload["reasoning"] = {"effort": "low"}
+        payload["reasoning"] = {"effort": "none"}
     if schema is not None:
         payload["text"] = {
             "format": {

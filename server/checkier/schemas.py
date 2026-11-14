@@ -94,6 +94,7 @@ RELATIONS_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "equation": {"type": "string"},
+                    "text": {"type": "string"},
                     "tag": {
                         "type": "string",
                         "enum": ["scope", "agg", "ref"],

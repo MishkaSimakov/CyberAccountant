@@ -94,7 +94,8 @@ def test_generated_requirement_ids_restart_for_each_report(reviewed):
     assert [item.id for item in requirements.report_requirements(other_id).requirements] == [1, 2]
 
 
-def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch):
+@pytest.mark.parametrize("text", [None, "The reported total must match the supporting document."])
+def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch, text):
     report_id, revisions, pending = reviewed
     path = f"/reports/{report_id}"
     prompts = []
@@ -104,7 +105,7 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
         with database.session_scope() as session:
             assert session.get(Report, report_id).processing_status == "running"
             assert session.scalar(select(func.count()).select_from(Requirement)) == 0
-        return [{"equation": "#0 == #1", "tag": "agg"}]
+        return [{"equation": "#0 == #1", "tag": "agg", **({"text": text} if text is not None else {})}]
 
     monkeypatch.setattr("checkier.stage5_relations.call_llm_json", generate)
     assert request("GET", path)[1]["available_actions"] == ["generate_requirements"]
@@ -133,7 +134,7 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
     definitions = request("GET", path + "/requirements")[1]["requirements"]
     assert len(definitions) == 1
     assert definitions[0]["kind"] == "formula"
-    assert definitions[0]["text"] is None
+    assert definitions[0]["text"] == text
     assert "verdict" not in definitions[0]
     assert "error" not in definitions[0]
     status, result = request("GET", path + "/verification-result")

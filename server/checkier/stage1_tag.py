@@ -319,7 +319,7 @@ def tag_document(
                 schema_name="entity_wrapping",
                 timeout=cfg.request_timeout,
                 on_token=on_token,
-                reasoning=cfg.reasoning,
+                reasoning=cfg.tag_reasoning,
             )
             segments = _coerce_segments(data)
             problems = _validate_segments(processed, segments)
@@ -334,7 +334,7 @@ def tag_document(
                     schema_name="entity_metadata",
                     timeout=cfg.request_timeout,
                     on_token=on_token,
-                    reasoning=cfg.reasoning,
+                    reasoning=cfg.tag_reasoning,
                 )
                 metadata = _validate_metadata(metadata, ids)
             else:

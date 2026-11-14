@@ -56,7 +56,7 @@ def run_date_normalization(
         timeout=cfg.request_timeout,
         max_retries=cfg.max_retries,
         on_token=on_token,
-        reasoning=cfg.reasoning,
+        reasoning=cfg.tag_reasoning,
     )
     entries = data if isinstance(data, list) else data.get("normalizations", [])
     by_raw: dict[str, tuple[date, date] | None] = {}

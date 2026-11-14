@@ -25,8 +25,7 @@ Request documents:
 {task_documents}
 
 Read the card and supporting documents below. Write relations that verify the
-requested card row. The registry lists normalized entity metadata but no
-internal filenames.
+requested card row.
 
 === CARD ===
 {card_documents}
@@ -34,39 +33,35 @@ internal filenames.
 === SUPPORTING DOCUMENTS ===
 {supporting_documents}
 
-=== ENTITY REGISTRY ===
-{registry}
-
 === OUTPUT ===
 Return this exact JSON format (array of objects):
 
-1. Equations — every relation that must hold between entity ids:
-   {{"equation": "{example_equation}", "tag": "agg"}}
+Equations — every relation that must hold between entity ids:
+   {{"text": "Annual salary is sum of monthly salaries", "equation": "{example_equation}", "tag": "agg"}}
    tags: scope (contract or reporting period) | agg (aggregation) | ref (cross-doc identity)
-
-2. Textual findings — when data looks wrong or cannot be verified with an equation:
-   {{"evidence": "one short sentence describing the problem", "ids_related": ["{example_id}"], "verdict": "false"}}
-   Use verdict "unverifiable" when evidence is insufficient, and "false" for an identified problem.
 
 Formula language:
 - ids: {id_description}
 - ops: + - * / ( ) == != < <= > >= && ||
-- functions: norm(id) — normalized value; raw(id) — unnormalized numeric value
 - dates: bare date IDs and start(id) mean the inclusive start ordinal; end(id)
   means the inclusive end ordinal; DD.MM.YYYY literals compare with both
 - strings only in == / != comparisons
 
 Rules:
+- Write equations without evaluating them numerically. The next step will evaluate them and report results back. 
+- Try to constrain as many values as possible from CARD with requirements.
 - PREFER entity IDs over literal numbers.
-- Every CARD cell of the target report row must appear in at least one equation,
-  or be explicitly marked unverifiable via a fishy entry.
-- Cover ALL aggregations: card totals == sum of their components (from both card and data).
-- Cross-document identity: if the same logical value appears in two docs, relate them with tag "ref".
+- Add a short text description for equations. It shouldn't repeat formula for requirement.
+- Cross-document identity: if the same logical value appears in card and in supporting doc, relate them with tag "ref".
 - For period scope, use whole-interval containment: period start <= start(id)
   and end(id) <= period end. A bare date alone checks only its start.
 - Documents for other contracts or outside the reporting period must not contribute to the target row's totals.
+- Do not produce checks for supporting documents. Consider them as ground-truth. Requirements should verify values from
+  card based on values from supporting documents.
 - Preserve supplied normalized values; do not replace unknown values with guesses.
 - Output ONLY the JSON array, nothing else.
+
+Выдача должна быть на русском языке.
 """
 
 
@@ -156,7 +151,7 @@ def generate_relations(
         schema_name="relations",
         timeout=cfg.request_timeout,
         max_retries=cfg.max_retries,
-        reasoning=cfg.reasoning,
+        reasoning=cfg.rel_reasoning,
     )
     if isinstance(relations, dict):
         relations = [relations]
