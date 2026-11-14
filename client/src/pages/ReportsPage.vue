@@ -55,7 +55,9 @@ export default defineComponent({
       return dateFormatter.format(new Date(`${value}T00:00:00Z`))
     },
     openCreateDialog() {
-      Object.assign(this.form, {name: '', contract_number: '', period_start: '', period_end: '', target_row: ''})
+      const now = new Date()
+      const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      Object.assign(this.form, {name: '', contract_number: '', period_start: today, period_end: today, target_row: ''})
       this.$store.commit('reports/patch', {createError: ''})
       const dialog = this.$refs.dialog as HTMLDialogElement
       dialog.showModal()
