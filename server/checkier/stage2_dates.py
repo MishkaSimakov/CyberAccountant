@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Callable
 
 from checkier.config import PipelineConfig
@@ -58,29 +59,29 @@ def run_date_normalization(
         reasoning=cfg.reasoning,
     )
     entries = data if isinstance(data, list) else data.get("normalizations", [])
-    by_raw: dict[str, tuple[str | None, str | None]] = {}
+    by_raw: dict[str, tuple[date, date] | None] = {}
     for item in entries:
         if isinstance(item, dict) and item.get("raw"):
             start, end = item.get("start"), item.get("end")
             if (start is None) != (end is None):
                 raise ValueError(f"incomplete normalized date interval for {item['raw']!r}")
-            if start is not None and (not isinstance(start, str) or not isinstance(end, str)):
+            if start is None:
+                by_raw[str(item["raw"])] = None
+                continue
+            if not isinstance(start, str) or not isinstance(end, str):
                 raise ValueError(f"invalid normalized date interval for {item['raw']!r}")
-            if start is not None and end is not None:
-                start_day, end_day = parse_date(start), parse_date(end)
-                if start_day is None or end_day is None:
-                    raise ValueError(f"invalid normalized date interval for {item['raw']!r}")
-                if start_day > end_day:
-                    raise ValueError(f"reversed normalized date interval for {item['raw']!r}")
-            by_raw[str(item["raw"])] = (start, end)
+            start_day, end_day = parse_date(start), parse_date(end)
+            if start_day is None or end_day is None:
+                raise ValueError(f"invalid normalized date interval for {item['raw']!r}")
+            if start_day > end_day:
+                raise ValueError(f"reversed normalized date interval for {item['raw']!r}")
+            by_raw[str(item["raw"])] = (start_day, end_day)
     changed: list[Entity] = []
     for e in cands:
         bounds = by_raw.get(e.raw)
-        if not bounds or bounds == (None, None):
+        if bounds is None:
             continue
-        start_raw, end_raw = bounds
-        start, end = parse_date(start_raw), parse_date(end_raw)
-        # Semantic validation above guarantees both are resolved here.
+        start, end = bounds
         e.value = start.toordinal()
         e.end_value = end.toordinal()
         e.normalized_from = e.raw

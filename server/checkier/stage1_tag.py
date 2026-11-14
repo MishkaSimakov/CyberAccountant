@@ -141,7 +141,7 @@ INPUT
 """
 
 
-def _build_prompt(filename: str, content: str) -> str:
+def _build_prompt(filename: str, content: str) -> tuple[str, str]:
     """Build request 1 without interpreting braces in document content."""
     header = "# " + " ".join(filename.splitlines())
     processed = f"{header}\n{content}"
@@ -336,7 +336,7 @@ def tag_document(
                     on_token=on_token,
                     reasoning=cfg.reasoning,
                 )
-                _validate_metadata(metadata, ids)
+                metadata = _validate_metadata(metadata, ids)
             else:
                 metadata = {}
             return _segments_to_tagged(segments, metadata), attempt
