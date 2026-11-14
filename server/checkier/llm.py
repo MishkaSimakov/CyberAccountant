@@ -1,4 +1,4 @@
-"""OpenAI-compatible Responses client with structured output and retries."""
+"""OpenAI-compatible client with structured output, reasoning logs, and retries."""
 
 from __future__ import annotations
 
@@ -123,8 +123,8 @@ def _extract_text(data: dict) -> str:
     raise LLMError(f"could not extract text from response: {str(data)[:500]}")
 
 
-def _endpoint_for_url(base_url: str) -> str:
-    """Append the Responses endpoint to a versioned API base URL."""
+def _endpoint_for_url(base_url: str, *, chat: bool = False) -> str:
+    """Append the selected endpoint to a versioned API base URL."""
     parsed = urlparse(base_url)
     path = parsed.path.rstrip("/")
     if path.endswith(("/responses", "/chat/completions")):
@@ -132,12 +132,29 @@ def _endpoint_for_url(base_url: str) -> str:
             "AI_API_URL must be a base URL such as https://api.example.com/v1, "
             "not a /responses or /chat/completions endpoint"
         )
-    return parsed._replace(path=f"{path}/responses").geturl()
+    endpoint = "chat/completions" if chat else "responses"
+    return parsed._replace(path=f"{path}/{endpoint}").geturl()
+
+
+def _prepare_request(base_url: str, payload: dict) -> tuple[str, dict]:
+    """Use Chat Completions when reasoning text must reach the log.
+
+    RouterAI's Responses adapter can omit readable reasoning even when it
+    counts reasoning tokens and include_reasoning is explicitly requested.
+    """
+    chat = bool((payload.get("reasoning") or {}).get("enabled"))
+    if chat:
+        payload = dict(payload)
+        payload["messages"] = [{"role": "user", "content": payload.pop("input")}]
+        if text := payload.pop("text", None):
+            schema_format = dict(text["format"])
+            payload["response_format"] = {"type": schema_format.pop("type"), "json_schema": schema_format}
+    return _endpoint_for_url(base_url, chat=chat), payload
 
 
 def _post(payload: dict, timeout: float) -> dict:
     base_url, key = load_api_credentials()
-    url = _endpoint_for_url(base_url)
+    url, payload = _prepare_request(base_url, payload)
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {key}"},
@@ -161,9 +178,9 @@ def _post_streaming(
     Completions (``choices[].delta.content``) streaming shapes.
     """
     base_url, key = load_api_credentials()
-    url = _endpoint_for_url(base_url)
     payload = dict(payload)
     payload["stream"] = True
+    url, payload = _prepare_request(base_url, payload)
     resp = requests.post(
         url,
         headers={"Authorization": f"Bearer {key}"},

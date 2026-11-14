@@ -7,9 +7,56 @@ import requests
 
 from checkier import llm
 from checkier.file_log import file_log_run
-
+from checkier.schemas import RELATIONS_SCHEMA
 
 TRACE = "Проверяем суммы\r\n" * 4_000
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_reasoning_transport_uses_chat_and_preserves_schema_and_logging(tmp_path, monkeypatch, streaming):
+    monkeypatch.setattr(llm, "load_api_credentials", lambda: ("https://example.test/api/v1", "key"))
+    payloads = []
+    trace = "Check all the supporting documents.\n"
+    answer = '[{"equation":"1 == 1","tag":"ref","text":"Test"}]'
+
+    class Response:
+        status_code = 200
+        encoding = None
+
+        def json(self):
+            return {"choices": [{"message": {"content": answer, "reasoning": trace}, "finish_reason": "stop"}]}
+
+        def iter_lines(self, decode_unicode):
+            for delta in ({"reasoning": trace}, {"content": answer}):
+                yield "data: " + json.dumps({"choices": [{"delta": delta}]})
+            yield "data: [DONE]"
+
+    def post(url, **kwargs):
+        assert url == "https://example.test/api/v1/chat/completions"
+        payloads.append(kwargs["json"])
+        return Response()
+
+    monkeypatch.setattr(llm.requests, "post", post)
+    path = tmp_path / "processing.log"
+    tokens = []
+    with file_log_run(path, "requirements"):
+        assert llm.call_llm_json("audit prompt", "test-model", reasoning="enabled",
+                                 schema=RELATIONS_SCHEMA, schema_name="relations",
+                                 on_token=tokens.append if streaming else None) == json.loads(answer)
+    payload, = payloads
+    assert payload["messages"] == [{"role": "user", "content": "audit prompt"}]
+    assert payload["response_format"] == {"type": "json_schema", "json_schema": {
+        "name": "relations", "schema": RELATIONS_SCHEMA, "strict": True,
+    }}
+    assert payload["reasoning"] == {"enabled": True}
+    assert payload["include_reasoning"] is True
+    assert "input" not in payload and "text" not in payload
+    if streaming:
+        assert payload["stream"] is True
+        assert tokens == [answer]
+    content = path.read_text()
+    assert content.count(trace) == 1
+    assert content.index("--- MODEL REASONING |") < content.index("--- MODEL OUTPUT |")
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -58,7 +105,7 @@ def test_api_counting_reasoning_without_returning_text_is_explicit_in_log(tmp_pa
                  "summary": [{"type": "summary_text", "text": "Short summary"}]}]},
     {"output": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": TRACE}]}]},
     {"choices": [{"message": {"reasoning": TRACE, "reasoning_content": TRACE,
-                                "reasoning_details": [{"type": "reasoning.text", "text": TRACE}]}}]},
+                              "reasoning_details": [{"type": "reasoning.text", "text": TRACE}]}}]},
     {"choices": [{"message": {"reasoning_content": TRACE}}]},
     {"choices": [{"message": {"reasoning_details": [{"type": "reasoning.text", "text": TRACE}]}}]},
     {"choices": [{"message": {"reasoning_details": [{"type": "reasoning.summary", "summary": TRACE}]}}]},
