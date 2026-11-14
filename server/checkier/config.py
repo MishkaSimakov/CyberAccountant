@@ -43,6 +43,8 @@ class PipelineConfig:
     rel_reasoning: str = "enabled"
     # Relation prompts: processed filename tags, raw original names, or neutral labels.
     relation_filename_mode: str = "tagged"
+    # Stage 5 only: omit entity text and normalized values from the model input.
+    relation_hide_entity_values: bool = False
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:

@@ -180,7 +180,7 @@ def test_parallel_file_logs_keep_model_outputs_isolated(tmp_path, monkeypatch):
 def test_interrupted_stream_keeps_partial_output_in_the_file_log(tmp_path, monkeypatch):
     output = "Частичный ответ\r\n" * 4_000
 
-    def stream(payload, timeout, on_token):
+    def stream(payload, timeout, on_token, on_reasoning=None):
         on_token(output)
         raise llm.LLMError("Stream interrupted")
 
@@ -202,7 +202,7 @@ def test_file_log_preserves_full_prompts_before_each_retry(tmp_path, monkeypatch
     prompts = []
     outputs = ["not JSON", "[]"]
 
-    def respond(payload, timeout, on_token=None):
+    def respond(payload, timeout, on_token=None, on_reasoning=None):
         sent_prompt = payload["input"]
         assert path.read_bytes().endswith(sent_prompt.encode("utf-8") + b"\n")
         prompts.append(sent_prompt)

@@ -29,6 +29,13 @@ def log_model_prompt(prompt: str, model: str, schema_name: str) -> None:
         append_log(path, f"\n--- MODEL PROMPT | {timestamp} | model={model} | schema={schema_name} ---\n{prompt}\n")
 
 
+def log_model_reasoning(text: str, model: str, schema_name: str) -> None:
+    """Append readable reasoning separately from the model's final answer."""
+    if text and (path := current_log_path.get()):
+        timestamp = datetime.now(timezone.utc).isoformat()
+        append_log(path, f"\n--- MODEL REASONING | {timestamp} | model={model} | schema={schema_name} ---\n{text}\n")
+
+
 def log_model_output(text: str, model: str, schema_name: str) -> None:
     """Keep the exact model text, including invalid JSON and Markdown fences."""
     if path := current_log_path.get():
@@ -54,6 +61,32 @@ class LLMError(RuntimeError):
 
 # Extra attempts for transient transport failures (connection reset, timeout).
 TRANSPORT_RETRIES = 3
+
+
+def _reasoning_parts(parts: list) -> str:
+    """Read plaintext parts; encrypted reasoning has no readable text."""
+    return "".join(
+        text for part in parts if isinstance(part, dict)
+        if isinstance(text := part.get("text") or part.get("summary"), str)
+    )
+
+
+def _chat_reasoning(message: dict) -> str:
+    # These fields can contain the same trace; prefer one representation.
+    return (message.get("reasoning") or message.get("reasoning_content")
+            or _reasoning_parts(message.get("reasoning_details") or []))
+
+
+def _extract_reasoning(data: dict) -> str:
+    """Extract readable reasoning without duplicating its summary or aliases."""
+    traces = []
+    for item in data.get("output") or []:
+        if item.get("type") == "reasoning":
+            traces.append(_reasoning_parts(item.get("content") or [])
+                          or _reasoning_parts(item.get("summary") or []))
+    for choice in data.get("choices") or []:
+        traces.append(_chat_reasoning(choice.get("message") or {}))
+    return "".join(traces)
 
 
 def _raise_if_incomplete(data: dict) -> None:
@@ -120,6 +153,7 @@ def _post_streaming(
         payload: dict,
         timeout: float,
         on_token: Callable[[str], None] | None = None,
+        on_reasoning: Callable[[str], None] | None = None,
 ) -> str:
     """POST with stream=true; accumulate text deltas; optionally report each.
 
@@ -142,40 +176,58 @@ def _post_streaming(
     resp.encoding = "utf-8"  # force UTF-8; default guess mangles Cyrillic
     chunks: list[str] = []
     incomplete: str | None = None
-    for raw in resp.iter_lines(decode_unicode=True):
-        if not raw or not raw.startswith("data:"):
-            continue
-        data_str = raw[len("data:"):].strip()
-        if data_str == "[DONE]":
-            break
-        try:
-            event = json.loads(data_str)
-        except json.JSONDecodeError:
-            continue
-        # Skip reasoning/thinking deltas — only surface final answer text.
-        etype = event.get("type", "")
-        response = event.get("response") or {}
-        if etype == "response.incomplete" or response.get("status") == "incomplete":
-            incomplete = str(response.get("incomplete_details") or event.get("error") or {})
-        if "reasoning" in etype:
-            continue
-        # Responses API streaming delta
-        delta = event.get("delta", "")
-        if etype == "response.output_text.delta" and isinstance(delta, str):
-            chunks.append(delta)
-            if on_token:
-                on_token(delta)
-        # Chat completions streaming delta
-        for choice in event.get("choices", []):
-            if choice.get("finish_reason") == "length":
-                incomplete = "finish_reason='length'"
-            d = (choice.get("delta") or {}).get("content")
-            if isinstance(d, str):
-                chunks.append(d)
+    reasoning_items: dict[int, dict[str, str]] = {}
+    chat_reasoning: list[str] = []
+    final_reasoning = ""
+    try:
+        for raw in resp.iter_lines(decode_unicode=True):
+            if not raw or not raw.startswith("data:"):
+                continue
+            data_str = raw[len("data:"):].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                event = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            etype = event.get("type", "")
+            response = event.get("response") or {}
+            if etype == "response.incomplete" or response.get("status") == "incomplete":
+                incomplete = str(response.get("incomplete_details") or event.get("error") or {})
+            final_reasoning = _extract_reasoning(response) or final_reasoning
+            index = event.get("output_index", 0)
+            if etype in ("response.reasoning_text.delta", "response.reasoning_summary_text.delta"):
+                kind = "summary" if "summary" in etype else "content"
+                item = reasoning_items.setdefault(index, {})
+                item[kind] = item.get(kind, "") + event["delta"]
+            elif etype == "response.output_item.done" and (item := event.get("item", {})).get("type") == "reasoning":
+                if trace := _extract_reasoning({"output": [item]}):
+                    reasoning_items[index] = {"content": trace}
+            # Responses API answer deltas remain separate from reasoning.
+            delta = event.get("delta", "")
+            if etype == "response.output_text.delta" and isinstance(delta, str):
+                chunks.append(delta)
                 if on_token:
-                    on_token(d)
-    if incomplete is not None:
-        raise LLMError(f"model output is incomplete/truncated: {incomplete}")
+                    on_token(delta)
+            for choice in event.get("choices", []):
+                if choice.get("finish_reason") == "length":
+                    incomplete = "finish_reason='length'"
+                message = choice.get("delta") or {}
+                chat_reasoning.append(_chat_reasoning(message))
+                d = message.get("content")
+                if isinstance(d, str):
+                    chunks.append(d)
+                    if on_token:
+                        on_token(d)
+        if incomplete is not None:
+            raise LLMError(f"model output is incomplete/truncated: {incomplete}")
+    finally:
+        if on_reasoning:
+            trace = final_reasoning or "".join(
+                item.get("content") or item.get("summary", "") for item in reasoning_items.values()
+            ) + "".join(chat_reasoning)
+            if trace:
+                on_reasoning(trace)
     return "".join(chunks)
 
 
@@ -216,7 +268,9 @@ def call_llm(
     def request_text() -> str:
         log_model_prompt(prompt, model, schema_name)
         if on_token is None:
-            return _extract_text(_post(payload, timeout))
+            response = _post(payload, timeout)
+            log_model_reasoning(_extract_reasoning(response), model, schema_name)
+            return _extract_text(response)
         chunks: list[str] = []
 
         def track(token: str) -> None:
@@ -224,7 +278,9 @@ def call_llm(
             on_token(token)
 
         try:
-            return _post_streaming(payload, timeout, track)
+            return _post_streaming(
+                payload, timeout, track, lambda trace: log_model_reasoning(trace, model, schema_name),
+            )
         except Exception:
             if chunks:
                 log_model_output("".join(chunks), model, schema_name)
