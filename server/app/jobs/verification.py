@@ -34,7 +34,7 @@ def _process(report_id: int, stage: str) -> None:
         report.processing_status = "running"
         files = report_documents(session, report_id)
         definitions = [requirement_response(requirement).model_dump() for requirement in session.scalars(
-            select(Requirement).where(Requirement.report_id == report_id).order_by(Requirement.id)
+            select(Requirement).where(Requirement.report_id == report_id).order_by(Requirement.requirement_id)
         )]
 
     try:
@@ -47,9 +47,9 @@ def _process(report_id: int, stage: str) -> None:
                     if report.stage != stage or report.processing_status != "running":
                         return
                     session.execute(delete(Requirement).where(Requirement.report_id == report_id))
-                    for definition in generated:
+                    for requirement_id, definition in enumerate(generated, 1):
                         data = dict(definition)
-                        session.add(Requirement(report_id=report_id, text=data.pop("text"),
+                        session.add(Requirement(report_id=report_id, requirement_id=requirement_id, text=data.pop("text"),
                                                 source=data.pop("source"), json_data=data))
                     session.execute(delete(EntityFile).where(EntityFile.report_id == report_id))
                     session.add_all(EntityFile(report_id=report_id, entity_id=entity.num, file_id=int(entity.file))

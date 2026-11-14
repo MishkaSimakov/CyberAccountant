@@ -2,6 +2,7 @@
 
 import os
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from checkier import llm
 from app import database, queue, storage, verification
 from app.jobs.verification import process_requirement_generation, process_verification
 from app.models import EntityFile, File, Report, Requirement, VerificationResult
+from app.schemas.requirements import AssertionDefinition
 from app.services import requirements, reports
 from test_documents import api, request, upload
 
@@ -67,6 +69,47 @@ def reviewed(api, monkeypatch):
 def generate(report_id):
     requirements.generate_requirements(report_id)
     process_requirement_generation(report_id)
+
+
+def test_generation_numbers_requirements_within_report_and_resets_on_retry(reviewed, monkeypatch):
+    report_id, _, _ = reviewed
+    with database.session_scope() as session:
+        other = Report(name="Other report")
+        session.add(other)
+        session.flush()
+        other_id = other.id
+        session.add(Requirement(report_id=other_id, requirement_id=100,
+                                json_data={"kind": "formula", "equation": "1 == 1"}))
+    monkeypatch.setattr(verification, "GENERATORS", {"test": lambda _: [
+        {"equation": "#0 == #1"}, {"equation": "#0 >= 0"},
+    ]})
+    generate(report_id)
+    assert [item.id for item in requirements.report_requirements(report_id).requirements] == [1, 2]
+    assert [item.id for item in requirements.report_requirements(other_id).requirements] == [100]
+
+    with database.session_scope() as session:
+        session.get(Report, report_id).processing_status = "failed"
+    generate(report_id)
+    assert [item.id for item in requirements.report_requirements(report_id).requirements] == [1, 2]
+
+
+def test_concurrent_manual_additions_number_each_report_independently(db):
+    with database.session_scope() as session:
+        reports = [Report(name=name, stage="requirements", processing_status="completed")
+                   for name in ["First", "Second"]]
+        session.add_all(reports)
+        session.flush()
+        report_ids = [report.id for report in reports]
+
+    payload = AssertionDefinition(kind="assertion", text="Reviewed", condition=True)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        created = list(pool.map(lambda report_id: (report_id, requirements.save_requirement(report_id, payload).id),
+                                report_ids * 8))
+    for report_id in report_ids:
+        assert sorted(item_id for owner, item_id in created if owner == report_id) == list(range(1, 9))
+        requirements.delete_requirement(report_id, 2)
+        assert requirements.save_requirement(report_id, payload).id == 9
+        assert [item.id for item in requirements.report_requirements(report_id).requirements] == [1, *range(3, 10)]
 
 
 def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch):
@@ -551,6 +594,19 @@ def test_requirement_crud_is_scoped_to_report(reviewed):
     assert request("PUT", path, {"kind": "assertion", "text": "Other", "condition": False})[0] == 404
     assert request("DELETE", path)[0] == 404
     assert len(requirements.report_requirements(report_id).requirements) == 1
+
+    status, other_item = request("POST", f'/reports/{other["id"]}/requirements', {
+        "kind": "assertion", "text": "Other", "condition": False,
+    })
+    assert status == 201 and other_item["id"] == item.id == 1
+    assert request("PUT", path, {"kind": "assertion", "text": "Updated other", "condition": True})[0] == 200
+    assert request("PATCH", path, {"notes": "Other note", "silenced": True})[0] == 200
+    original = requirements.report_requirements(report_id).requirements[0]
+    assert original == item
+    updated = requirements.report_requirements(other["id"]).requirements[0]
+    assert updated.text == "Updated other" and updated.notes == "Other note" and updated.silenced
+    assert request("DELETE", path)[0] == 204
+    assert requirements.report_requirements(report_id).requirements == [item]
 
 
 def test_empty_edited_requirements_are_not_regenerated(reviewed, monkeypatch):

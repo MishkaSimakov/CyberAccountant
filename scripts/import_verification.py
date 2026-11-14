@@ -179,10 +179,11 @@ def import_bundle(requirements_path: Path, entities: Path, final_report: Path, *
             files.append(file)
         definitions, registry = remap_requirements(requirements, documents,
                                                    {file.name: str(file.file_id) for file in files})
-        for definition in definitions:
+        for requirement_id, definition in enumerate(definitions, 1):
             data = dict(definition)
-            data.pop("id")  # Requirement IDs are allocated by this database.
-            session.add(Requirement(report_id=report.id, text=data.pop("text"), source=data.pop("source"),
+            data.pop("id")  # Assign consecutive IDs within the imported report.
+            session.add(Requirement(report_id=report.id, requirement_id=requirement_id,
+                                    text=data.pop("text"), source=data.pop("source"),
                                     note=data.pop("notes"), is_silenced=data.pop("silenced"), json_data=data))
         session.add_all(EntityFile(report_id=report.id, entity_id=entity.num, file_id=int(entity.file))
                         for entity in registry.entities)

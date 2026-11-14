@@ -165,6 +165,20 @@ def test_verification_failure_propagates_without_retry(db, bundle, tmp_path, mon
         assert session.scalar(select(func.count()).select_from(File)) == 2
 
 
+def test_imported_reports_number_requirements_independently(db, bundle, tmp_path, monkeypatch):
+    path, entities = bundle
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))
+    report_ids = []
+    for _ in range(2):
+        report_id, result_path = importer.import_bundle(path, entities, path.parent / "23.md", target_row="Итого")
+        report_ids.append(report_id)
+        saved = requirements.report_requirements(report_id).requirements
+        assert [item.id for item in saved] == [1, 2]
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        assert [item["requirement_id"] for item in result["requirement_results"]] == [1, 2]
+    assert report_ids[0] != report_ids[1]
+
+
 def test_cli_prints_result_url(db, bundle, tmp_path, monkeypatch, capsys):
     path, entities = bundle
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path / "storage"))

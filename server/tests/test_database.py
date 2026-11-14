@@ -20,7 +20,7 @@ def test_initialization_preserves_data_and_round_trips_models(db):
             file_id=1, report_id=report_id, name="акт.pdf", path="originals/акт.pdf",
             hash="a" * 64, role="supporting", size=42, content_type="application/pdf",
         ))
-        session.add(Requirement(report_id=report_id, text="Проверить", source="llm",
+        session.add(Requirement(report_id=report_id, requirement_id=1, text="Проверить", source="llm",
                                 json_data={"kind": "assertion", "condition": None, "ids_related": [0]}))
         session.add(VerificationResult(report_id=report_id, path=f"{report_id}/verification/report.json"))
         session.add(EntityFile(report_id=report_id, entity_id=0, file_id=1))
@@ -63,6 +63,26 @@ def test_initialization_adds_upload_sequence_to_existing_tables(db):
         assert file.file_id > 0
 
 
+def test_requirement_key_is_report_local(db):
+    with database.session_scope() as session:
+        reports = [Report(name="First"), Report(name="Second")]
+        session.add_all(reports)
+        session.flush()
+        report_ids = [report.id for report in reports]
+        for report_id in report_ids:
+            session.add(Requirement(report_id=report_id, requirement_id=1,
+                                    json_data={"kind": "formula", "equation": "1 == 1"}))
+
+    with database.session_scope() as session:
+        for report_id in report_ids:
+            assert session.get(Requirement, (report_id, 1)).requirement_id == 1
+
+    with pytest.raises(IntegrityError):
+        with database.session_scope() as session:
+            session.add(Requirement(report_id=report_ids[0], requirement_id=1,
+                                    json_data={"kind": "formula", "equation": "1 == 2"}))
+
+
 def test_transaction_rolls_back_on_error(db):
     with pytest.raises(RuntimeError, match="abort"):
         with database.session_scope() as session:
@@ -84,7 +104,8 @@ def test_file_revision_uniqueness_and_report_cascade(db):
             hash="a" * 64, role="supporting", size=42, content_type="application/pdf",
         )
         session.add_all([File(**fields, version=1), File(**fields, version=2, hand_edited=True)])
-        session.add(Requirement(report_id=report_id, json_data={"kind": "formula", "equation": "#1 == 2"}))
+        session.add(Requirement(report_id=report_id, requirement_id=1,
+                                json_data={"kind": "formula", "equation": "#1 == 2"}))
         session.add(VerificationResult(report_id=report_id, path="result.json"))
         session.add(EntityFile(report_id=report_id, entity_id=1, file_id=1))
 

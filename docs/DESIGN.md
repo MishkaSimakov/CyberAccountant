@@ -138,8 +138,7 @@ markdown-файл.
 
 ### requirements
 
-- id
-- report_id
+- report_id, requirement_id - combined primary key; requirement IDs start at 1 independently for each report
 - json
 - note
 - is_silenced
