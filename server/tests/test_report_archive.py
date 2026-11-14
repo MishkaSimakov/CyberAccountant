@@ -27,7 +27,8 @@ def completed_report(db, tmp_path, monkeypatch):
         session.add(File(file_id=1, report_id=report.id, name="Счёт.pdf", path=f"{report.id}/1/original.pdf",
                          hash="a" * 64, role="supporting", size=3, content_type="application/pdf",
                          status="completed", markdown_path=f"{report.id}/1/versions/2/ocr/document.md"))
-        session.add(Requirement(report_id=report.id, json_data={"kind": "formula", "equation": "1 == 1"},
+        session.add(Requirement(report_id=report.id, requirement_id=1,
+                                json_data={"kind": "formula", "equation": "1 == 1"},
                                 text="Проверка", source="manual", note="Сохранённая заметка", is_silenced=True))
     return report.id
 

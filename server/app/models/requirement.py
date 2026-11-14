@@ -13,8 +13,8 @@ from ..database import Base
 class Requirement(Base):
     __tablename__ = "requirements"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), index=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), primary_key=True)
+    requirement_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
     json_data: Mapped[dict[str, Any]] = mapped_column("json", MutableDict.as_mutable(JSONB))
     text: Mapped[str | None]
     source: Mapped[str] = mapped_column(server_default=text("''"))

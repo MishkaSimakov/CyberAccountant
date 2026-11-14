@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..database import session_scope
 from .. import storage
@@ -71,7 +71,7 @@ def run_verification(report_id: int) -> None:
             if requirement.json_data["kind"] == "formula":
                 error = validate_formula(requirement.json_data["equation"], registry)
                 if error:
-                    raise ServiceError(422, f"Требование {requirement.id}: {error}")
+                    raise ServiceError(422, f"Требование {requirement.requirement_id}: {error}")
         report.stage = "verification"
         report.processing_status = "queued"
 
@@ -88,7 +88,7 @@ def run_verification(report_id: int) -> None:
 
 def requirement_response(requirement: Requirement) -> RequirementResponse:
     return requirement_adapter.validate_python(dict(
-        **requirement.json_data, id=requirement.id, text=requirement.text, source=requirement.source,
+        **requirement.json_data, id=requirement.requirement_id, text=requirement.text, source=requirement.source,
         notes=requirement.note, silenced=requirement.is_silenced,
     ))
 
@@ -98,7 +98,7 @@ def report_requirements(report_id: int) -> RequirementsResponse:
         find_report(session, report_id)
         return RequirementsResponse(
             requirements=[requirement_response(requirement) for requirement in session.scalars(
-                select(Requirement).where(Requirement.report_id == report_id).order_by(Requirement.id)
+                select(Requirement).where(Requirement.report_id == report_id).order_by(Requirement.requirement_id)
             )],
             entity_documents={item.entity_id: item.file_id for item in session.scalars(
                 select(EntityFile).where(EntityFile.report_id == report_id)
@@ -121,7 +121,7 @@ def update_requirement(report_id: int, requirement_id: int, payload: Requirement
     with session_scope() as session:
         report = find_report(session, report_id, lock=True)
         requirement = session.scalar(select(Requirement).where(
-            Requirement.id == requirement_id, Requirement.report_id == report_id,
+            Requirement.requirement_id == requirement_id, Requirement.report_id == report_id,
         ).with_for_update())
         if requirement is None:
             raise ServiceError(404, "Требование не найдено.")
@@ -151,11 +151,14 @@ def save_requirement(report_id: int, payload: RequirementDefinition,
             if error:
                 raise ServiceError(422, error)
         if requirement_id is None:
-            requirement = Requirement(report_id=report_id, source="manual")
+            # The report row is locked above, serializing ID allocation within this report.
+            next_id = session.scalar(select(func.coalesce(func.max(Requirement.requirement_id), 0) + 1)
+                                     .where(Requirement.report_id == report_id))
+            requirement = Requirement(report_id=report_id, requirement_id=next_id, source="manual")
             session.add(requirement)
         else:
             requirement = session.scalar(select(Requirement).where(
-                Requirement.id == requirement_id, Requirement.report_id == report_id,
+                Requirement.requirement_id == requirement_id, Requirement.report_id == report_id,
             ))
             if requirement is None:
                 raise ServiceError(404, "Требование не найдено.")
@@ -170,7 +173,7 @@ def delete_requirement(report_id: int, requirement_id: int) -> None:
     with session_scope() as session:
         require_editing(find_report(session, report_id, lock=True))
         requirement = session.scalar(select(Requirement).where(
-            Requirement.id == requirement_id, Requirement.report_id == report_id,
+            Requirement.requirement_id == requirement_id, Requirement.report_id == report_id,
         ))
         if requirement is None:
             raise ServiceError(404, "Требование не найдено.")
