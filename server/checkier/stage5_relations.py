@@ -50,7 +50,11 @@ Formula language:
 - strings only in == / != comparisons
 
 Rules:
-- Write equations without evaluating them numerically. The next step will evaluate them and report results back. 
+- Write equations without evaluating them numerically. The next step will evaluate them and report results back.
+- Generate expected relationships from document meaning, regardless of whether the recorded amounts satisfy them.
+  A mismatch is a reason to emit the check. Never omit an equation, weaken it to an inequality, or invent a balancing
+  amount to make it pass. A difference between a card total and its supporting sum does not by itself imply a missing
+  document; emit the equality using all relevant in-scope supporting amounts so verification can report the discrepancy.
 - For values in a card try to constrain them with values from supporting docs. Double-check that you didn't miss any parts in sums.
 - Add a short text description for equations. It shouldn't repeat formula for requirement.
 - Cross-document identity: if the same logical value appears in card and in supporting doc, relate them with tag "ref".
