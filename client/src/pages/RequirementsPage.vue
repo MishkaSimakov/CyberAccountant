@@ -4,6 +4,7 @@ import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import {faChevronDown} from '@fortawesome/free-solid-svg-icons/faChevronDown'
+import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import {editRequirements, reportArchiveUrl} from '../api'
 import {formatAmount} from '../formatAmount'
 import type {
@@ -19,7 +20,8 @@ import ReportHeader from '../components/ReportHeader.vue'
 import RequirementsResults from '../components/RequirementsResults.vue'
 import RequirementDetails from '../components/RequirementDetails.vue'
 import RequirementStatus from '../components/RequirementStatus.vue'
-import MarkdownEditor from '../components/MarkdownEditor.vue'
+import ReportWorkspace from '../components/ReportWorkspace.vue'
+import EntityPdfPreview from '../components/viewers/EntityPdfPreview.vue'
 import RequirementText from '../components/RequirementText.vue'
 import FileProblems from '../components/FileProblems.vue'
 
@@ -30,15 +32,17 @@ export default defineComponent({
     RequirementsResults,
     RequirementDetails,
     RequirementStatus,
-    MarkdownEditor,
+    ReportWorkspace,
+    EntityPdfPreview,
     RequirementText,
     FileProblems
   },
   props: {reportId: {type: Number, required: true}},
   data() {
     return {
-      faSpinner, faChevronDown, expandedFields: [] as number[],
+      faSpinner, faChevronDown, faXmark, expandedFields: [] as number[],
       selectedEntityId: undefined as number | undefined, editing: false, editError: '',
+      selectionVersion: 0,
     }
   },
   computed: {
@@ -96,6 +100,10 @@ export default defineComponent({
     void this.stop()
   },
   methods: {
+    selectEntity(id: number) {
+      this.selectedEntityId = id
+      this.selectionVersion++
+    },
     reportArchiveUrl,
     ...mapActions('requirements', ['start', 'stop', 'load']),
     toggleField(id: number) {
@@ -129,7 +137,7 @@ export default defineComponent({
 </script>
 
 <template>
-  <main class="mx-auto max-w-6xl p-6">
+  <ReportWorkspace :preview-open="!!selectedDocument" @close="selectedEntityId = undefined">
     <ReportHeader :report="report"/>
     <div v-if="loading"
          class="mt-6 flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500"
@@ -182,7 +190,7 @@ export default defineComponent({
                                        :class="{'rotate-180': expandedFields.includes(field.num)}" aria-hidden="true"/>
                     </button>
                     <RequirementText :text="`#${field.num}`" :entity-documents="entityDocuments"
-                                     @select="selectedEntityId = $event"/>
+                                     @select="selectEntity"/>
                   </div>
                 </td>
                 <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.stated) }}</td>
@@ -209,7 +217,7 @@ export default defineComponent({
                           <span class="pt-1 text-slate-400"><span class="sr-only">Требование </span>{{ requirement.id }}</span>
                           <RequirementText
                               :text="requirement.text || (requirement.kind === 'formula' ? 'Название не указано' : 'Условие не указано')"
-                              :entity-documents="entityDocuments" @select="selectedEntityId = $event"
+                              :entity-documents="entityDocuments" @select="selectEntity"
                               class="min-w-0 flex-1 whitespace-pre-wrap break-words font-medium leading-7"
                               :class="requirement.silenced ? 'text-slate-500' : 'text-slate-800'"/>
                           <RequirementStatus :requirement="requirement"/>
@@ -220,7 +228,7 @@ export default defineComponent({
                         <RequirementDetails :requirement="requirement" :entities="entities"
                                             :entity-documents="entityDocuments"
                                             class="border-t border-slate-100 p-4"
-                                            @select="selectedEntityId = $event"/>
+                                            @select="selectEntity"/>
                       </details>
                     </li>
                   </ul>
@@ -233,13 +241,25 @@ export default defineComponent({
       </section>
       <FileProblems :key="reportId" :files="result.files" :documents="report?.documents ?? []"
                     :requirements="requirements" :entities="entities"
-                    :entity-documents="entityDocuments" @select="selectedEntityId = $event"/>
+                    :entity-documents="entityDocuments" @select="selectEntity"/>
       <RequirementsResults :key="reportId" :requirements="requirements" :entities="entities"
                            :entity-documents="entityDocuments"
-                           @select="selectedEntityId = $event"/>
+                           @select="selectEntity"/>
     </template>
-    <MarkdownEditor v-if="selectedDocument" :report-id="reportId" :document="selectedDocument"
-                    readonly entities pdf-entities :selected-entity-id="selectedEntityId"
-                    @close="selectedEntityId = undefined"/>
-  </main>
+    <template #preview>
+      <template v-if="selectedDocument">
+        <div class="flex h-14 shrink-0 items-center justify-between gap-3 border-l border-slate-200 px-3">
+          <h2 class="min-w-0 break-words font-semibold">{{ selectedDocument.name }}</h2>
+          <button type="button"
+                  class="inline-flex size-9 shrink-0 cursor-pointer items-center justify-center rounded hover:bg-slate-50 focus-visible:outline-blue-500"
+                  aria-label="Закрыть PDF" title="Закрыть PDF" @click="selectedEntityId = undefined">
+            <FontAwesomeIcon :icon="faXmark" class="size-4" aria-hidden="true"/>
+          </button>
+        </div>
+        <EntityPdfPreview bare :report-id="reportId" :document-id="selectedDocument.id"
+                          :selection-version="selectionVersion"
+                          :selected-entity-id="selectedEntityId"/>
+      </template>
+    </template>
+  </ReportWorkspace>
 </template>

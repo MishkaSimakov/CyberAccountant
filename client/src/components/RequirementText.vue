@@ -20,7 +20,7 @@ export default defineComponent({
     <template v-for="(part, index) in parts" :key="index">
       <button v-if="part.reference && entityDocuments[Number(part.text.slice(1))] !== undefined" type="button"
               class="cursor-pointer whitespace-nowrap rounded bg-amber-100 px-1 py-0.5 font-medium text-amber-900 hover:bg-amber-200 focus-visible:outline-blue-500"
-              :aria-label="`Показать источник сущности ${part.text}`" aria-haspopup="dialog"
+              :aria-label="`Показать источник сущности ${part.text}`"
               @click.stop.prevent="$emit('select', Number(part.text.slice(1)))">{{ part.text }}</button>
       <mark v-else-if="part.reference"
             class="whitespace-nowrap rounded bg-amber-100 px-1 py-0.5 font-medium text-amber-900">{{ part.text }}</mark>
