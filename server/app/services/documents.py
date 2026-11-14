@@ -111,8 +111,8 @@ def entity_geometry(report_id: int, file_id: int, entity_id: int) -> dict:
     with session_scope() as session:
         report = find_report(session, report_id)
         file = find_document(session, report_id, file_id)
-        tagged = storage.artifact_path(f'{report_id}/verification/replaced/{file_id}.md')
-        if report.stage not in {'requirements', 'verification'} or not tagged.is_file():
+        tagged = storage.artifact_path(file.entities_path) if file.entities_path else None
+        if report.stage not in {'entities', 'requirements', 'verification'} or tagged is None or not tagged.is_file():
             raise ServiceError(404, 'Сущности для этого документа ещё не подготовлены.')
         if not file.pdf_path or not storage.artifact_path(file.pdf_path).is_file():
             raise ServiceError(409, 'PDF документа ещё не готов.')
@@ -140,9 +140,6 @@ def document_markdown(report_id: int, file_id: int) -> MarkdownRevision:
         if not file.markdown_path:
             raise ServiceError(409, "Распознавание документа ещё не завершено.")
         source = storage.artifact_path(file.entities_path or file.markdown_path)
-        if report.stage in {"requirements", "verification"} and storage.artifact_path(
-                f"{report_id}/verification/replaced/{file_id}.md").is_file():
-            source = storage.artifact_path(f"{report_id}/verification/replaced/{file_id}.md")
         return MarkdownRevision(content=source.read_text(encoding="utf-8"),
                                 revision=file.version)
 

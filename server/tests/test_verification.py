@@ -19,15 +19,17 @@ from app.jobs.verification import process_requirement_generation, process_verifi
 from app.models import EntityFile, File, Report, Requirement, VerificationResult
 from app.services import requirements, reports
 from test_documents import api, request, upload
+from entity_fixtures import finalize_drafts
+from processing.entities.markup import parse_entity_tags
 
 
 @pytest.mark.parametrize("label, matches", [("3 этап, 2026 г.", True), ("3 этап, 2025 г.", False)])
 def test_prepare_verification_uses_exact_report_target(tmp_path, monkeypatch, label, matches):
     monkeypatch.setattr(storage, "artifact_path", lambda path: tmp_path / path)
-    text = '| 3 этап, 2026 г. | <ent t="amount">100</ent> |\n'
+    text = finalize_drafts('| 3 этап, 2026 г. | <ent t="amount">100</ent> |\n')
     (tmp_path / "card.md").write_text(text, encoding="utf-8")
     report = Report(id=1, target_row=label)
-    file = File(file_id=1, name="card.pdf", role="final_report", version=1, entities_path="card.md")
+    file = File(report_id=1, file_id=1, name="card.pdf", role="final_report", version=1, entities_path="card.md")
 
     if matches:
         context = verification.prepare_verification(report, [file])
@@ -48,11 +50,15 @@ def reviewed(api, monkeypatch, llm_client):
         report.stage = "entities"
         report.processing_status = "completed"
         report.target_row = "Итого"
+        next_id = 0
         for revision_id, text in zip(revisions, [
             'Итого: <ent t="amount" u="RUB_K" n="1000" value="110">0,11</ent>',
             'Сумма: <ent t="amount" u="RUB" value="100">100</ent>',
         ]):
             file = session.get(File, revision_id)
+            count = len(parse_entity_tags(text))
+            text = finalize_drafts(text, next_id)
+            next_id += count
             file.entities_path = storage.save_entities(report_id, file.file_id, file.version, text)
             file.markdown_path = file.entities_path
             file.status = "completed"
@@ -130,7 +136,8 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
     with database.session_scope() as session:
         file = session.get(File, revisions[0])
         file_id = file.file_id
-        assert 'id="0"' not in storage.artifact_path(file.entities_path).read_text(encoding="utf-8")
+        assert 'id="0"' in storage.artifact_path(file.entities_path).read_text(encoding="utf-8")
+        assert 'mnemonic="abandon-abandon"' in storage.artifact_path(file.entities_path).read_text(encoding="utf-8")
         assert session.get(EntityFile, (report_id, 0)).file_id == file_id
         record = session.get(VerificationResult, report_id)
         assert json.loads(storage.artifact_path(record.path).read_text()) == result
@@ -151,11 +158,15 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
 def test_generators_share_context_and_all_requirements_reach_one_solver(reviewed, monkeypatch):
     report_id, revisions, _ = reviewed
     with database.session_scope() as session:
+        next_id = 0
         for revision_id, text in zip(revisions, [
             'Итого: <ent t="amount" value="70">70</ent> <ent t="amount" value="30">30</ent>',
             'Сумма: <ent t="amount" value="100">100</ent> Разница: <ent t="amount" value="40">40</ent>',
         ]):
             file = session.get(File, revision_id)
+            count = len(parse_entity_tags(text))
+            text = finalize_drafts(text, next_id)
+            next_id += count
             storage.artifact_path(file.entities_path).write_text(text, encoding="utf-8")
     contexts = []
 
@@ -196,9 +207,9 @@ def test_scope_requirements_are_published_and_failures_exclude_files(reviewed):
         file = session.get(File, revisions[1])
         document_id = str(file.file_id)
         storage.artifact_path(file.entities_path).write_text(
-            'Сумма: <ent t="amount" value="100">100</ent> '
+            finalize_drafts('Сумма: <ent t="amount" value="100">100</ent> '
             'Договор: <ent t="contract">OTHER</ent> '
-            'Дата: <ent t="date">03.06.2026</ent>', encoding="utf-8")
+            'Дата: <ent t="date">03.06.2026</ent>', 1), encoding="utf-8")
 
     generate(report_id)
     requirements.run_verification(report_id)

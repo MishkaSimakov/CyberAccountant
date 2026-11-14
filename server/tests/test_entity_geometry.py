@@ -198,12 +198,14 @@ def test_api_reuses_original_geometry_after_an_edited_revision(api, repeated_pdf
         file.pdf_path = str(Path(saved).parent / 'document.assets/preview.pdf')
         file.status = 'completed'
         tagged = tagged_occurrence(md, '650000.00', 1)
+        entities_path = storage.save_entities(report_id, file_id, 2, tagged)
+        # A stale derived file must never override the canonical geometry source.
         path = storage.artifact_path(f'{report_id}/verification/replaced/{file_id}.md')
         path.parent.mkdir(parents=True)
-        path.write_text(tagged, encoding='utf-8')
+        path.write_text('Stale derived source', encoding='utf-8')
         session.add(File(report_id=report_id, file_id=file_id, version=2, name=file.name, path=file.path,
                          hash=file.hash, role=file.role, size=file.size, content_type=file.content_type,
-                         markdown_path=f'{report_id}/edited/document.md', pdf_path=file.pdf_path, status='completed'))
+                         markdown_path=saved, entities_path=entities_path, pdf_path=file.pdf_path, status='completed'))
     endpoint = f'/reports/{report_id}/documents/{file_id}/entities/7/geometry'
     status, result = request('GET', endpoint)
     assert status == 200

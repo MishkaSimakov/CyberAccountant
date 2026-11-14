@@ -8,7 +8,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from html import unescape
 
-from checkier.entities import ENT_RE, parse_tag_attrs
+from processing.entities.markup import ENT_RE, parse_tag_attrs
 
 from ..verification_context import VerificationContext
 
@@ -36,7 +36,7 @@ def generate_insurance(context: VerificationContext, *,
     """Use existing IDs, normalized values and scope; emit only 0300 relations."""
     numeric = context.config.id_style == "numeric"
     entities = context.registry.entities
-    by_id = {str(e.num) if numeric else e.mnemonic: e for e in entities}
+    by_id = {str(e.num): e for e in entities}
     key = lambda e: str(e.num) if numeric else e.mnemonic
     ref = lambda e: f"#{e.num}" if numeric else e.mnemonic
     target_keys = {str(k).lstrip("#") for k in context.scope.get("target_row") or []}

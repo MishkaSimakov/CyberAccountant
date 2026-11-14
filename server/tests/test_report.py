@@ -3,7 +3,7 @@
 import pytest
 
 from checkier.config import PipelineConfig
-from checkier.entities import build_registry
+from entity_fixtures import registry_from_drafts as build_registry
 from checkier.report import build_report, format_report_text
 from checkier.solver import Relation
 

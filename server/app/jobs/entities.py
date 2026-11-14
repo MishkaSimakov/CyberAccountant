@@ -1,10 +1,13 @@
 """Extract entries from a queued OCR revision and preserve Checkier's markup."""
 
 import logging
+import os
 
-from checkier import PipelineConfig, normalize_document, tag_document
 from sqlalchemy import select
 
+from processing.entities.interface import EntityInput, EntityProcessor
+from processing.entities.options import EntityOptions
+from processing.entities.processor import LLMEntityProcessor
 from ..database import session_scope
 from ..entities import assign_document_identities
 from ..llm import create_model_client
@@ -15,6 +18,12 @@ from ..services.reports import sync_processing_status
 from ..storage import artifact_path, save_entities
 
 logger = logging.getLogger(__name__)
+
+
+def create_entity_processor() -> EntityProcessor:
+    client = create_model_client()
+    options = EntityOptions(tag_model=os.environ.get("AI_TAG_MODEL", EntityOptions().tag_model))
+    return LLMEntityProcessor(client, options)
 
 
 def process_entities(file_revision_id: int) -> None:
@@ -47,11 +56,9 @@ def process_entities(file_revision_id: int) -> None:
                           document_id=file.file_id, revision_id=file.id, revision=file.version,
                           report_log_path=report_log_path) as run_logger:
             source = artifact_path(file.markdown_path)
-            cfg = PipelineConfig(data_dir=source.parent, out_dir=source.parent, tag_workers=1)
-            client = create_model_client()
-            tagged, _retries = tag_document(cfg, file.name, source.read_text(encoding="utf-8"), client=client,
-                                            logger=run_logger)
-            tagged = normalize_document(cfg, tagged, client=client, logger=run_logger)
+            output = create_entity_processor().process(
+                EntityInput(filename=file.name, markdown=source.read_text(encoding="utf-8")), logger=run_logger)
+            tagged = output.markdown
             with session_scope() as session:
                 report = session.get(Report, report_id, with_for_update=True)
                 current = session.get(File, file_revision_id)

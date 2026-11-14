@@ -38,7 +38,7 @@ def test_requirement_rejects_result_fields(outcome):
     ("#0 == #1 && 10", False),
 ])
 def test_formula_validation_uses_parser_and_known_entities(equation, valid):
-    from checkier.entities import build_registry
+    from entity_fixtures import registry_from_drafts as build_registry
     from app.verification import validate_formula
 
     registry = build_registry({"1": ("card", '<ent t="amount">100</ent> <ent t="amount">50</ent>')})

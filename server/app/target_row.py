@@ -2,7 +2,7 @@
 
 import re
 
-from checkier.entities import EntityRegistry
+from processing.common.registry import EntityRegistry
 
 _TAGMARKUP_RE = re.compile(r"</?ent\b[^>]*>")
 

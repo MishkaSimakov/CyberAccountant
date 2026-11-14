@@ -7,7 +7,7 @@ import logging
 import json
 
 from checkier.config import PipelineConfig
-from checkier.entities import EntityRegistry
+from processing.common.registry import EntityRegistry
 from processing.common.llm import ModelClient, ModelRequestOptions
 from checkier.schemas import RELATIONS_SCHEMA
 

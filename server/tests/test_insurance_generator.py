@@ -11,6 +11,7 @@ from app.generators.insurance import generate_insurance
 from app.generators.llm import generate_llm
 from app.models import File, Report
 from processing.common.formula import collect_ids, parse
+from entity_fixtures import canonical_documents
 
 
 def tag(kind, value, text=None, unit=None):
@@ -61,17 +62,16 @@ def context_factory(tmp_path, monkeypatch, llm_client):
     def prepare(documents, *, start=date(2026, 1, 1), end=date(2026, 2, 28), style='numeric', row='3 этап, 2026 г.'):
         report = Report(id=1, name='Insurance test', contract_number='24/03/15-01',
                         period_start=start, period_end=end, target_row=row)
-        files = [File(file_id=i, version=1, name=name,
+        canonical = canonical_documents({str(i): ("card" if name == "card.md" else "data", text)
+                                         for i, (name, text) in enumerate(documents.items(), 1)})
+        files = [File(report_id=1, file_id=i, version=1, name=name,
                       role='final_report' if name == 'card.md' else 'supporting',
-                      entities_path=storage.save_entities(1, i, 1, text))
+                      entities_path=storage.save_entities(1, i, 1, canonical[str(i)][1]))
                  for i, (name, text) in enumerate(documents.items(), 1)]
         context = verification.prepare_verification(report, files)
         if style == 'mnemonic':
             context.config.id_style = style
-            context.documents = {name: re.sub(r'id="(\d+)"',
-                                              lambda m: f'id="{context.registry.entities[int(m[1])].mnemonic}"', text)
-                                 for name, text in context.documents.items()}
-            context.scope['target_row'] = [context.registry.entities[n].mnemonic
+            context.scope['target_row'] = [next(entity.mnemonic for entity in context.registry.entities if entity.num == n)
                                            for n in context.scope['target_row']]
         return context
 

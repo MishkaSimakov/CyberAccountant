@@ -5,7 +5,8 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
-from checkier.entities import EntityRegistry, parse_amount
+from processing.common.registry import EntityRegistry
+from processing.entities.values import parse_amount
 from processing.common.formula import (
     BinOp, FormulaError, Id, Node, Num, Str, collect_ids, evaluate, parse,
 )

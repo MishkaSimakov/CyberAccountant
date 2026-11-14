@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.entities import prepare_entities
-from checkier.entities import build_registry
+from entity_fixtures import registry_from_drafts as build_registry
 
 
 @pytest.mark.parametrize("type_,raw,attrs,expected", [

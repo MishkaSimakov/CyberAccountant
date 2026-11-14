@@ -10,7 +10,7 @@ from app.generators.scope import generate_scope
 from app.models import Report
 from app.target_row import find_target_row_keys, find_target_row_spans
 from checkier.config import PipelineConfig
-from checkier.entities import build_registry
+from entity_fixtures import registry_from_drafts as build_registry
 
 
 @pytest.mark.parametrize("style", ["numeric", "mnemonic"])

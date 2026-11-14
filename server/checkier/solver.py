@@ -37,7 +37,8 @@ from fractions import Fraction
 
 import z3
 
-from checkier.entities import Entity, EntityRegistry, parse_amount
+from processing.common.registry import RegistryEntity as Entity, EntityRegistry
+from processing.entities.values import parse_amount
 from checkier.substitutor import Substitutor
 from processing.common.formula import (
     BinOp,

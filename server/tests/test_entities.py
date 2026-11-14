@@ -13,6 +13,9 @@ from rq.job import Job
 from sqlalchemy import select
 
 from processing.common.llm import ModelClient
+from processing.entities import processor
+from processing.entities.interface import EntityInput, EntityOutput, EntityProcessor
+from processing.entities.corpus import parse_drafts
 from processing.entities.identifiers import assign_identities, read_identities
 
 from app import database, queue, storage
@@ -156,7 +159,7 @@ def test_completed_ocr_is_not_an_extraction_queue_entry(ready, monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("Extraction must not start before the document is queued")
 
-    monkeypatch.setattr(job, "tag_document", unexpected)
+    monkeypatch.setattr(processor, "tag_document", unexpected)
     job.process_entities(revisions[0])
     details = request("GET", f"/reports/{report_id}")[1]
     assert details["processing_status"] == "idle"
@@ -206,13 +209,13 @@ def test_extraction_failure_can_be_retried_without_repeating_successes(ready, mo
     report_id, revisions, pending = ready
     path = f"/reports/{report_id}"
     request("POST", path + "/run-entity-extraction")
-    original = job.tag_document
+    original = processor.tag_document
     job.process_entities(revisions[0])
 
     def fail(*args, **kwargs):
         raise RuntimeError("LLM unavailable")
 
-    monkeypatch.setattr(job, "tag_document", fail)
+    monkeypatch.setattr(processor, "tag_document", fail)
     with pytest.raises(RuntimeError, match="LLM unavailable"):
         job.process_entities(revisions[1])
     response = request("GET", path)[1]
@@ -225,10 +228,10 @@ def test_extraction_failure_can_be_retried_without_repeating_successes(ready, mo
     retry_path = path + (f'/documents/{response["documents"][1]["id"]}' if per_document else "")
     assert request("POST", retry_path + "/run-entity-extraction")[0] == 200
     assert pending == revisions + [revisions[1]]
-    monkeypatch.setattr(job, "tag_document", original)
+    monkeypatch.setattr(processor, "tag_document", original)
     job.process_entities(revisions[1])
     assert request("GET", path)[1]["processing_status"] == "completed"
-    monkeypatch.setattr(job, "tag_document", fail)
+    monkeypatch.setattr(processor, "tag_document", fail)
     job.process_entities(revisions[0])  # Completed jobs are harmless if delivered twice.
     job.process_entities(999999)
 
@@ -280,7 +283,7 @@ def test_document_retry_requires_entities_stage_and_report_ownership(ready):
 def test_date_normalization_finishes_before_extraction_is_completed(ready, monkeypatch, llm_client):
     report_id, revisions, _ = ready
     request("POST", f"/reports/{report_id}/run-entity-extraction")
-    monkeypatch.setattr(job, "tag_document", lambda *args, **kwargs: (
+    monkeypatch.setattr(processor, "tag_document", lambda *args, **kwargs: (
         '<ent t="date">Январь 2026</ent>', 0
     ))
 
@@ -308,7 +311,7 @@ def test_normalization_failure_does_not_publish_unnormalized_extraction(ready, m
     def fail(*args, **kwargs):
         raise RuntimeError("Date normalization unavailable")
 
-    monkeypatch.setattr(job, "normalize_document", fail)
+    monkeypatch.setattr(processor, "normalize_document", fail)
     with pytest.raises(RuntimeError, match="Date normalization unavailable"):
         job.process_entities(revisions[0])
     with database.session_scope() as session:
@@ -349,7 +352,7 @@ def test_obsolete_revision_is_not_extracted(ready, monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("An obsolete revision must not invoke the model")
 
-    monkeypatch.setattr(job, "tag_document", unexpected)
+    monkeypatch.setattr(processor, "tag_document", unexpected)
     job.process_entities(revisions[0])
 
 
@@ -357,7 +360,7 @@ def test_extraction_calls_run_outside_report_transaction(ready, monkeypatch):
     report_id, revisions, _ = ready
     request("POST", f"/reports/{report_id}/run-entity-extraction")
     barrier = Barrier(2, timeout=10)
-    original = job.tag_document
+    original = processor.tag_document
 
     def extract(*args, **kwargs):
         barrier.wait()  # Both jobs must claim the report before either finishes.
@@ -368,7 +371,7 @@ def test_extraction_calls_run_outside_report_transaction(ready, monkeypatch):
         barrier.wait()
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(job, "tag_document", extract)
+    monkeypatch.setattr(processor, "tag_document", extract)
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(job.process_entities, revisions))
     assert request("GET", f"/reports/{report_id}")[1]["processing_status"] == "completed"
@@ -508,7 +511,7 @@ def test_stale_extraction_cannot_publish_or_mark_replacement_failed(ready, monke
             raise RuntimeError("Obsolete normalization failed")
         return TAGGED
 
-    monkeypatch.setattr(job, "normalize_document", normalize)
+    monkeypatch.setattr(processor, "normalize_document", normalize)
     if fails:
         with pytest.raises(RuntimeError, match="Obsolete normalization failed"):
             job.process_entities(revisions[0])
@@ -585,9 +588,32 @@ def test_failed_publication_rolls_back_ids_and_preserves_current_markup(ready, m
 def test_extraction_processor_cannot_supply_its_own_identity(ready, monkeypatch):
     report_id, revisions, _ = ready
     request("POST", f"/reports/{report_id}/run-entity-extraction")
-    monkeypatch.setattr(job, "normalize_document", lambda *args, **kwargs: canonical())
-    with pytest.raises(HTTPException, match="идентификаторы"):
+    monkeypatch.setattr(processor, "normalize_document", lambda *args, **kwargs: canonical())
+    with pytest.raises(ValueError, match="drafts without identities"):
         job.process_entities(revisions[0])
     with database.session_scope() as session:
         assert session.get(ReportEntityCounter, report_id) is None
         assert session.get(File, revisions[0]).entities_path is None
+
+
+def test_worker_can_use_an_alternative_processor_without_model_construction(ready, monkeypatch):
+    report_id, revisions, _ = ready
+    request("POST", f"/reports/{report_id}/run-entity-extraction")
+    inputs = []
+
+    class FakeProcessor(EntityProcessor):
+        def process(self, source: EntityInput, *, logger, on_token=None) -> EntityOutput:
+            inputs.append(source)
+            assert source.markdown == MARKDOWN
+            logger.info("Alternative extraction strategy")
+            return EntityOutput(TAGGED, parse_drafts(TAGGED))
+
+    monkeypatch.setattr(job, "create_entity_processor", lambda: FakeProcessor())
+    monkeypatch.setattr(job, "create_model_client", lambda: pytest.fail("The worker must use the injected processor"))
+    job.process_entities(revisions[0])
+    assert len(inputs) == 1
+    with database.session_scope() as session:
+        file = session.get(File, revisions[0])
+        assert file.status == "completed"
+        assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == canonical()
+        assert session.get(ReportEntityCounter, report_id).next_entity_id == 1

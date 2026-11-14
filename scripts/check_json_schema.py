@@ -8,15 +8,15 @@ This makes paid model requests. No API credentials are printed.
 """
 
 import logging
-from pathlib import Path
 from typing import Any, Callable, cast
 
 import jsonschema
 
-from checkier.config import DEFAULT_TAG_MODEL, PipelineConfig, load_api_credentials
+from checkier.config import DEFAULT_TAG_MODEL, load_api_credentials
 from infrastructure.llm import HttpModelAdapter
 from processing.common.llm import LLMError, ModelClient, ModelRequestOptions, _json_from_text
-from checkier.stage1_tag import tag_document
+from processing.entities.tagging import tag_document
+from processing.entities.options import EntityOptions
 
 SCHEMA = {
     "type": "object",
@@ -82,7 +82,7 @@ def main() -> None:
     if isinstance(nl_schema, Exception):
         failures.append("natural-language schema was not rejected correctly")
 
-    cfg = PipelineConfig(data_dir=Path("."), out_dir=Path("."), max_retries=1, request_timeout=120)
+    cfg = EntityOptions(max_retries=1, request_timeout=120)
     tagged = probe("quoted-date tagging", lambda: tag_document(
         cfg, "date-check.md", 'Начало: "10" мая 2026 г.\n', client=client, logger=logger,
     )[0])

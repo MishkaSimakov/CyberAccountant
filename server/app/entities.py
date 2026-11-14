@@ -5,20 +5,17 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from processing.entities.identifiers import assign_identities, read_identities
-from processing.entities.markup import parse_entity_tags
+from processing.entities.markup import parse_entity_tags, validate_markup
 
 from .entity_ids import reserve_entity_ids
 from .models import EntityFile
-from .schemas.entities import EntityAttributes
 
 
 def prepare_entities(content: str) -> str:
     """Validate tags without allocating registry IDs or altering source text."""
 
     try:
-        read_identities(content)
-        for tag in parse_entity_tags(content):
-            EntityAttributes.model_validate(tag.attributes)
+        validate_markup(content)
         return content
     except ValueError as error:
         raise HTTPException(422, "Проверьте разметку <ent>, атрибуты и идентификаторы сущностей.") from error

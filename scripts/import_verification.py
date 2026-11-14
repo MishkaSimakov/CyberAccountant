@@ -19,22 +19,25 @@ import re
 import sys
 from dataclasses import dataclass
 from hashlib import sha256
+from html import escape
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 from app import storage
 from app.database import session_scope
-from app.entities import prepare_entities
+from app.entity_ids import reserve_entity_ids
 from app.jobs.verification import process_verification
-from app.models import EntityFile, File, Report, Requirement
+from app.models import EntityFile, File, Report, ReportEntityCounter, Requirement
 from app.schemas.reports import ReportCreate
 from app.schemas.requirements import requirement_adapter
 from app.services.requirements import verification_result_file
-from app.target_row import find_target_row_keys
+from app.target_row import find_target_row_spans
 from app.verification import validate_formula
-from checkier.entities import ATTR_RE, ENT_RE, build_registry, parse_tag_attrs
-from processing.common.formula import tokenize
+from processing.entities.corpus import build_registry
+from processing.common.formula import BinOp, collect_ids, parse, tokenize
+from processing.entities.identifiers import MNEMONIC_CAPACITY, id_for_mnemonic, mnemonic_for_id, read_identities
+from processing.entities.markup import parse_entity_tags, validate_attributes, validate_markup
 
 REFERENCE_RE = re.compile(r"#\d+|[a-z]+-[a-z]+")
 
@@ -45,7 +48,7 @@ class Document:
     original: str
     text: str
     role: str
-    ids: list[int | str]
+    ids: list[int | str | None]
 
 
 def entity_key(value: int | str) -> int | str:
@@ -91,35 +94,119 @@ def load_documents(directory: Path, final_report: Path) -> list[Document]:
         names.add(name)
         original = path.read_text(encoding="utf-8-sig")
         ids = []
-
-        def strip_id(match):
-            attributes = match.group(1)
-            parsed = parse_tag_attrs(attributes)
-            if ATTR_RE.sub("", attributes).strip() or len(ATTR_RE.findall(attributes)) != len(parsed):
-                raise ValueError(f"{path}: malformed or duplicate entity attributes.")
-            old_id = parsed.get("id")
-            if old_id is None:
-                raise ValueError(f"{path}: entity without an id.")
-            ids.append(entity_key(old_id))
-            attributes = re.sub(r'\bid\s*=\s*"[^"]*"', "", attributes)
-            return f"<ent {attributes}>{match.group(2)}</ent>"
-
-        text = prepare_entities(ENT_RE.sub(strip_id, original))
+        pieces, end = [], 0
+        for tag in parse_entity_tags(original):
+            attrs = tag.attributes.copy()
+            validate_attributes(attrs)
+            old_id = entity_key(attrs["id"]) if "id" in attrs else None
+            mnemonic = attrs.get("mnemonic")
+            if isinstance(old_id, str):
+                if mnemonic is not None and mnemonic != old_id:
+                    raise ValueError("Conflicting supplied mnemonic identity.")
+                mnemonic = old_id
+                attrs.pop("id")
+            if isinstance(old_id, int):
+                if old_id >= MNEMONIC_CAPACITY:
+                    raise ValueError("Entity ID exceeds mnemonic capacity.")
+                attrs["id"] = str(old_id)
+                mnemonic = mnemonic if mnemonic is not None else mnemonic_for_id(old_id)
+            if mnemonic is not None:
+                id_for_mnemonic(mnemonic)
+                attrs["mnemonic"] = mnemonic
+            ids.append(old_id if old_id is not None else mnemonic)
+            fields = " ".join(f'{key}="{escape(value, quote=True)}"' for key, value in attrs.items())
+            pieces.extend((original[end:tag.span[0]], f"<ent {fields}>{original[slice(*tag.body_span)]}</ent>"))
+            end = tag.span[1]
+        pieces.append(original[end:])
+        text = "".join(pieces)
         documents.append(Document(name, original, text, "card" if path == final_report else "data", ids))
     if not any(document.ids for document in documents if document.role == "card"):
         raise ValueError("The final report must contain <ent> tags; plain Markdown needs entity extraction first.")
+    supplied_ids, supplied_mnemonics = set(), set()
+    for document in documents:
+        for tag in parse_entity_tags(document.text):
+            attrs = tag.attributes
+            if "id" in attrs:
+                num = int(attrs["id"])
+                if num in supplied_ids:
+                    raise ValueError(f"Duplicate entity ID: {num}.")
+                supplied_ids.add(num)
+            if "mnemonic" in attrs:
+                mnemonic = attrs["mnemonic"]
+                if mnemonic in supplied_mnemonics:
+                    raise ValueError(f"Duplicate entity mnemonic: {mnemonic}.")
+                supplied_mnemonics.add(mnemonic)
     return documents
+
+
+def canonicalize_documents(session, report_id: int, documents: list[Document]) -> None:
+    """Retain supplied identities and allocate missing numbers under the report lock."""
+    tags = [tag for document in documents for tag in parse_entity_tags(document.text)]
+    retained = [int(tag.attributes["id"]) for tag in tags if "id" in tag.attributes]
+    # Imported pairs may predate the bijective mapping. Keep future generated
+    # mnemonics clear of their supplied words as well as their numeric IDs.
+    retained.extend(id_for_mnemonic(tag.attributes["mnemonic"]) for tag in tags if "mnemonic" in tag.attributes)
+    next_id = max(retained, default=-1) + 1
+    session.add(ReportEntityCounter(report_id=report_id, next_entity_id=next_id))
+    session.flush()
+    missing = sum("id" not in tag.attributes for tag in tags)
+    reserved = iter(reserve_entity_ids(session, report_id, missing))
+    for document in documents:
+        pieces, end = [], 0
+        for tag in parse_entity_tags(document.text):
+            attrs = tag.attributes.copy()
+            num = int(attrs["id"]) if "id" in attrs else next(reserved)
+            attrs["id"] = str(num)
+            if "mnemonic" not in attrs:
+                attrs["mnemonic"] = mnemonic_for_id(num)
+            fields = " ".join(f'{key}="{escape(value, quote=True)}"' for key, value in attrs.items())
+            pieces.extend((document.text[end:tag.span[0]], f"<ent {fields}>{document.text[slice(*tag.body_span)]}</ent>"))
+            end = tag.span[1]
+        pieces.append(document.text[end:])
+        document.text = "".join(pieces)
+        validate_markup(document.text, require_identities=True)
+    read_identities("\n".join(document.text for document in documents))
+
+
+def validate_inputs(requirements: list[dict], documents: list[Document]) -> None:
+    """Reject bad formulas and unknown aliases before opening a database transaction."""
+    known = set()
+    for document in documents:
+        known.update(key for key in document.ids if key is not None)
+        for tag in parse_entity_tags(document.text):
+            if "id" in tag.attributes:
+                known.add(int(tag.attributes["id"]))
+            if "mnemonic" in tag.attributes:
+                known.add(tag.attributes["mnemonic"])
+
+    def is_boolean(node):
+        return isinstance(node, BinOp) and (node.op in {"==", "!=", "<", "<=", ">", ">="}
+            or node.op in {"&&", "||"} and is_boolean(node.left) and is_boolean(node.right))
+
+    for requirement in requirements:
+        if requirement["kind"] == "formula":
+            ast = parse(requirement["equation"])
+            if not is_boolean(ast):
+                raise ValueError("A requirement formula must be a boolean comparison.")
+            keys = collect_ids(ast)
+        else:
+            keys = {entity_key(key) for key in requirement["ids_related"]}
+        if keys - known:
+            raise ValueError(f"Unknown entity ID in requirements: {keys - known}")
 
 
 def remap_requirements(requirements: list[dict], documents: list[Document], file_keys: dict[str, str]):
     registry = build_registry({file_keys[document.name]: (document.role, document.text) for document in documents})
     aliases = {}
     for document in documents:
-        entities = [entity for entity in registry.entities if entity.file == file_keys[document.name]]
-        for entity, old_id in zip(entities, document.ids, strict=True):
-            if old_id in aliases:
-                raise ValueError(f"Duplicate entity ID: {old_id!r}. IDs must be unique across the bundle.")
-            aliases[old_id] = entity.num
+        identities = read_identities(document.text)
+        for identity, old_id in zip(identities, document.ids, strict=True):
+            for key in (old_id, identity.num, identity.mnemonic):
+                if key is None:
+                    continue
+                if key in aliases and aliases[key] != identity.num:
+                    raise ValueError(f"Conflicting entity alias: {key!r}.")
+                aliases[key] = identity.num
 
     def lookup(key):
         key = entity_key(key)
@@ -152,16 +239,26 @@ def import_bundle(requirements_path: Path, entities: Path, final_report: Path, *
     metadata = ReportCreate(name=name, target_row=target_row)
     requirements = load_requirements(requirements_path)
     documents = load_documents(entities, final_report)
-    source_keys = {document.name: document.name for document in documents}
-    _, registry = remap_requirements(requirements, documents, source_keys)
-    if metadata.target_row and not find_target_row_keys(
-            {document.name: (document.role, document.text) for document in documents}, registry, metadata.target_row):
-        raise ValueError(f"Target row not found in final report: {metadata.target_row!r}")
+    validate_inputs(requirements, documents)
+    if metadata.target_row:
+        matches = False
+        for document in documents:
+            if document.role != "card":
+                continue
+            spans = find_target_row_spans(document.text, metadata.target_row)
+            matches = any(start <= tag.span[0] and tag.span[1] <= end
+                          for tag in parse_entity_tags(document.text) for start, end in spans)
+        if not matches:
+            raise ValueError(f"Target row not found in final report: {metadata.target_row!r}")
 
     with session_scope() as session:
         report = Report(**metadata.model_dump(), stage="verification", processing_status="queued")
         session.add(report)
         session.flush()
+        session.refresh(report, with_for_update=True)
+        canonicalize_documents(session, report.id, documents)
+        # Validate every supplied reference before writing any artifacts.
+        remap_requirements(requirements, documents, {document.name: document.name for document in documents})
         files = []
         for document in documents:
             content = document.original.encode("utf-8")

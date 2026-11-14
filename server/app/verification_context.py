@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from checkier import PipelineConfig
-from checkier.entities import EntityRegistry
+from processing.common.registry import EntityRegistry
 
 from .models import Report
 

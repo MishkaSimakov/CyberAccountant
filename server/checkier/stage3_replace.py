@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 
 from checkier.config import PipelineConfig
-from checkier.entities import ENT_RE, EntityRegistry, parse_tag_attrs
+from processing.entities.markup import ENT_RE, parse_tag_attrs
+from processing.common.registry import EntityRegistry
 
 
 def run_replace(

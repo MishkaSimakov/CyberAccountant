@@ -6,7 +6,7 @@ import json
 import re
 
 from checkier.config import PipelineConfig
-from checkier.entities import EntityRegistry
+from processing.common.registry import EntityRegistry
 from checkier.solver import Fishy, Relation, Verdict
 
 
@@ -124,9 +124,6 @@ def build_report(
         "relations": rel_summary,
         "summary": summary,
     }
-    cfg.report_path.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
-    )
     return report
 
 

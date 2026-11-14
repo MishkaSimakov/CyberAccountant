@@ -8,13 +8,12 @@ from pathlib import Path
 
 from checkier.config import PipelineConfig
 from processing.common.llm import ModelClient
-from checkier.entities import EntityRegistry
+from processing.common.registry import EntityRegistry
 from checkier.report import build_report
 from checkier.solver import solve_system
 from checkier.stage0_ingest import run_ingest
 from checkier.stage1_tag import run_tag
-from checkier.stage2_registry import run_registry
-from checkier.stage2_dates import run_date_normalization
+from checkier.entity_adapter import run_registry, normalize_dates
 from checkier.stage3_replace import run_replace
 from checkier.stage5_relations import run_relations
 
@@ -86,10 +85,9 @@ class Pipeline:
         """LLM-normalize period-style date raws ('Январь 2026' -> ordinal of
         01.01.2026) for date entities the deterministic parser could not
         handle. Saves the registry; call after ``registry()``."""
-        reg = self._registry or self.registry()
-        changed = run_date_normalization(self.cfg, reg, on_token=on_token, client=self.client, logger=self.logger)
-        if changed:
-            reg.save(self.cfg.entities_path)
+        self.registry()
+        self._registry, changed = normalize_dates(self.cfg, self._tagged, on_token=on_token,
+                                                  client=self.client, logger=self.logger)
         return changed
 
     def replace(self) -> dict[str, str]:
@@ -128,9 +126,12 @@ class Pipeline:
         reg = self._registry or self.registry()
         relations, fishy, verdicts, dangling = self.solve()
         scope = self._scope or self.scope()
-        return build_report(
+        report = build_report(
             self.cfg, mapping, reg, relations, fishy, verdicts, dangling, scope
         )
+        self.cfg.report_path.parent.mkdir(parents=True, exist_ok=True)
+        self.cfg.report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        return report
 
     def run_all(self) -> dict:
         self.ingest()

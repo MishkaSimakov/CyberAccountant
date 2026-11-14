@@ -1,15 +1,15 @@
 """Prepare one corpus, collect generator outputs, and evaluate them together."""
 
-import json
 import logging
 
 from checkier import PipelineConfig
 from processing.common.llm import ModelClient
-from checkier.entities import EntityRegistry, build_registry
+from processing.common.documents import DocumentRevision
+from processing.common.registry import EntityRegistry
+from processing.entities.corpus import build_registry
 from processing.common.formula import BinOp, FormulaError, collect_ids, parse
 from checkier.report import build_report
 from checkier.solver import solve_system
-from checkier.stage3_replace import run_replace
 
 from . import storage
 from .generators.insurance import generate_insurance
@@ -26,7 +26,8 @@ def validation_registry(files: list[File]) -> EntityRegistry:
     return build_registry({str(file.file_id): (
         "card" if file.role == "final_report" else "data",
         storage.artifact_path(file.entities_path).read_text(encoding="utf-8"),
-    ) for file in files})
+    ) for file in files}, revisions={str(file.file_id): DocumentRevision(file.report_id, file.file_id, file.version)
+                                    for file in files})
 
 
 def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
@@ -56,7 +57,6 @@ def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
 def prepare_verification(report: Report, files: list[File]) -> VerificationContext:
     directory = storage.artifact_path(f"{report.id}/verification")
     cfg = PipelineConfig(data_dir=directory, out_dir=directory, id_style="numeric")
-    cfg.tagged_dir.mkdir(parents=True, exist_ok=True)
     tagged = {}
     mapping = {}
     for file in files:
@@ -65,14 +65,13 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
         text = storage.artifact_path(file.entities_path).read_text(encoding="utf-8")
         tagged[key] = (role, text)
         mapping[key] = {"role": role, "original": file.name, "version": file.version}
-        (cfg.tagged_dir / f"{key}.md").write_text(text, encoding="utf-8")
-    registry = build_registry(tagged, seed=cfg.seed)
-    registry.save(cfg.entities_path)
+    registry = build_registry(tagged, revisions={str(file.file_id): DocumentRevision(
+        file.report_id, file.file_id, file.version) for file in files})
     target_row = find_target_row_keys(tagged, registry, report.target_row)
     if report.target_row and not target_row:
         raise ValueError("Не удалось найти проверяемую строку в итоговом отчёте.")
     scope = {"target_row": sorted(target_row) if target_row else None, "target_label": report.target_row}
-    documents = run_replace(cfg, tagged, registry)
+    documents = {key: text for key, (_role, text) in tagged.items()}
     return VerificationContext(cfg, documents, registry, scope, mapping, report)
 
 
@@ -98,7 +97,6 @@ def generate_requirements(context: VerificationContext, *, client: ModelClient,
             definition = dict(kind="assertion", condition=condition, text=raw.get("text", raw.get("evidence")),
                               ids_related=[by_key.get(key, key) for key in raw["ids_related"]])
         requirements.append(dict(definition, source=raw["source"]))
-    context.config.relations_path.write_text(json.dumps(requirements, ensure_ascii=False), encoding="utf-8")
     return requirements
 
 

@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from checkier.entities import EntityRegistry
+from entity_fixtures import EntityRegistry
 from processing.common.formula import Id, Num, Str, collect_ids, parse
 from checkier.solver import Relation, solve_system
 from checkier.substitutor import Substitutor
