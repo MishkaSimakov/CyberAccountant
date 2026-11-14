@@ -25,7 +25,7 @@ def validation_registry(files: list[File]) -> EntityRegistry:
     return build_registry({str(file.file_id): (
         "card" if file.role == "final_report" else "data",
         storage.artifact_path(file.entities_path).read_text(encoding="utf-8"),
-    ) for file in files})
+    ) for file in files}, seed=PipelineConfig.seed)
 
 
 def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
@@ -53,7 +53,7 @@ def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
 
 def prepare_verification(report: Report, files: list[File]) -> VerificationContext:
     directory = storage.artifact_path(f"{report.id}/verification")
-    cfg = PipelineConfig(data_dir=directory, out_dir=directory, id_style="numeric")
+    cfg = PipelineConfig(data_dir=directory, out_dir=directory, id_style="mnemonic")
     cfg.tagged_dir.mkdir(parents=True, exist_ok=True)
     tagged = {}
     mapping = {}

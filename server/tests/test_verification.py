@@ -147,6 +147,29 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
     assert len(prompts) == 1 and pending == [report_id, report_id]
 
 
+def test_generated_mnemonics_pass_verification_validation(reviewed, monkeypatch):
+    report_id, _, _ = reviewed
+    generated = []
+
+    def mnemonic_relation(context):
+        equation = " == ".join(entity.mnemonic for entity in context.registry.entities)
+        generated.append(equation)
+        return [{"equation": equation, "tag": "agg"}]
+
+    monkeypatch.setattr(verification, "GENERATORS", {"llm": mnemonic_relation})
+    generate(report_id)
+    definition = requirements.report_requirements(report_id).requirements[0]
+    assert definition.kind == "formula"
+    assert definition.equation == generated[0]
+
+    requirements.run_verification(report_id)
+    process_verification(report_id)
+    result = request("GET", f"/reports/{report_id}/verification-result")[1]
+    assert result["requirement_results"][0]["verdict"] == "false"
+    assert result["requirement_results"][0]["ids_related"] == [0, 1]
+    assert result["relations"][0]["equation"] == generated[0]
+
+
 def test_generators_share_context_and_all_requirements_reach_one_solver(reviewed, monkeypatch):
     report_id, revisions, _ = reviewed
     with database.session_scope() as session:

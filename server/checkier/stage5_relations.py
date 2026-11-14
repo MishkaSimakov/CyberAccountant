@@ -47,6 +47,11 @@ Return this exact JSON format (array of objects):
 2. Textual findings — when data looks wrong or cannot be verified with an equation:
    {{"evidence": "one short sentence describing the problem", "ids_related": ["{example_id}"], "verdict": "false"}}
    Use verdict "unverifiable" when evidence is insufficient, and "false" for an identified problem.
+   Positive examples:
+   {{"evidence": "example_id_2-example_id_1 gives negative value, but it is money, this should be positive", "ids_related": ["example_id_1","example_id_2"], "verdict": "false"}}
+   {{"evidence": "example_id_1 is fractional, but it it is number of employees, this should be integer non-negative", "ids_related": ["example_id_1"], "verdict": "false"}}
+   Negative examples:
+   {{"evidence": "example_id_2-example_id_1 gives 123, but it should be equal to example_id_3, which is 345", "ids_related": ["example_id_1","example_id_2","example_id_3"], "verdict": "false"}}
 
 Formula language:
 - ids: {id_description}
@@ -58,7 +63,7 @@ Formula language:
 
 Rules:
 - PREFER entity IDs over literal numbers.
-- Every CARD cell of the target report row must appear in at least one equation,
+- As many as possible card cells of the target report row must appear in at least one equation,
   or be explicitly marked unverifiable via a fishy entry.
 - Cover ALL aggregations: card totals == sum of their components (from both card and data).
 - Cross-document identity: if the same logical value appears in two docs, relate them with tag "ref".
