@@ -72,9 +72,11 @@ def generate_insurance(context: VerificationContext) -> list[dict]:
     if not targets:
         return []  # This generator does not apply to other report columns.
     target = targets[0]
+    document = context.mapping.get(target.file, {}).get("original")
+    label = "Страховые взносы 0300" + (f" в «{document}»" if document else "")
 
     def unverifiable(reason):
-        return [{"evidence": f"Страховые взносы 0300: {reason}",
+        return [{"evidence": f"{label}: {reason}",
                  "ids_related": [key(e) for e in targets], "verdict": "unverifiable"}]
 
     if len(targets) != 1:
@@ -135,7 +137,7 @@ def generate_insurance(context: VerificationContext) -> list[dict]:
                 continue
             months[ym] = number, value, e
         except (ValueError, TypeError, IndexError, InvalidOperation) as error:
-            problems.append(f"{file}: {error}")
+            problems.append(f"{entry.get('original') or file}: {error}")
     required, cursor = set(), start.replace(day=1)
     while cursor <= end:
         required.add((cursor.year, cursor.month))
@@ -146,4 +148,4 @@ def generate_insurance(context: VerificationContext) -> list[dict]:
     if problems:
         return unverifiable("; ".join(problems))
     return [{"equation": ref(target) + " == " + " + ".join(ref(months[m][2]) for m in sorted(months)),
-             "tag": "agg"}]
+             "tag": "agg", "text": f"{label} должны равняться сумме месячных расчётов."}]

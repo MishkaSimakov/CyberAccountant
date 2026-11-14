@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 
 from checkier.config import PipelineConfig
-from checkier.entities import ENT_RE, EntityRegistry
+from checkier.entities import ATTR_RE, ENT_RE, EntityRegistry
 from checkier.llm import call_llm_json
 from checkier.schemas import RELATIONS_SCHEMA
 
 REL_PROMPT = """\
 You are an auditor building a system of equations that pins down every value
 in the summary report (the "card") using the primary supporting documents.
-Entity references look like <ent id="{example_id}" t="amount" value="100">raw text</ent>.
+Entity references look like {example_entity}.
 Use {example_key} in formulas to refer to that entity.
 
+{entity_values_section}
 === TASK ===
 Verification scope (JSON):
 {scope}
@@ -25,8 +27,7 @@ Request documents:
 {task_documents}
 
 Read the card and supporting documents below. Write relations that verify the
-requested card row. The registry lists normalized entity metadata but no
-internal filenames.
+requested card row.
 
 === CARD ===
 {card_documents}
@@ -34,40 +35,64 @@ internal filenames.
 === SUPPORTING DOCUMENTS ===
 {supporting_documents}
 
-=== ENTITY REGISTRY ===
-{registry}
-
 === OUTPUT ===
 Return this exact JSON format (array of objects):
 
-1. Equations — every relation that must hold between entity ids:
-   {{"equation": "{example_equation}", "tag": "agg"}}
+Equations — every relation that must hold between entity ids:
+   {{"text": "Annual salary is sum of monthly salaries", "equation": "{example_equation}", "tag": "agg"}}
    tags: scope (contract or reporting period) | agg (aggregation) | ref (cross-doc identity)
-
-2. Textual findings — when data looks wrong or cannot be verified with an equation:
-   {{"evidence": "one short sentence describing the problem", "ids_related": ["{example_id}"], "verdict": "false"}}
-   Use verdict "unverifiable" when evidence is insufficient, and "false" for an identified problem.
 
 Formula language:
 - ids: {id_description}
 - ops: + - * / ( ) == != < <= > >= && ||
-- functions: norm(id) — normalized value; raw(id) — unnormalized numeric value
 - dates: bare date IDs and start(id) mean the inclusive start ordinal; end(id)
   means the inclusive end ordinal; DD.MM.YYYY literals compare with both
 - strings only in == / != comparisons
 
 Rules:
-- PREFER entity IDs over literal numbers.
-- Every CARD cell of the target report row must appear in at least one equation,
-  or be explicitly marked unverifiable via a fishy entry.
-- Cover ALL aggregations: card totals == sum of their components (from both card and data).
-- Cross-document identity: if the same logical value appears in two docs, relate them with tag "ref".
+- Write equations without evaluating them numerically. The next step will evaluate them and report results back.
+- Generate expected relationships from document meaning, regardless of whether the recorded amounts satisfy them.
+  A mismatch is a reason to emit the check. Never omit an equation, weaken it to an inequality, or invent a balancing
+  amount to make it pass. A difference between a card total and its supporting sum does not by itself imply a missing
+  document; emit the equality using all relevant in-scope supporting amounts so verification can report the discrepancy.
+- For values in a card try to constrain them with values from supporting docs. Double-check that you didn't miss any parts in sums.
+- Add a short text description for equations. It shouldn't repeat formula for requirement.
+- Cross-document identity: if the same logical value appears in card and in supporting doc, relate them with tag "ref".
 - For period scope, use whole-interval containment: period start <= start(id)
   and end(id) <= period end. A bare date alone checks only its start.
 - Documents for other contracts or outside the reporting period must not contribute to the target row's totals.
+- Do not produce checks for supporting documents. Consider them as ground-truth. Requirements should verify values from
+  card based on values from supporting documents.
 - Preserve supplied normalized values; do not replace unknown values with guesses.
 - Output ONLY the JSON array, nothing else.
+
+Ответ должен быть на русском языке.
 """
+
+HIDDEN_ENTITY_VALUES_PROMPT = """\
+=== HIDDEN ENTITY VALUES ===
+Entity text and normalized value, start, and end attributes are intentionally
+omitted from every entity tag, including tags in document labels. Empty tags
+represent entities whose values are retained by the evaluator, not missing data
+or zero. IDs, types, units, and normalization multipliers remain available.
+Infer relationships from the surrounding text, table structure, and entity
+metadata. Do not guess hidden values, match entities by assumed value,
+or evaluate equations; the next step evaluates them using the retained values.
+"""
+
+
+def _hide_entity_values(text: str) -> str:
+    """Remove entity contents and value attributes from a prompt-only copy."""
+
+    def redact(match: re.Match) -> str:
+        attrs = " ".join(
+            f'{key}="{value}"'
+            for key, value in ATTR_RE.findall(match.group(1))
+            if key not in {"value", "start", "end"}
+        )
+        return f"<ent {attrs}></ent>"
+
+    return ENT_RE.sub(redact, text)
 
 
 def _render_document(
@@ -135,16 +160,24 @@ def generate_relations(
         entry = mapping.get(key, {})
         role = entry.get("role") or roles.get(key, "data")
         group = role if role in groups else "data"
-        groups[group].append(_render_document(
+        document = _render_document(
             text, entry, cfg.relation_filename_mode, f"Document {index}",
-        ))
+        )
+        if cfg.relation_hide_entity_values:
+            document = _hide_entity_values(document)
+        groups[group].append(document)
+    example_id = "0" if cfg.id_style == "numeric" else "crumble-wink"
+    example_entity = f'<ent id="{example_id}" t="amount" value="100">raw text</ent>'
+    if cfg.relation_hide_entity_values:
+        example_entity = _hide_entity_values(example_entity)
     prompt = REL_PROMPT.format(
         task_documents="\n\n".join(groups["request"]) or "No separate request document supplied.",
         card_documents="\n\n".join(groups["card"]) or "No card document supplied.",
         supporting_documents="\n\n".join(groups["data"]) or "No supporting documents supplied.",
-        registry="\n".join(_registry_lines(cfg, registry)),
+        registry="" if cfg.relation_hide_entity_values else "\n".join(_registry_lines(cfg, registry)),
         scope=json.dumps(scope, ensure_ascii=False),
-        example_id="0" if cfg.id_style == "numeric" else "crumble-wink",
+        example_entity=example_entity,
+        entity_values_section=HIDDEN_ENTITY_VALUES_PROMPT if cfg.relation_hide_entity_values else "",
         example_key="#0" if cfg.id_style == "numeric" else "crumble-wink",
         example_equation="#0 + #1 == #2" if cfg.id_style == "numeric" else "crumble-wink + able-fog == rapid-castle",
         id_description="# followed by a numeric ID, such as #0" if cfg.id_style == "numeric" else "mnemonic word pairs, such as crumble-wink",
@@ -156,7 +189,7 @@ def generate_relations(
         schema_name="relations",
         timeout=cfg.request_timeout,
         max_retries=cfg.max_retries,
-        reasoning=cfg.reasoning,
+        reasoning=cfg.rel_reasoning,
     )
     if isinstance(relations, dict):
         relations = [relations]

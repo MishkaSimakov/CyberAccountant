@@ -45,12 +45,13 @@ def test_invalid_outer_json_is_not_replaced_with_a_nested_object(text):
 
 def test_logs_every_retry_before_validation(tmp_path, monkeypatch):
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    outputs = ["```json\r\nnot JSON: Привет\r\n", '```json\n[{"equation": "#1 == #2"}]']
+    outputs = ["```json\r\nnot JSON: Привет\r\n",
+               '```json\n[{"equation": "#1 == #2", "text": "Totals must match."}]']
     remaining = iter(outputs)
     monkeypatch.setattr(llm, "_post", lambda *args: {"output_text": next(remaining)})
 
     assert llm.call_llm_json("prompt", "test-model", schema=RELATIONS_SCHEMA, max_retries=1) == [
-        {"equation": "#1 == #2"},
+        {"equation": "#1 == #2", "text": "Totals must match."},
     ]
     files = sorted((tmp_path / "llm_outputs").glob("*.txt"))
     assert [path.read_bytes() for path in files] == [output.encode("utf-8") for output in outputs]
@@ -179,7 +180,7 @@ def test_parallel_file_logs_keep_model_outputs_isolated(tmp_path, monkeypatch):
 def test_interrupted_stream_keeps_partial_output_in_the_file_log(tmp_path, monkeypatch):
     output = "Частичный ответ\r\n" * 4_000
 
-    def stream(payload, timeout, on_token):
+    def stream(payload, timeout, on_token, on_reasoning=None):
         on_token(output)
         raise llm.LLMError("Stream interrupted")
 
@@ -201,7 +202,7 @@ def test_file_log_preserves_full_prompts_before_each_retry(tmp_path, monkeypatch
     prompts = []
     outputs = ["not JSON", "[]"]
 
-    def respond(payload, timeout, on_token=None):
+    def respond(payload, timeout, on_token=None, on_reasoning=None):
         sent_prompt = payload["input"]
         assert path.read_bytes().endswith(sent_prompt.encode("utf-8") + b"\n")
         prompts.append(sent_prompt)

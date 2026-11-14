@@ -1,10 +1,12 @@
 """Prepare one corpus, collect generator outputs, and evaluate them together."""
 
 import json
+import logging
 
 from checkier import PipelineConfig
 from checkier.entities import EntityRegistry, build_registry
-from checkier.formula import BinOp, FormulaError, collect_ids, parse
+from checkier.file_log import append_log, current_log_path
+from checkier.formula import BinOp, FormulaError, collect_ids, formula_user_message, parse
 from checkier.report import build_report
 from checkier.solver import solve_system
 from checkier.stage3_replace import run_replace
@@ -14,11 +16,11 @@ from .generators.insurance import generate_insurance
 from .generators.llm import generate_llm
 from .generators.scope import generate_scope
 from .models import File, Report
-from .target_row import find_target_row_keys
+from .target_row import find_target_row_keys, find_target_row_spans
 from .verification_context import VerificationContext
 
-
 GENERATORS = {"scope": generate_scope, "llm": generate_llm, "insurance": generate_insurance}
+logger = logging.getLogger(__name__)
 
 
 def validation_registry(files: list[File]) -> EntityRegistry:
@@ -30,6 +32,7 @@ def validation_registry(files: list[File]) -> EntityRegistry:
 
 def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
     """Check syntax and references without running the solver or any LLM calls."""
+
     def boolean_expression(node):
         if not isinstance(node, BinOp):
             return False
@@ -40,14 +43,17 @@ def validate_formula(equation: str, registry: EntityRegistry) -> str | None:
     try:
         ast = parse(equation)
         if not boolean_expression(ast):
-            return "Формула должна содержать сравнение, например #0 == #1 + #2."
+            raise FormulaError("An equation must produce a boolean value",
+                               user_message="Формула должна содержать сравнение, например #0 == #1 + #2.")
         known = {key for entity in registry.entities for key in (entity.num, entity.mnemonic)}
         unknown = collect_ids(ast) - known
         if unknown:
-            return "Неизвестные сущности: " + ", ".join(f"#{key}" if isinstance(key, int) else key
-                                                      for key in sorted(unknown, key=str))
+            raise FormulaError(f"Unknown entity IDs: {sorted(unknown, key=str)}",
+                               user_message="Неизвестные сущности: " + ", ".join(
+                                   f"#{key}" if isinstance(key, int) else key for key in sorted(unknown, key=str)))
     except (FormulaError, ValueError, RecursionError) as exc:
-        return str(exc)
+        logger.warning("Formula validation failed for %r: %s", equation, exc)
+        return formula_user_message(exc)
     return None
 
 
@@ -67,9 +73,10 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
     registry = build_registry(tagged, seed=cfg.seed)
     registry.save(cfg.entities_path)
     target_row = find_target_row_keys(tagged, registry, report.target_row)
-    if report.target_row and not target_row:
+    if report.target_row and not any(role == "card" and find_target_row_spans(text, report.target_row)
+                                     for role, text in tagged.values()):
         raise ValueError("Не удалось найти проверяемую строку в итоговом отчёте.")
-    scope = {"target_row": sorted(target_row) if target_row else None, "target_label": report.target_row}
+    scope = {"target_row": sorted(target_row) if target_row is not None else None, "target_label": report.target_row}
     documents = run_replace(cfg, tagged, registry)
     return VerificationContext(cfg, documents, registry, scope, mapping, report)
 
@@ -117,13 +124,22 @@ def evaluate_requirements(context: VerificationContext, requirements: list[dict]
         if requirement["kind"] == "formula":
             relation = next(relation_iter)
             ids = collect_ids(relation.ast) if relation.ast is not None else []
-            status, error = relation.status, relation.error
+            status, error, diagnostic = relation.status, relation.user_error, relation.error
         else:
             finding = next(finding_iter)
             ids = finding.ids_related
             unknown = [key for key in ids if key not in by_key]
             status = "error" if unknown else finding.verdict
-            error = f"Unknown entity IDs: {unknown}" if unknown else None
+            diagnostic = f"Unknown entity IDs: {unknown}" if unknown else None
+            error = "Неизвестные сущности: " + ", ".join(map(str, unknown)) + "." if unknown else None
+        if diagnostic:
+            message = (f"Report {context.report.id}, requirement {requirement['id']} ({status}), "
+                       f"equation {requirement.get('equation')!r}: {diagnostic}")
+            log = logger.warning if status == "error" else logger.info
+            log("%s", message)
+            log_path = current_log_path.get()
+            if log_path is not None:
+                append_log(log_path, message + "\n")
         results.append(dict(requirement_id=requirement["id"], verdict=status, error=error,
                             ids_related=sorted({by_key[key] for key in ids if key in by_key})))
 

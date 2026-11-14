@@ -48,6 +48,7 @@ from checkier.formula import (
     Num,
     Str,
     collect_ids,
+    formula_user_message,
     parse,
 )
 
@@ -69,9 +70,14 @@ class Relation:
     ast: Node | None = None
     status: str = "pending"  # pending | true | false | error | unverifiable
     error: str | None = None
+    user_error: str | None = None
     unknowns: list = field(default_factory=list)
     involved_files: list = field(default_factory=list)
     touches_card: bool = False  # references at least one card entity
+
+    def set_error(self, message: str, user_message: str) -> None:
+        self.error = message
+        self.user_error = user_message
 
 
 @dataclass
@@ -215,7 +221,8 @@ class Solver:
     def _const(self, e: Entity, func: str | None = None) -> z3.ExprRef:
         if func in ("start", "end"):
             if e.type != "date":
-                raise FormulaError(f"{func}({e.mnemonic}) requires a date entity")
+                raise FormulaError(f"{func}({e.mnemonic}) requires a date entity",
+                                   user_message=f"Функция {func}() требует сущность с типом «дата»: {e.num}.")
             if func == "end":
                 if e.num not in self.end_consts:
                     self.end_consts[e.num] = self._new_const(e, end=True)
@@ -227,7 +234,8 @@ class Solver:
             v = parse_amount(e.raw)
             if v is None:
                 raise FormulaError(
-                    f"raw({e.mnemonic}) has no numeric raw value: {e.raw!r}"
+                    f"raw({e.mnemonic}) has no numeric raw value: {e.raw!r}",
+                    user_message=f"Исходное значение сущности {e.num} не является числом.",
                 )
             c: z3.ExprRef = z3.Real(f"raw_{e.num}")
             self.acc.add(c == _real_val(v))
@@ -323,7 +331,8 @@ class Solver:
         if isinstance(node, Id):
             e = self.by_key.get(node.key)
             if e is None:
-                raise FormulaError(f"unknown entity id {node.key!r}")
+                raise FormulaError(f"unknown entity id {node.key!r}",
+                                   user_message=f"Неизвестная сущность: {node.key}.")
             if node.func in ("start", "end"):
                 return self._const(e, node.func)
             if self._const_sort(e) == "string" and node.func != "raw":
@@ -331,7 +340,7 @@ class Solver:
             return self._const(e, node.func)
         if isinstance(node, BinOp):
             return self._binop(node)
-        raise FormulaError(f"unknown AST node {node!r}")
+        raise FormulaError(f"unknown AST node {node!r}", user_message="Неподдерживаемое выражение в формуле.")
 
     def _describe(self, x) -> str:
         if isinstance(x, _StrVal):
@@ -366,7 +375,8 @@ class Solver:
                     continue
                 if isinstance(side, _StrVal) or side.sort().kind() != z3.Z3_BOOL_SORT:
                     raise FormulaError(
-                        f"non-boolean operand to '{op}': {self._describe(sub)}"
+                        f"non-boolean operand to '{op}': {self._describe(sub)}",
+                        user_message=f"Оператор {op} требует логических выражений, например #0 == #1.",
                     )
             return self._fold(op, [l, r])
         l = self.to_z3(node.left)
@@ -376,11 +386,13 @@ class Solver:
             if not (isinstance(l, _StrVal) and isinstance(r, _StrVal)):
                 raise FormulaError(
                     f"type clash in '{op}': {self._describe(l)}"
-                    f" vs {self._describe(r)}"
+                    f" vs {self._describe(r)}",
+                    user_message=f"Несовместимые типы значений для оператора {op}.",
                 )
             if l.value is None or r.value is None:
                 raise FormulaUndetermined(
-                    f"string value undetermined in '{op}': {l.desc} vs {r.desc}"
+                    f"string value undetermined in '{op}': {l.desc} vs {r.desc}",
+                    user_message=f"Недостаточно данных для сравнения строк оператором {op}.",
                 )
             eq = l.value == r.value
             return eq if op == "==" else not eq
@@ -391,7 +403,8 @@ class Solver:
             if op not in ("==", "!="):
                 raise FormulaError(
                     f"type clash in '{op}': boolean vs non-boolean"
-                    f" ({self._describe(node.left)} vs {self._describe(node.right)})"
+                    f" ({self._describe(node.left)} vs {self._describe(node.right)})",
+                    user_message=f"Несовместимые типы значений для оператора {op}.",
                 )
 
             def _as_bool(x):
@@ -405,7 +418,8 @@ class Solver:
             if lb is None or rb is None:
                 raise FormulaError(
                     f"type clash in '{op}': boolean vs non-boolean"
-                    f" ({self._describe(node.left)} vs {self._describe(node.right)})"
+                    f" ({self._describe(node.left)} vs {self._describe(node.right)})",
+                    user_message=f"Несовместимые типы значений для оператора {op}.",
                 )
             return lb == rb if op == "==" else lb != rb
         lk = l.sort().kind()
@@ -415,14 +429,16 @@ class Solver:
             if clash:
                 raise FormulaError(
                     f"type clash in '{op}': {self._describe(node.left)}"
-                    f" vs {self._describe(node.right)}"
+                    f" vs {self._describe(node.right)}",
+                    user_message=f"Несовместимые типы значений для оператора {op}.",
                 )
             return l == r if op == "==" else l != r
         if op in ("<", "<=", ">", ">="):
             if lk not in NUMERIC_SORTS or rk not in NUMERIC_SORTS:
                 raise FormulaError(
                     f"non-numeric operand to '{op}': {self._describe(node.left)}"
-                    f" vs {self._describe(node.right)}"
+                    f" vs {self._describe(node.right)}",
+                    user_message=f"Оператор {op} требует числовых значений.",
                 )
             if op == "<":
                 return l < r
@@ -435,7 +451,8 @@ class Solver:
         if lk not in NUMERIC_SORTS or rk not in NUMERIC_SORTS:
             raise FormulaError(
                 f"non-numeric operand to '{op}': {self._describe(node.left)}"
-                f" vs {self._describe(node.right)}"
+                f" vs {self._describe(node.right)}",
+                user_message=f"Оператор {op} требует числовых значений.",
             )
         if op == "+":
             return l + r
@@ -488,7 +505,7 @@ class Solver:
                 )
             except (FormulaError, ValueError) as exc:
                 rel.status = "error"
-                rel.error = str(exc)
+                rel.set_error(str(exc), formula_user_message(exc))
 
         self._resolve_strings()
 
@@ -499,21 +516,22 @@ class Solver:
                 result = self.to_z3(rel.ast)
             except FormulaUndetermined as exc:
                 rel.status = "unverifiable"
-                rel.error = str(exc)
+                rel.set_error(str(exc), exc.user_message)
                 continue
             except (FormulaError, ValueError, z3.Z3Exception) as exc:
                 rel.status = "error"
-                rel.error = str(exc)
+                rel.set_error(str(exc), formula_user_message(exc))
                 continue
             if not isinstance(result, bool) and not z3.is_bool(result):
                 rel.status = "error"
-                rel.error = "An equation must produce a boolean value"
+                rel.set_error("An equation must produce a boolean value",
+                              "Формула должна содержать сравнение, например #0 == #1 + #2.")
                 continue
             rel.unknowns = self._relation_unknowns(rel.ast)
             if isinstance(result, bool):
                 rel.status = "true" if result else "false"
                 if not result:
-                    rel.error = "string identity comparison is false"
+                    rel.set_error("string identity comparison is false", "Сравниваемые строки не совпадают.")
                 continue
             if self._check(z3.Not(result)) == z3.unsat:
                 rel.status = "true"  # entailed by facts alone
@@ -522,10 +540,12 @@ class Solver:
                 rel.status = "true"
             elif self._check(result) == z3.unsat:
                 rel.status = "false"
-                rel.error = "contradicts documents or accepted relations"
+                rel.set_error("contradicts documents or accepted relations",
+                              "Формула противоречит документам или принятым требованиям.")
             else:
                 rel.status = "unverifiable"
-                rel.error = "solver returned unknown (timeout?)"
+                rel.set_error("solver returned unknown (timeout?)",
+                              "Не удалось определить результат проверки. Возможно, превышено время вычисления.")
 
         self._solve_variables()
 

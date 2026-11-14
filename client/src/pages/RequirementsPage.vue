@@ -4,21 +4,45 @@ import {mapActions, mapState} from 'vuex'
 import {FontAwesomeIcon} from '@fortawesome/vue-fontawesome'
 import {faSpinner} from '@fortawesome/free-solid-svg-icons/faSpinner'
 import {faChevronDown} from '@fortawesome/free-solid-svg-icons/faChevronDown'
+import {faXmark} from '@fortawesome/free-solid-svg-icons/faXmark'
 import {editRequirements, reportArchiveUrl} from '../api'
-import type {FieldVerdict, Report, ReportDetails, ReportDocument, VerifiedRequirement, VerificationResult} from '../api'
+import {formatAmount} from '../formatAmount'
+import type {
+  FieldVerdict,
+  Report,
+  ReportDetails,
+  ReportDocument,
+  VerifiedEntity,
+  VerifiedRequirement,
+  VerificationResult
+} from '../api'
 import ReportHeader from '../components/ReportHeader.vue'
 import RequirementsResults from '../components/RequirementsResults.vue'
-import MarkdownEditor from '../components/MarkdownEditor.vue'
+import RequirementDetails from '../components/RequirementDetails.vue'
+import RequirementStatus from '../components/RequirementStatus.vue'
+import ReportWorkspace from '../components/ReportWorkspace.vue'
+import EntityPdfPreview from '../components/viewers/EntityPdfPreview.vue'
 import RequirementText from '../components/RequirementText.vue'
 import FileProblems from '../components/FileProblems.vue'
 
 export default defineComponent({
-  components: {FontAwesomeIcon, ReportHeader, RequirementsResults, MarkdownEditor, RequirementText, FileProblems},
+  components: {
+    FontAwesomeIcon,
+    ReportHeader,
+    RequirementsResults,
+    RequirementDetails,
+    RequirementStatus,
+    ReportWorkspace,
+    EntityPdfPreview,
+    RequirementText,
+    FileProblems
+  },
   props: {reportId: {type: Number, required: true}},
   data() {
     return {
-      faSpinner, faChevronDown, expandedFields: [] as number[],
+      faSpinner, faChevronDown, faXmark, expandedFields: [] as number[],
       selectedEntityId: undefined as number | undefined, editing: false, editError: '',
+      selectionVersion: 0,
     }
   },
   computed: {
@@ -38,6 +62,9 @@ export default defineComponent({
         if (!definition) throw new Error('Не найдено определение требования.')
         return {...definition, ...outcome}
       })
+    },
+    entities(): Record<number, VerifiedEntity> {
+      return Object.fromEntries((this.result?.entities ?? []).map(entity => [entity.num, entity]))
     },
     fieldRequirements(): Record<number, VerifiedRequirement[]> {
       const related: Record<number, VerifiedRequirement[]> = {}
@@ -73,6 +100,10 @@ export default defineComponent({
     void this.stop()
   },
   methods: {
+    selectEntity(id: number) {
+      this.selectedEntityId = id
+      this.selectionVersion++
+    },
     reportArchiveUrl,
     ...mapActions('requirements', ['start', 'stop', 'load']),
     toggleField(id: number) {
@@ -98,9 +129,7 @@ export default defineComponent({
       if (value === null) return '—'
       if (field.type === 'date' && !difference) return new Date((Number(value) - 719163) * 86400000)
           .toLocaleDateString('ru-RU', {timeZone: 'UTC'})
-      if (field.type === 'amount' && Number.isFinite(Number(value))) {
-        return Number(value).toLocaleString('ru-RU', {minimumFractionDigits: 2, maximumFractionDigits: 2})
-      }
+      if (field.type === 'amount') return formatAmount(value, field.unit)
       return value
     },
   },
@@ -108,7 +137,7 @@ export default defineComponent({
 </script>
 
 <template>
-  <main class="mx-auto max-w-6xl p-6">
+  <ReportWorkspace :preview-open="!!selectedDocument" @close="selectedEntityId = undefined">
     <ReportHeader :report="report"/>
     <div v-if="loading"
          class="mt-6 flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white p-8 text-center text-slate-500"
@@ -139,9 +168,9 @@ export default defineComponent({
           <table class="w-full text-left text-sm">
             <thead class="bg-slate-50 text-slate-500">
             <tr>
-              <th class="p-4">Поле</th>
-              <th class="p-4">Указано</th>
-              <th class="p-4">Ожидается</th>
+              <th class="p-4">Показатель КФЗ</th>
+              <th class="p-4">Значение в КФЗ</th>
+              <th class="p-4">Ожидаемо по валидным документам</th>
               <th class="p-4">Расхождение</th>
               <th class="p-4">Статус</th>
             </tr>
@@ -161,7 +190,7 @@ export default defineComponent({
                                        :class="{'rotate-180': expandedFields.includes(field.num)}" aria-hidden="true"/>
                     </button>
                     <RequirementText :text="`#${field.num}`" :entity-documents="entityDocuments"
-                                     @select="selectedEntityId = $event"/>
+                                     @select="selectEntity"/>
                   </div>
                 </td>
                 <td class="whitespace-nowrap p-4 tabular-nums">{{ fieldValue(field, field.stated) }}</td>
@@ -181,40 +210,26 @@ export default defineComponent({
                     Для этого поля нет связанных требований.
                   </p>
                   <ul v-else class="mt-3 divide-y divide-slate-200 rounded border border-slate-200 bg-white">
-                    <li v-for="requirement in fieldRequirements[field.num]" :key="requirement.id" class="p-4">
-                      <div class="flex flex-wrap items-start justify-between gap-3">
-                        <div class="flex min-w-0 flex-1 items-baseline gap-3">
-                          <span class="text-slate-400"><span class="sr-only">Требование </span>{{
-                              requirement.id
-                            }}</span>
+                    <li v-for="requirement in fieldRequirements[field.num]" :key="requirement.id">
+                      <details class="group/requirement">
+                        <summary
+                            class="flex cursor-pointer list-none items-start gap-3 p-4 hover:bg-slate-50 focus-visible:outline-blue-500 [&::-webkit-details-marker]:hidden">
+                          <span class="pt-1 text-slate-400"><span class="sr-only">Требование </span>{{ requirement.id }}</span>
                           <RequirementText
-                              :text="requirement.kind === 'formula' ? requirement.equation : requirement.text || 'Условие не указано'"
-                              :entity-documents="entityDocuments" @select="selectedEntityId = $event"
-                              class="min-w-0 whitespace-pre-wrap break-words leading-7"
-                              :class="{'font-mono': requirement.kind === 'formula'}"/>
-                        </div>
-                        <span :class="{
-                        'text-green-700': requirement.verdict === 'true',
-                        'text-red-700': requirement.verdict === 'false',
-                        'text-orange-700': requirement.verdict === 'error',
-                        'text-amber-700': requirement.verdict === 'unverifiable',
-                      }">{{
-                            {
-                              true: 'Выполнено',
-                              false: 'Нарушено',
-                              error: 'Ошибка проверки',
-                              unverifiable: 'Не удалось проверить'
-                            }[requirement.verdict]
-                          }}</span>
-                      </div>
-                      <p v-if="requirement.kind === 'formula' && requirement.text"
-                         class="mt-2 whitespace-pre-wrap break-words leading-7">
-                        <RequirementText :text="requirement.text" :entity-documents="entityDocuments"
-                                         @select="selectedEntityId = $event"/>
-                      </p>
-                      <p v-if="requirement.error" class="mt-2 whitespace-pre-wrap break-words text-orange-700">
-                        {{ requirement.error }}</p>
-                      <p v-if="requirement.silenced" class="mt-2 text-slate-500">Предупреждение отключено</p>
+                              :text="requirement.text || (requirement.kind === 'formula' ? 'Название не указано' : 'Условие не указано')"
+                              :entity-documents="entityDocuments" @select="selectEntity"
+                              class="min-w-0 flex-1 whitespace-pre-wrap break-words font-medium leading-7"
+                              :class="requirement.silenced ? 'text-slate-500' : 'text-slate-800'"/>
+                          <RequirementStatus :requirement="requirement"/>
+                          <FontAwesomeIcon :icon="faChevronDown"
+                                           class="mt-2 size-3 shrink-0 text-slate-400 transition-transform group-open/requirement:rotate-180 motion-reduce:transition-none"
+                                           aria-hidden="true"/>
+                        </summary>
+                        <RequirementDetails :requirement="requirement" :entities="entities"
+                                            :entity-documents="entityDocuments"
+                                            class="border-t border-slate-100 p-4"
+                                            @select="selectEntity"/>
+                      </details>
                     </li>
                   </ul>
                 </td>
@@ -225,12 +240,26 @@ export default defineComponent({
         </div>
       </section>
       <FileProblems :key="reportId" :files="result.files" :documents="report?.documents ?? []"
-                    :entity-documents="entityDocuments" @select="selectedEntityId = $event"/>
-      <RequirementsResults :key="reportId" :requirements="requirements" :entity-documents="entityDocuments"
-                           @select="selectedEntityId = $event"/>
+                    :requirements="requirements" :entities="entities"
+                    :entity-documents="entityDocuments" @select="selectEntity"/>
+      <RequirementsResults :key="reportId" :requirements="requirements" :entities="entities"
+                           :entity-documents="entityDocuments"
+                           @select="selectEntity"/>
     </template>
-    <MarkdownEditor v-if="selectedDocument" :report-id="reportId" :document="selectedDocument"
-                    readonly entities pdf-entities :selected-entity-id="selectedEntityId"
-                    @close="selectedEntityId = undefined"/>
-  </main>
+    <template #preview>
+      <template v-if="selectedDocument">
+        <div class="flex h-14 shrink-0 items-center justify-between gap-3 border-l border-slate-200 px-3">
+          <h2 class="min-w-0 break-words font-semibold">{{ selectedDocument.name }}</h2>
+          <button type="button"
+                  class="inline-flex size-9 shrink-0 cursor-pointer items-center justify-center rounded hover:bg-slate-50 focus-visible:outline-blue-500"
+                  aria-label="Закрыть PDF" title="Закрыть PDF" @click="selectedEntityId = undefined">
+            <FontAwesomeIcon :icon="faXmark" class="size-4" aria-hidden="true"/>
+          </button>
+        </div>
+        <EntityPdfPreview bare :report-id="reportId" :document-id="selectedDocument.id"
+                          :selection-version="selectionVersion"
+                          :selected-entity-id="selectedEntityId"/>
+      </template>
+    </template>
+  </ReportWorkspace>
 </template>

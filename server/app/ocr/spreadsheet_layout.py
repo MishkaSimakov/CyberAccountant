@@ -21,7 +21,6 @@ class SpreadsheetLayout:
                   for block in page.get_text('rawdict')['blocks']
                   for line in block.get('lines', []) for span in line['spans']
                   for char in span['chars']]
-        writer.write(f'<!-- page: {number} -->\n\n')
 
         def emit(cell):
             text = re.sub(r'\s+', ' ', cell['text']).strip()

@@ -69,6 +69,52 @@ def generate(report_id):
     process_requirement_generation(report_id)
 
 
+@pytest.mark.parametrize("target_label", [None, "Итого"])
+def test_removing_all_main_entities_keeps_selection_empty(reviewed, monkeypatch, target_label):
+    report_id, revisions, _ = reviewed
+    with database.session_scope() as session:
+        session.get(Report, report_id).target_row = target_label
+        document_id = session.get(File, revisions[0]).file_id
+    path = f"/reports/{report_id}"
+    assert request("POST", path + f"/documents/{document_id}/markdown", {
+        "content": "Итого: 0,11", "base_revision": 1,
+    })[0] == 200
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("No main entities remain to generate model requirements for")
+
+    monkeypatch.setattr("app.generators.llm.generate_relations", forbidden)
+    generate(report_id)
+    assert request("GET", path + "/requirements")[1]["requirements"] == []
+    requirements.run_verification(report_id)
+    process_verification(report_id)
+    status, result = request("GET", path + "/verification-result")
+    assert status == 200
+    assert result["scope"]["target_row"] == ([] if target_label else None)
+    assert result["card"]["cells"] == []
+    assert result["requirement_results"] == []
+    assert all(entity["role"] == "data" for entity in result["entities"])
+
+
+def test_empty_target_does_not_select_other_main_entities(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    text = 'Итого: 10\nДругое: <ent t="amount" value="20">20</ent>'
+    report = Report(id=1, target_row="Итого")
+    file = File(file_id=1, name="card.pdf", role="final_report", version=1,
+                entities_path=storage.save_entities(1, 1, 1, text))
+    context = verification.prepare_verification(report, [file])
+    assert context.scope["target_row"] == []
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("An empty target must not fall back to other main entities")
+
+    monkeypatch.setattr("app.generators.llm.generate_relations", forbidden)
+    assert verification.generate_requirements(context) == []
+    result = verification.evaluate_requirements(context, [])
+    assert result["card"]["cells"] == []
+    assert [entity["num"] for entity in result["constants"]] == [0]
+
+
 def test_generated_requirement_ids_restart_for_each_report(reviewed):
     report_id, _, _ = reviewed
     with database.session_scope() as session:
@@ -94,7 +140,8 @@ def test_generated_requirement_ids_restart_for_each_report(reviewed):
     assert [item.id for item in requirements.report_requirements(other_id).requirements] == [1, 2]
 
 
-def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch):
+@pytest.mark.parametrize("text", [None, "The reported total must match the supporting document."])
+def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, monkeypatch, text):
     report_id, revisions, pending = reviewed
     path = f"/reports/{report_id}"
     prompts = []
@@ -104,7 +151,7 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
         with database.session_scope() as session:
             assert session.get(Report, report_id).processing_status == "running"
             assert session.scalar(select(func.count()).select_from(Requirement)) == 0
-        return [{"equation": "#0 == #1", "tag": "agg"}]
+        return [{"equation": "#0 == #1", "tag": "agg", **({"text": text} if text is not None else {})}]
 
     monkeypatch.setattr("checkier.stage5_relations.call_llm_json", generate)
     assert request("GET", path)[1]["available_actions"] == ["generate_requirements"]
@@ -133,7 +180,7 @@ def test_verification_publishes_results_and_preserves_reviewed_markup(reviewed, 
     definitions = request("GET", path + "/requirements")[1]["requirements"]
     assert len(definitions) == 1
     assert definitions[0]["kind"] == "formula"
-    assert definitions[0]["text"] is None
+    assert definitions[0]["text"] == text
     assert "verdict" not in definitions[0]
     assert "error" not in definitions[0]
     status, result = request("GET", path + "/verification-result")
@@ -375,6 +422,29 @@ def test_requirement_annotations_are_partial_and_scoped(reviewed):
     assert request("POST", f'/reports/{other["id"]}/run-verification')[0] == 409
 
 
+@pytest.mark.parametrize("equation, error", [
+    ("#0 = #1", "Недопустимый символ '=' в позиции 4."),
+    ("32.01.2026 == #0", "Некорректная дата 32.01.2026 в позиции 1."),
+    ("#999 == #0", "Неизвестные сущности: #999"),
+])
+def test_formula_api_returns_russian_errors(reviewed, equation, error):
+    report_id, _, _ = reviewed
+    generate(report_id)
+    path = f"/reports/{report_id}"
+    status, result = request("POST", path + "/requirements/validate-formula", {"equation": equation})
+    assert status == 200 and result == {"valid": False, "error": error}
+    definition = {"kind": "formula", "equation": equation}
+    for method, url in [("POST", path + "/requirements"), ("PUT", path + "/requirements/1")]:
+        status, result = request(method, url, definition)
+        assert status == 422 and result["detail"] == error
+
+    with database.session_scope() as session:
+        requirement = session.scalar(select(Requirement).where(Requirement.report_id == report_id))
+        requirement.json_data = definition
+    status, result = request("POST", path + "/run-verification")
+    assert status == 422 and result["detail"] == f"Требование 1: {error}"
+
+
 def test_invalid_generated_formulas_require_correction_before_verification(reviewed, monkeypatch):
     report_id, _, _ = reviewed
     monkeypatch.setattr("checkier.stage5_relations.call_llm_json", lambda *args, **kwargs: [
@@ -418,7 +488,7 @@ def test_assertions_do_not_constrain_formulas_and_keep_requirement_ids(reviewed,
     assert [item["verdict"] for item in outcomes] == ["false", "false", "true", "unverifiable", "error"]
     assert result["card"]["cells"][0]["expected"] == "100"
     assert definitions[1].text == "Сумма по документам"
-    assert outcomes[-1]["error"] == "Unknown entity IDs: [999]"
+    assert outcomes[-1]["error"] == "Неизвестные сущности: 999."
 
 
 def test_result_write_failure_keeps_definitions_and_can_be_retried(reviewed, monkeypatch):

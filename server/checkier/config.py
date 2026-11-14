@@ -39,9 +39,12 @@ class PipelineConfig:
     tag_workers: int = 8
     # "disabled" requests low/minimum effort; "enabled" uses the model default.
     # "exclude" relies on the client always filtering reasoning from output.
-    reasoning: str = "disabled"
+    tag_reasoning: str = "disabled"
+    rel_reasoning: str = "enabled"
     # Relation prompts: processed filename tags, raw original names, or neutral labels.
     relation_filename_mode: str = "tagged"
+    # Stage 5 only: omit entity text and normalized values from the model input.
+    relation_hide_entity_values: bool = False
     extra: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:

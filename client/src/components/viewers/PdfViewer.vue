@@ -11,6 +11,7 @@ GlobalWorkerOptions.workerSrc = workerUrl
 export default defineComponent({
   props: {
     src: {type: String, required: true},
+    bare: Boolean,
     highlights: {type: Array as PropType<EntityBox[]>, default: () => []},
   },
   data() {
@@ -28,6 +29,7 @@ export default defineComponent({
   },
   watch: {
     highlights() {
+      this.highlightAnimationStartedAt = undefined
       this.revealHighlights()
     },
   },
@@ -43,6 +45,7 @@ export default defineComponent({
         eventBus,
         linkService,
         abortSignal: this.lifetime.signal,
+        removePageBorders: this.bare,
       }
       this.viewer = markRaw(new PDFViewer(options))
       linkService.setViewer(this.viewer)
@@ -200,9 +203,15 @@ export default defineComponent({
   <div class="relative min-h-0 flex-1 bg-slate-100" :aria-busy="loading">
     <div ref="container" class="absolute inset-0 overflow-auto overscroll-contain" tabindex="0" role="region"
          aria-label="PDF документа">
-      <div ref="pages" class="pdfViewer"/>
+      <div ref="pages" class="pdfViewer" :class="{bare}"/>
     </div>
     <p v-if="loading" class="absolute inset-x-0 top-0 bg-slate-100 p-6 text-slate-500" role="status">Загружаем PDF…</p>
     <p v-if="error" class="absolute inset-x-0 top-0 bg-red-50 p-6 text-red-700" role="alert">{{ error }}</p>
   </div>
 </template>
+
+<style scoped>
+.pdfViewer.bare :deep(.page) {
+  margin: 0 auto;
+}
+</style>

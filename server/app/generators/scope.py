@@ -12,18 +12,21 @@ def generate_scope(context: VerificationContext) -> list[dict]:
     for file, entry in sorted(context.mapping.items()):
         if entry["role"] != "data" or entry.get("duplicate_of"):
             continue
+        document = f'«{entry["original"]}»' if entry.get("original") else "Документ"
         for entity in context.registry.entities:
             if entity.file != file:
                 continue
             key = entity.mnemonic if context.config.id_style == "mnemonic" else f"#{entity.num}"
             if entity.type == "contract" and report.contract_number:
                 equation = f"{key} == {json.dumps(report.contract_number.strip(), ensure_ascii=False)}"
+                text = f"{document}: договор должен совпадать с договором отчёта."
             elif (entity.type == "date" and entity.loc == "body"
                   and entity.value is not None and entity.end_value is not None
                   and report.period_start and report.period_end):
                 equation = (f"{report.period_start:%d.%m.%Y} <= start({key}) && "
                             f"end({key}) <= {report.period_end:%d.%m.%Y}")
+                text = f"{document}: период должен входить в отчётный период."
             else:
                 continue
-            requirements.append({"equation": equation, "tag": "scope"})
+            requirements.append({"equation": equation, "tag": "scope", "text": text})
     return requirements

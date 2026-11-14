@@ -56,7 +56,8 @@ def requirements(report_id: int):
 
 @router.get("/reports/{report_id}/verification-result")
 def verification_result(report_id: int):
-    return FileResponse(service.verification_result_file(report_id), media_type="application/json")
+    return FileResponse(service.verification_result_file(report_id), media_type="application/json",
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.patch("/reports/{report_id}/requirements/{requirement_id}", response_model=RequirementResponse)

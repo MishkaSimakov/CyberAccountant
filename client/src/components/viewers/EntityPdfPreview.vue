@@ -9,16 +9,30 @@ export default defineComponent({
     reportId: {type: Number, required: true},
     documentId: {type: Number, required: true},
     selectedEntityId: Number,
+    selectionVersion: {type: Number, default: 0},
+    bare: Boolean,
   },
   data() {
     return {geometry: null as EntityGeometry | null, loading: false, error: '', requestId: 0}
   },
   computed: {
-    src(): string { return pdfUrl(this.reportId, this.documentId) },
-    selection(): string { return `${this.reportId}/${this.documentId}/${this.selectedEntityId}` },
+    src(): string {
+      return pdfUrl(this.reportId, this.documentId)
+    },
+    selection(): string {
+      return `${this.reportId}/${this.documentId}/${this.selectedEntityId}/${this.selectionVersion}`
+    },
   },
-  watch: {selection: {immediate: true, handler() { void this.load() }}},
-  unmounted() { this.requestId++ },
+  watch: {
+    selection: {
+      immediate: true, handler() {
+        void this.load()
+      }
+    }
+  },
+  unmounted() {
+    this.requestId++
+  },
   methods: {
     async load() {
       const request = ++this.requestId
@@ -41,9 +55,10 @@ export default defineComponent({
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col gap-3" aria-label="Сущность в исходном документе">
+  <section class="flex min-h-0 flex-1 flex-col" :class="{'gap-3': !bare}" aria-label="Сущность в исходном документе">
     <p v-if="loading" role="status" class="shrink-0 text-sm text-slate-500">Находим фрагмент в документе…</p>
-    <p v-if="geometry?.message || error" role="status" class="shrink-0 text-sm text-amber-900">{{ geometry?.message || error }}</p>
-    <DocumentViewer class="flex-1" :src="src" :highlights="geometry?.boxes ?? []"/>
+    <p v-if="geometry?.message || error" role="status" class="shrink-0 text-sm text-amber-900">{{ geometry?.message ||
+      error }}</p>
+    <DocumentViewer class="flex-1" :src="src" :highlights="geometry?.boxes ?? []" :bare="bare"/>
   </section>
 </template>

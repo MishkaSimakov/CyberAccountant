@@ -1,7 +1,7 @@
 """Stage 1: two-request entity wrapping and metadata extraction.
 
-Request 1 returns only a segment stream that reconstructs the processed
-filename header and OCR document exactly. Request 2 receives deterministic
+Request 1 returns only a segment stream that reconstructs the OCR document
+exactly. Request 2 receives deterministic
 per-document IDs in XML-like markup and returns closed, ID-keyed metadata under
 an on-the-fly JSON Schema. Dates use inclusive, timezone-free day timestamps.
 """
@@ -72,8 +72,8 @@ number and month/year entity. For a range such as 01.05.2026–10.05.2026,
 wrap the two dates separately and leave the dash outside the tags.
 
 TASK
-Read the processed filename header and document at the bottom. Output a JSON
-array of segments that rebuilds both exactly.
+Read the document at the bottom. Output a JSON array of segments that rebuilds
+the document exactly.
 
 REQUIRED OUTPUT FORMAT (no other text, no markdown fence, no commentary):
 [{"content":"...","wrap":"...","type":"entity"}, ..., {"content":"...","wrap":"","type":"EOF"}]
@@ -88,7 +88,7 @@ the input character-for-character.
 
 Rules:
 - Wrap every amount, date/period, document identifier, contract number, count,
-  coefficient, percentage, and ratio, including tables and the filename header.
+  coefficient, percentage, and ratio, including tables and document headings.
 - Do not wrap a bare year inside running text unless it is a full date/period.
 - Keep all whitespace and punctuation exactly.
 - OUTPUT ONLY THE JSON ARRAY. Do NOT repeat the input or add prose.
@@ -125,6 +125,22 @@ Metadata fields for every ID:
 - value: normalized non-date value as a string, or null if unresolved
 - start/end: inclusive date bounds, or null for non-dates and unresolved dates
 
+Identifier types:
+- docid: identifies an accounting document, such as an invoice, act, payment
+  order, or insurance calculation. Examples: "Документ: ВЗН-2026-05",
+  "Акт № 118", "Счет № 174". References to other accounting documents also
+  use docid.
+- contract: identifies the agreement under which work, costs, or payments
+  occur. Use for identifiers labeled "Договор" or "Контракт", and "Проект"
+  when the project reference identifies that agreement.
+- Choose the type from the surrounding meaning, not punctuation or numeric
+  pattern. Do not classify an agreement reference as docid merely because an
+  agreement is itself a document.
+
+Example:
+Документ: ВЗН-2026-05 | Проект: 24/03/15-01 | Период: Май 2026
+ВЗН-2026-05 is docid; 24/03/15-01 is contract; Май 2026 is date.
+
 For date entities, value must be null. Return BOTH start and end, or BOTH null:
 - exact date: YYYY-MM-DDT00:00:00 through the same day at T23:59:59
 - month: first day at T00:00:00 through last day at T23:59:59
@@ -141,11 +157,9 @@ INPUT
 """
 
 
-def _build_prompt(filename: str, content: str) -> tuple[str, str]:
+def _build_prompt(content: str) -> tuple[str, str]:
     """Build request 1 without interpreting braces in document content."""
-    header = "# " + " ".join(filename.splitlines())
-    processed = f"{header}\n{content}"
-    return TAG_PROMPT.replace("%%CONTENT%%", processed), processed
+    return TAG_PROMPT.replace("%%CONTENT%%", content), content
 
 
 def _coerce_segments(data) -> list:
@@ -156,29 +170,35 @@ def _coerce_segments(data) -> list:
     raise ValueError(f"unexpected JSON shape: {type(data).__name__}")
 
 
-def _validate_segments(doc: str, segments: list) -> list[str]:
-    """Check the segment stream rebuilds *doc* exactly. Returns problems."""
+def _validate_segment_shape(segments: list) -> list[str]:
+    """Check segment structure before interpreting its text."""
     problems: list[str] = []
-    rebuilt_parts: list[str] = []
     if not segments:
         return ["segment array is empty"]
     for i, seg in enumerate(segments):
         if not isinstance(seg, dict):
             problems.append(f"segment {i} is not an object")
             continue
-        c = seg.get("content", "")
-        w = seg.get("wrap", "")
+        c = seg.get("content")
+        w = seg.get("wrap")
         t = seg.get("type", "")
         if not isinstance(c, str) or not isinstance(w, str):
             problems.append(f"segment {i}: content/wrap must be strings")
             continue
-        rebuilt_parts.extend((c, w))
         if i < len(segments) - 1:
             if not w or t != "entity":
                 problems.append(f"segment {i}: non-final entry must be a non-empty entity")
         elif t != "EOF" or w != "":
             problems.append(f"last segment must be EOF with empty wrap, got type={t!r}")
-    rebuilt = "".join(rebuilt_parts)
+    return problems
+
+
+def _validate_segments(doc: str, segments: list) -> list[str]:
+    """Check the segment stream rebuilds *doc* exactly. Returns problems."""
+    problems = _validate_segment_shape(segments)
+    if problems:
+        return problems
+    rebuilt = "".join(seg["content"] + seg["wrap"] for seg in segments)
     if rebuilt.rstrip("\n") != doc.rstrip("\n"):
         k = 0
         limit = min(len(rebuilt), len(doc))
@@ -189,6 +209,81 @@ def _validate_segments(doc: str, segments: list) -> list[str]:
             f"expected {doc[k:k + 40]!r}, got {rebuilt[k:k + 40]!r}"
         )
     return problems
+
+
+def _bounded_edit_distance(left: str, right: str, limit: int) -> int:
+    """Return Levenshtein distance, or limit + 1 when the limit is exceeded."""
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > limit:
+        return limit + 1
+    previous = {j: j for j in range(min(len(right), limit) + 1)}
+    for i, char in enumerate(left, 1):
+        current = {0: i} if i <= limit else {}
+        for j in range(max(1, i - limit), min(len(right), i + limit) + 1):
+            current[j] = min(
+                previous.get(j, limit + 1) + 1,
+                current.get(j - 1, limit + 1) + 1,
+                previous.get(j - 1, limit + 1) + (char != right[j - 1]),
+            )
+        if not current or min(current.values()) > limit:
+            return limit + 1
+        previous = current
+    return min(previous.get(len(right), limit + 1), limit + 1)
+
+
+def _repair_segments(
+        doc: str, segments: list, *, gap_limit: int = 3, total_limit: int = 6,
+) -> list | None:
+    """Restore gaps only when exactly one bounded placement of exact wraps exists."""
+    if _validate_segment_shape(segments):
+        return None
+    # (source cursor, spent edits) -> (path count capped at two, one placement).
+    # Keep every feasible cost, not just the cheapest: a costlier path is still
+    # an ambiguity. Different edit scripts for the same gaps are not paths.
+    states = {(0, 0): (1, ())}
+    for seg in segments[:-1]:
+        content, wrap = seg["content"], seg["wrap"]
+        following = {}
+        for (cursor, spent), (count, starts) in states.items():
+            limit = min(gap_limit, total_limit - spent)
+            expected = cursor + len(content)
+            for start in range(
+                    max(cursor, expected - limit),
+                    min(len(doc) - len(wrap), expected + limit) + 1,
+            ):
+                if not doc.startswith(wrap, start):
+                    continue
+                cost = _bounded_edit_distance(content, doc[cursor:start], limit)
+                if cost > limit:
+                    continue
+                key = (start + len(wrap), spent + cost)
+                prior_count, _ = following.get(key, (0, ()))
+                following[key] = (min(2, prior_count + count), starts + (start,))
+        states = following
+        if not states:
+            return None
+
+    matches = 0
+    placement = ()
+    tail = segments[-1]["content"].rstrip("\n")
+    for (cursor, spent), (count, starts) in states.items():
+        limit = min(gap_limit, total_limit - spent)
+        if _bounded_edit_distance(tail, doc[cursor:].rstrip("\n"), limit) <= limit:
+            matches += count
+            if matches > 1:
+                return None
+            placement = starts
+    if matches != 1:
+        return None
+
+    repaired = []
+    cursor = 0
+    for seg, start in zip(segments[:-1], placement):
+        repaired.append(dict(seg, content=doc[cursor:start]))
+        cursor = start + len(seg["wrap"])
+    repaired.append(dict(segments[-1], content=doc[cursor:]))
+    return repaired
 
 
 def _segments_to_marked(segments: list) -> tuple[str, list[str]]:
@@ -305,10 +400,10 @@ def tag_document(
 ) -> tuple[str, int]:
     """Extract entries in two calls without changing the preserved OCR source.
 
-    Return (tagged_markdown_with_processed_filename, retries_used), or raise
+    Return (tagged_markdown, retries_used), or raise
     when extraction fails. The caller owns persistence and scheduling.
     """
-    prompt, processed = _build_prompt(filename, markdown)
+    prompt, processed = _build_prompt(markdown)
     last_err: Exception | None = None
     for attempt in range(cfg.max_retries + 1):
         try:
@@ -319,10 +414,15 @@ def tag_document(
                 schema_name="entity_wrapping",
                 timeout=cfg.request_timeout,
                 on_token=on_token,
-                reasoning=cfg.reasoning,
+                reasoning=cfg.tag_reasoning,
             )
             segments = _coerce_segments(data)
             problems = _validate_segments(processed, segments)
+            if problems:
+                repaired = _repair_segments(processed, segments)
+                if repaired is not None:
+                    segments = repaired
+                    problems = _validate_segments(processed, segments)
             if problems:
                 raise ValueError("; ".join(problems))
             marked, ids = _segments_to_marked(segments)
@@ -334,7 +434,7 @@ def tag_document(
                     schema_name="entity_metadata",
                     timeout=cfg.request_timeout,
                     on_token=on_token,
-                    reasoning=cfg.reasoning,
+                    reasoning=cfg.tag_reasoning,
                 )
                 metadata = _validate_metadata(metadata, ids)
             else:
@@ -346,11 +446,11 @@ def tag_document(
             if attempt < cfg.max_retries and _is_transient(exc):
                 continue
             if attempt < cfg.max_retries:
-                prompt, processed = _build_prompt(filename, markdown)
+                prompt, processed = _build_prompt(markdown)
                 prompt += (
-                    "\n\nYour previous answer was wrong. Return ONLY the wrapping JSON array. "
-                    "Do not add metadata to this first request.\nValidation error:\n"
-                    + str(last_err)[:1500]
+                        "\n\nYour previous answer was wrong. Return ONLY the wrapping JSON array. "
+                        "Do not add metadata to this first request.\nValidation error:\n"
+                        + str(last_err)[:1500]
                 )
             else:
                 break
