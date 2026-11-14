@@ -512,7 +512,6 @@ class MarkdownWriter:
 
 
 def write_page(writer: MarkdownWriter, words, tables, page_number, page_size):
-    writer.write(f'<!-- page: {page_number} -->\n\n')
     used = set()
     units = []
     for table in tables:
