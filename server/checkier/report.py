@@ -1,130 +1,8 @@
-"""Stage 7: final report generation."""
+"""Console rendering adapter for verification result data."""
 
 from __future__ import annotations
 
-import json
 import re
-
-from checkier.config import PipelineConfig
-from processing.common.registry import EntityRegistry
-from checkier.solver import Fishy, Relation, Verdict
-
-
-def _entity_id(cfg: PipelineConfig, e) -> str:
-    return e.mnemonic if cfg.id_style == "mnemonic" else str(e.num)
-
-
-def build_report(
-        cfg: PipelineConfig,
-        mapping: dict,
-        registry: EntityRegistry,
-        relations: list[Relation],
-        fishy: list[Fishy],
-        verdicts: list[Verdict],
-        dangling: list[str],
-        scope: dict,
-) -> dict:
-    """Assemble the final report dict and write out/report.json."""
-    by_key = {}
-    for e in registry.entities:
-        by_key[e.mnemonic] = e
-        by_key[str(e.num)] = e
-        by_key[e.num] = e
-
-    def cell_json(v: Verdict) -> dict:
-        ent = by_key.get(v.key) or by_key.get(str(v.key)) or by_key.get(v.num)
-        return {
-            "id": _entity_id(cfg, ent) if ent else str(v.key),
-            "num": v.num,
-            "mnemonic": v.mnemonic,
-            "raw": v.raw,
-            "type": v.type,
-            "status": v.status,
-            "stated": v.stated,
-            "expected": v.expected,
-            "diff": v.diff,
-            "file": v.file,
-        }
-
-    card_verdicts = [v for v in verdicts if v.role == "card" and v.target]
-    const_verdicts = [v for v in verdicts if not (v.role == "card" and v.target)]
-
-    dup_files = {
-        h8: entry["duplicate_of"]
-        for h8, entry in mapping.items()
-        if entry.get("duplicate_of")
-    }
-    oos_files: dict[str, list[str]] = {}
-    for relation in relations:
-        if relation.tag != "scope" or relation.status != "false":
-            continue
-        for file in relation.involved_files:
-            if mapping[file]["role"] == "data":
-                reasons = oos_files.setdefault(file, [])
-                if relation.equation not in reasons:
-                    reasons.append(relation.equation)
-
-    rel_summary = [
-        {
-            "index": r.index,
-            "equation": r.equation,
-            "tag": r.tag,
-            "source": r.source,
-            "status": r.status,
-            "error": r.error,
-            "files": r.involved_files,
-            "touches_card": r.touches_card,
-        }
-        for r in relations
-    ]
-
-    summary = {
-        "card_cells_total": len(card_verdicts),
-        "ok": sum(1 for v in card_verdicts if v.status == "ok"),
-        "mismatch": sum(1 for v in card_verdicts if v.status == "mismatch"),
-        "unverified": sum(1 for v in card_verdicts if v.status == "unverified"),
-        "duplicates": len(dup_files),
-        "out_of_scope": len(oos_files),
-        "dangling": len(dangling),
-        "fishy": len(fishy),
-        "relations_total": len(relations),
-        "relations_true": sum(1 for r in relations if r.status == "true"),
-        "relations_false": sum(1 for r in relations if r.status == "false"),
-        "relations_false_on_card": sum(
-            1 for r in relations if r.status == "false" and r.touches_card
-        ),
-        "relations_unverifiable": sum(
-            1 for r in relations if r.status == "unverifiable"
-        ),
-    }
-
-    report = {
-        "card": {
-            "file": next(
-                (h8 for h8, e in mapping.items() if e["role"] == "card"), None
-            ),
-            "target_label": scope.get("target_label"),
-            "target_ids": [_entity_id(cfg, v) for v in card_verdicts],
-            "cells": [cell_json(v) for v in card_verdicts],
-        },
-        "constants": [cell_json(v) for v in const_verdicts],
-        "files": {
-            "duplicates": dup_files,
-            "out_of_scope": oos_files,
-            "dangling": dangling,
-        },
-        "fishy": [
-            {
-                "evidence": f.evidence,
-                "ids_related": f.ids_related,
-                "verdict": f.verdict,
-            }
-            for f in fishy
-        ],
-        "relations": rel_summary,
-        "summary": summary,
-    }
-    return report
 
 
 def format_report_text(report: dict, mapping: dict | None = None) -> str:
@@ -237,7 +115,7 @@ def format_report_text(report: dict, mapping: dict | None = None) -> str:
     lines.append("")
     lines.append(f"=== FISHY EVIDENCE (verdict=false by construction) ({len(fishy)}) ===")
     for f in fishy:
-        lines.append(f"  {f['evidence']}  (ids: {', '.join(f['ids_related'])})")
+        lines.append(f"  {f['evidence']}  (ids: {', '.join(map(str, f['ids_related']))})")
 
     f = report["files"]
     lines.append("")

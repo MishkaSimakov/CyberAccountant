@@ -6,8 +6,6 @@ from dataclasses import asdict
 
 from sqlalchemy import delete
 
-from processing.common.corpus import ReviewedCorpus
-from processing.common.documents import DocumentRevision, ReviewedDocument
 from processing.common.scope import Scope
 from processing.requirements.interface import RequirementInput, RequirementProcessor
 from processing.requirements.options import RequirementOptions
@@ -18,7 +16,8 @@ from ..llm import create_model_client
 from ..logging import create_report_log, file_log_run
 from ..models import EntityFile, Report, Requirement
 from ..services.reports import report_documents
-from ..target_row import find_target_row_keys
+from ..services.corpus import load_corpus, input_signature
+from processing.verification.target_row import find_target_row_keys
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +28,7 @@ def create_requirement_processor() -> RequirementProcessor:
 
 
 def prepare_requirement_input(report: Report, files) -> RequirementInput:
-    corpus = ReviewedCorpus(report.id, tuple(ReviewedDocument(
-        revision=DocumentRevision(report.id, file.file_id, file.version), name=file.name, role=file.role,
-        markdown=storage.artifact_path(file.entities_path).read_text(encoding="utf-8"),
-    ) for file in files))
+    corpus = load_corpus(report.id, files)
     source = RequirementInput(corpus, Scope(report.contract_number, report.period_start, report.period_end,
                                             report.target_row))
     tagged = {str(doc.revision.document_id): (
@@ -42,12 +38,6 @@ def prepare_requirement_input(report: Report, files) -> RequirementInput:
         raise ValueError("Не удалось найти проверяемую строку в итоговом отчёте.")
     return RequirementInput(corpus, Scope(report.contract_number, report.period_start, report.period_end,
                                           report.target_row, tuple(sorted(target)) if target else None))
-
-
-def _input_signature(report, files):
-    return (report.contract_number, report.period_start, report.period_end, report.target_row,
-            tuple((file.id, file.file_id, file.version, file.name, file.role, file.entities_path,
-                   file.status, file.updated_at) for file in files))
 
 
 def process_requirement_generation(report_id: int) -> None:
@@ -61,12 +51,12 @@ def process_requirement_generation(report_id: int) -> None:
         run_updated_at = report.updated_at
         log_path = report.log_path
         files = report_documents(session, report_id)
-        signature = _input_signature(report, files)
+        signature = input_signature(report, files)
 
     def is_current(session, current):
         return (current is not None and current.stage == "requirements"
                 and current.processing_status == "running" and current.updated_at == run_updated_at
-                and _input_signature(current, report_documents(session, report_id)) == signature)
+                and input_signature(current, report_documents(session, report_id)) == signature)
 
     try:
         with file_log_run(storage.artifact_path(log_path), "requirements", report_id=report_id) as run_logger:

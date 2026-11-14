@@ -6,18 +6,22 @@ from decimal import Decimal
 
 import pytest
 
-from app import storage, verification
+from app import storage
+from app.jobs.requirements import prepare_requirement_input
+from processing.verification.interface import VerificationInput
+from processing.verification.evaluation import SavedRequirement
+from processing.verification.processor import Verifier
+from processing.verification.solver import Solver
+from processing.common.requirements import FormulaDefinition, AssertionDefinition
+from types import SimpleNamespace
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
-from processing.common.corpus import ReviewedCorpus
-from processing.common.documents import DocumentRevision, ReviewedDocument
 from processing.common.scope import Scope
 from processing.common.errors import ProcessingValidationError
 from processing.requirements.generators.insurance import InsuranceGenerator
 from processing.requirements.generators.llm import LLMRequirementGenerator
 from processing.requirements.generators.scope import ScopeGenerator
-from processing.requirements.interface import RequirementInput
 from processing.requirements.options import RequirementOptions
 from processing.requirements.processor import RequirementsProcessor
 from app.models import File, Report
@@ -77,28 +81,15 @@ def context_factory(tmp_path, monkeypatch, llm_client):
                       role='final_report' if name == 'card.md' else 'supporting',
                       entities_path=storage.save_entities(1, i, 1, canonical[str(i)][1]))
                  for i, (name, text) in enumerate(documents.items(), 1)]
-        context = verification.prepare_verification(report, files)
-        if style == 'mnemonic':
-            context.config.id_style = style
-            context.scope['target_row'] = [
-                next(entity.mnemonic for entity in context.registry.entities if entity.num == n)
-                for n in context.scope['target_row']]
-        return context
+        source = prepare_requirement_input(report, files)
+        return SimpleNamespace(source=source, style=style, registry=source.registry)
 
     return prepare
 
 
 def generate_insurance(context):
-    report = context.report
-    by_key = {key: e.num for e in context.registry.entities for key in (e.num, e.mnemonic)}
-    source = RequirementInput(ReviewedCorpus(report.id, tuple(
-        ReviewedDocument(DocumentRevision(report.id, int(key), context.mapping[key]["version"]),
-                         context.mapping[key]["original"],
-                         "final_report" if context.mapping[key]["role"] == "card" else "supporting", text)
-        for key, text in context.documents.items()
-    )), Scope(report.contract_number, report.period_start, report.period_end, report.target_row,
-              tuple(by_key[key] for key in context.scope["target_row"])))
-    options = RequirementOptions(id_style=context.config.id_style)
+    source = context.source
+    options = RequirementOptions(id_style=context.style)
     output = RequirementsProcessor(generators=[InsuranceGenerator(options)]).process(
         source, logger=logging.getLogger(__name__))
     return [asdict(definition) for definition in output.definitions]
@@ -106,8 +97,13 @@ def generate_insurance(context):
 
 def run(context, llm_client):
     relations = generate_insurance(context)
-    definitions = [dict(requirement, id=i) for i, requirement in enumerate(relations, 1)]
-    return relations, verification.evaluate_requirements(context, definitions)
+    definitions = tuple(SavedRequirement(i, FormulaDefinition(
+        equation=item["equation"], tag=item.get("tag"), source=item["source"]) if item["kind"] == "formula"
+    else AssertionDefinition(condition=item["condition"], ids_related=tuple(item["ids_related"]),
+                             text=item["text"], source=item["source"]))
+                        for i, item in enumerate(relations, 1))
+    source = VerificationInput(context.source.corpus, context.source.scope, definitions)
+    return relations, Verifier().process(source, logger=logging.getLogger(__name__)).report
 
 
 def test_registered_alongside_existing_llm_generator(llm_client):
@@ -121,17 +117,17 @@ def test_only_algorithm_uses_real_registry_and_single_shared_solver(documents, c
                                                                     llm_client):
     context = context_factory(documents, style=style)
     calls = []
-    solve = verification.solve_system
+    solve = Solver.solve
 
-    def counted(requirements, registry, **kwargs):
-        calls.append(requirements)
-        return solve(requirements, registry, **kwargs)
+    def counted(solver):
+        calls.append(solver.relations)
+        return solve(solver)
 
-    monkeypatch.setattr(verification, 'solve_system', counted)
+    monkeypatch.setattr(Solver, 'solve', counted)
     own, results = run(context, llm_client)
     assert len(calls) == len(own) == 1
     assert own[0]['tag'] == 'agg'
-    assert all(r['source'] != 'llm' for r in calls[0])
+    assert all(r.source != 'llm' for r in calls[0])
     keys = collect_ids(parse(own[0]['equation']))
     selected = [e for e in context.registry.entities if (e.num if style == 'numeric' else e.mnemonic) in keys]
     assert sorted(Decimal(e.value) for e in selected) == [Decimal(7), Decimal(8), Decimal(15)]
@@ -245,7 +241,7 @@ def test_non_ruble_target_is_unverifiable(documents, context_factory, llm_client
 @pytest.mark.parametrize('start, end', [(None, None)])
 def test_missing_or_invalid_report_period_cannot_generate_empty_sum(documents, context_factory, start, end):
     context = context_factory(documents)
-    context.report.period_start, context.report.period_end = start, end
+    context.source = replace(context.source, scope=replace(context.source.scope, period_start=start, period_end=end))
     own = generate_insurance(context)
     assert own[0]['condition'] is None and 'equation' not in own[0]
 
@@ -254,7 +250,7 @@ def test_missing_or_invalid_report_period_cannot_generate_empty_sum(documents, c
 def test_row_label_keeps_report_year(documents, context_factory, style, llm_client):
     named, _ = run(context_factory(documents, style=style), llm_client)
     context = context_factory(documents, row='3 этап, 2026 г.', style=style, start=date(2025, 8, 1))
-    assert context.scope['target_label'] == '3 этап, 2026 г.'
+    assert context.source.scope.target_label == '3 этап, 2026 г.'
     own, results = run(context, llm_client)
     assert own == named
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'
@@ -284,7 +280,7 @@ def test_row_label_works_with_multiple_monetary_tables(documents, context_factor
 def test_numeric_text_is_not_interpreted_as_row_position(documents, context_factory, llm_client):
     documents['card.md'] = documents['card.md'].replace('999.00', '888.00').replace('3 этап, 2026 г.', '99')
     context = context_factory(documents, row='99')
-    assert context.scope['target_label'] == '99'
+    assert context.source.scope.target_label == '99'
     own, results = run(context, llm_client)
     assert 'equation' in own[0]
     assert next(r for r in results['card']['cells'] if r.get('expected') is not None)['status'] == 'ok'

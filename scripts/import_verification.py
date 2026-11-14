@@ -31,8 +31,8 @@ from app.jobs.verification import process_verification
 from app.models import EntityFile, File, Report, ReportEntityCounter, Requirement
 from app.schemas.reports import ReportCreate
 from app.schemas.requirements import requirement_adapter
-from app.services.requirements import verification_result_file
-from app.target_row import find_target_row_spans
+from app.services.verification import verification_result_file
+from processing.verification.target_row import find_target_row_spans
 from processing.requirements.validation import validate_formula
 from processing.entities.corpus import build_registry
 from processing.common.formula import BinOp, collect_ids, parse, tokenize

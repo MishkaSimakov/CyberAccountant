@@ -9,7 +9,7 @@ from pathlib import Path
 from checkier.config import PipelineConfig
 from processing.common.llm import ModelClient
 from processing.common.registry import EntityRegistry
-from checkier.report import build_report
+from processing.verification.results import build_report
 from checkier.solver import solve_system
 from checkier.stage0_ingest import run_ingest
 from checkier.stage1_tag import run_tag
@@ -127,7 +127,7 @@ class Pipeline:
         relations, fishy, verdicts, dangling = self.solve()
         scope = self._scope or self.scope()
         report = build_report(
-            self.cfg, mapping, reg, relations, fishy, verdicts, dangling, scope
+            mapping, reg, relations, fishy, verdicts, dangling, scope, id_style=self.cfg.id_style
         )
         self.cfg.report_path.parent.mkdir(parents=True, exist_ok=True)
         self.cfg.report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")

@@ -10,11 +10,12 @@ from sqlalchemy import func, select
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import import_verification as importer
-from app import database, storage, verification
+from app import database, storage
+from app.jobs import verification as verification_job
 from app.models import EntityFile, File, Report, ReportEntityCounter, Requirement
 from app.schemas.documents import MarkdownEdit
 from processing.entities.identifiers import mnemonic_for_id, read_identities
-from app.services import documents, requirements, reports
+from app.services import documents, requirements, reports, verification
 from processing.common.formula import FormulaError
 
 
@@ -144,7 +145,7 @@ def test_import_publishes_report_and_preserves_inputs(db, bundle, tmp_path, monk
     card = next(file for file in files if file.role == "final_report")
     assert card.version == 1
     assert '<ent id="' in documents.document_markdown(report_id, card.file_id).content
-    assert requirements.verification_result_file(report_id) == result_path
+    assert verification.verification_result_file(report_id) == result_path
     with database.session_scope() as session:
         assert session.get(ReportEntityCounter, report_id).next_entity_id == 701
         canonical = storage.artifact_path(card.entities_path).read_text(encoding="utf-8")
@@ -168,7 +169,7 @@ def test_verification_failure_propagates_without_retry(db, bundle, tmp_path, mon
         calls.append(args)
         raise RuntimeError("Solver failed")
 
-    monkeypatch.setattr(verification, "solve_system", fail)
+    monkeypatch.setattr(verification_job, "create_verification_processor", fail)
     with pytest.raises(RuntimeError, match="Solver failed"):
         importer.import_bundle(path, entities, path.parent / "23.md")
     assert len(calls) == 1

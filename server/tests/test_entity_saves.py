@@ -8,7 +8,8 @@ import pytest
 from sqlalchemy import select
 
 from app import database, storage
-from app.verification import prepare_verification, validation_registry
+from app.jobs.verification import prepare_verification_input
+from app.services.corpus import validation_registry
 from app.models import EntityFile, File, ReportEntityCounter
 from app.schemas.documents import MarkdownEdit
 from app.services import documents, reports
@@ -61,8 +62,9 @@ def test_reviewed_identities_survive_requirement_preparation(extracted):
         report = reports.find_report(session, report_id)
         registry = validation_registry(documents)
         assert [entity.num for entity in registry.entities] == [2, 0, 1]
-        context = prepare_verification(report, documents)
-        assert context.documents[str(files[0])] == result["content"]
+        context = prepare_verification_input(report, documents)
+        assert next(doc.markdown for doc in context.corpus.documents if doc.revision.document_id == files[0]) == result[
+            "content"]
         assert [entity.num for entity in context.registry.entities] == [2, 0, 1]
         assert [entity.mnemonic for entity in context.registry.entities] == [
             identity.mnemonic for document in documents for identity in read_identities(

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from processing.common.registry import EntityRegistry
 from processing.entities.values import parse_amount
 from processing.common.formula import (
-    BinOp, FormulaError, Id, Node, Num, Str, collect_ids, evaluate, parse,
+    BinOp, FormulaError, Id, Node, Num, Str, collect_ids, parse,
 )
 
 if TYPE_CHECKING:
@@ -58,26 +58,19 @@ class Substitutor:
 
     def check(self, relations: list[Relation]) -> None:
         """Set requirement outcomes independently of solver acceptance or pins."""
+        from processing.common.requirements import FormulaDefinition
+        from processing.verification.evaluation import Evaluator, SavedRequirement
+
+        evaluator = Evaluator(EntityRegistry(self.by_key[key] for key in self.by_key if isinstance(key, int)))
         for relation in relations:
-            relation.status, relation.error = "pending", None
+            direct = evaluator.requirement(SavedRequirement(relation.index, FormulaDefinition(
+                equation=relation.equation)))
+            relation.status, relation.error = direct.verdict, direct.error
+            relation.involved_files, relation.touches_card = list(direct.files), direct.touches_card
             relation.unknowns = []
             try:
                 relation.ast = parse(relation.equation)
-                ids = collect_ids(relation.ast)
-                relation.involved_files = sorted({self.by_key[key].file for key in ids if key in self.by_key})
-                relation.touches_card = any(self.by_key[key].role == "card" for key in ids if key in self.by_key)
-                unknown = ids - self.by_key.keys()
-                if unknown:
-                    raise FormulaError(f"unknown entity ids: {sorted(unknown, key=str)}")
-                relation.unknowns = sorted((key for key in ids if self.by_key[key].value is None), key=str)
-                result = evaluate(self.substitute(relation.ast), {})
-                if not isinstance(result, bool):
-                    raise FormulaError("An equation must produce a boolean value")
-                relation.status = "true" if result else "false"
-                if not result:
-                    relation.error = "requirement is false for the recorded values"
-            except MissingValue as exc:
-                relation.status, relation.error = "unverifiable", str(exc)
-            except (FormulaError, ArithmeticError, ValueError, TypeError, RecursionError) as exc:
-                relation.status = "error"
-                relation.error = f"{exc} (equation: {relation.equation})"
+                relation.unknowns = sorted((key for key in collect_ids(relation.ast)
+                                            if key in self.by_key and self.by_key[key].value is None), key=str)
+            except (FormulaError, ValueError):
+                relation.ast = None

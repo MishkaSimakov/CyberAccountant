@@ -4,8 +4,10 @@ from datetime import date
 
 import pytest
 
-from app import verification
-from app.verification_context import VerificationContext
+from processing.verification.evaluation import SavedRequirement
+from processing.verification.interface import VerificationInput
+from processing.verification.processor import Verifier
+from processing.common.requirements import FormulaDefinition
 import logging
 from dataclasses import asdict
 
@@ -17,8 +19,7 @@ from processing.requirements.interface import RequirementInput
 from processing.requirements.options import RequirementOptions
 from processing.requirements.processor import RequirementsProcessor
 from app.models import Report
-from app.target_row import find_target_row_keys, find_target_row_spans
-from checkier.config import PipelineConfig
+from processing.verification.target_row import find_target_row_keys, find_target_row_spans
 from entity_fixtures import registry_from_drafts as build_registry
 
 
@@ -35,13 +36,9 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
         "5": ("data", 'No contract or parsed date: <ent t="date">unknown</ent>'),
         "6": ("data", '<ent t="contract">OTHER</ent>'),
     }
-    registry = build_registry(tagged)
-    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path, id_style=style)
-    mapping = {key: {"role": role, "original": key} for key, (role, _) in tagged.items()}
-    mapping["6"]["duplicate_of"] = "2"
+    build_registry(tagged)
     report = Report(contract_number="TARGET", period_start=date(2026, 1, 1), period_end=date(2026, 5, 31))
     scope = {"target_row": None, "target_label": None}
-    context = VerificationContext(cfg, {}, registry, scope, mapping, report)
     source = RequirementInput(ReviewedCorpus(1, tuple(
         ReviewedDocument(DocumentRevision(1, int(key), 1), key,
                          "final_report" if role == "card" else "supporting", markdown)
@@ -55,7 +52,14 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
     assert scope == {"target_row": None, "target_label": None}
     assert not (tmp_path / "scope.json").exists()
     definitions = [dict(requirement, id=i) for i, requirement in enumerate(requirements, 1)]
-    result = verification.evaluate_requirements(context, definitions)
+
+    def verify(definitions):
+        saved = tuple(SavedRequirement(item["id"], FormulaDefinition(
+            equation=item["equation"], tag=item["tag"], source=item["source"])) for item in definitions)
+        return Verifier().process(VerificationInput(source.corpus, source.scope, saved),
+                                  logger=logging.getLogger(__name__)).report
+
+    result = verify(definitions)
     failed = [relation for relation in result["relations"] if relation["status"] == "false"]
     assert [relation["files"] for relation in failed] == [["2"], ["3"]]
     assert result["files"]["out_of_scope"] == {"2": [failed[0]["equation"]], "3": [failed[1]["equation"]]}
@@ -64,11 +68,11 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
     # The scope tag, rather than the generator source, controls exclusion.
     for relation in failed:
         definitions[relation["index"]]["tag"] = "ref"
-    assert verification.evaluate_requirements(context, definitions)["files"]["out_of_scope"] == {}
+    assert verify(definitions)["files"]["out_of_scope"] == {}
 
     # Removing all scope requirements also removes all inferred exclusions.
     assert RequirementsProcessor(generators=[]).process(source, logger=logging.getLogger(__name__)).definitions == ()
-    assert verification.evaluate_requirements(context, [])["files"]["out_of_scope"] == {}
+    assert verify([])["files"]["out_of_scope"] == {}
 
 
 def test_target_row_matches_full_label_through_entity_tags():

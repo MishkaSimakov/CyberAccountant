@@ -293,11 +293,12 @@ class Parser:
 def parse(src: str) -> Node:
     return Parser(tokenize(src)).parse()
 
+
 def is_boolean_expression(node):
     if not isinstance(node, BinOp):
         return False
     if node.op in {"&&", "||"}:
-        return boolean_expression(node.left) and boolean_expression(node.right)
+        return is_boolean_expression(node.left) and is_boolean_expression(node.right)
     return node.op in {"==", "!=", "<", "<=", ">", ">="}
 
 

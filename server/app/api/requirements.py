@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from ..schemas.requirements import (RequirementDefinition, RequirementResponse, RequirementsResponse,
                                     RequirementUpdate, FormulaValidationRequest, FormulaValidationResponse)
 from ..services import requirements as service
+from ..services import verification
 from ..services.reports import report_details
 
 router = APIRouter()
@@ -45,7 +46,7 @@ def delete_requirement(report_id: int, requirement_id: int):
 
 @router.post("/reports/{report_id}/run-verification")
 def run_verification(report_id: int):
-    service.run_verification(report_id)
+    verification.run_verification(report_id)
     return report_details(report_id)
 
 
@@ -56,7 +57,7 @@ def requirements(report_id: int):
 
 @router.get("/reports/{report_id}/verification-result")
 def verification_result(report_id: int):
-    return FileResponse(service.verification_result_file(report_id), media_type="application/json")
+    return FileResponse(verification.verification_result_file(report_id), media_type="application/json")
 
 
 @router.patch("/reports/{report_id}/requirements/{requirement_id}", response_model=RequirementResponse)

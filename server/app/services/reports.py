@@ -11,7 +11,7 @@ from ..database import session_scope
 from ..models import File, Report
 from ..schemas.documents import Document
 from ..schemas.reports import Report as ReportResponse, ReportCreate
-from ..target_row import find_target_row_spans
+from processing.verification.target_row import find_target_row_spans
 from . import ServiceError
 
 
