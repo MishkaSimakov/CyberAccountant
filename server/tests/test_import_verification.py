@@ -129,6 +129,7 @@ def test_import_publishes_report_and_preserves_inputs(db, bundle, tmp_path, monk
     assert details["processing_status"] == "completed"
     assert details["blockers"] == []
     saved = requirements.report_requirements(report_id).requirements
+    assert [requirement.id for requirement in saved] == [1, 2]
     assert saved[0].source == "friend"
     assert saved[0].notes == "Reviewed"
     assert saved[0].silenced is True
