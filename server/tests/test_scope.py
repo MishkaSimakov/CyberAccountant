@@ -87,7 +87,25 @@ def test_target_row_matches_full_label_through_entity_tags():
     }
     registry = build_registry(tagged)
     keys = find_target_row_keys(tagged, registry, "3 этап, 2026 г.")
-    assert keys == {2, 3}
+    assert keys == {3}
+
+
+@pytest.mark.parametrize("label, row", [
+    ("Итого", '<ent t="text">Итого</ent>'),
+    ("3 этап, 2026 г.", '<ent t="number">3</ent> этап, <ent t="date">2026 г.</ent>'),
+    ("3 этап, 2026 г.", '<ent t="text">3 этап, 2026 г.</ent>'),
+    ("3 этап, 2026 г.", '<ent t="text">Строка 3 этап, 2026 г. отчёта</ent>'),
+])
+def test_target_row_excludes_entities_overlapping_label(label, row):
+    tagged = {"card1": ("card", f'| {row} | <ent t="amount">3</ent> | <ent t="amount">2026</ent> |\n')}
+    registry = build_registry(tagged)
+    keys = find_target_row_keys(tagged, registry, label)
+    assert keys == {entity.num for entity in registry.entities[-2:]}
+
+
+def test_target_row_with_only_label_entities_returns_none():
+    tagged = {"card1": ("card", '| <ent t="text">Итого</ent> | 10 |\n')}
+    assert find_target_row_keys(tagged, build_registry(tagged), "Итого") is None
 
 
 @pytest.mark.parametrize("label", [
