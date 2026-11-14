@@ -204,6 +204,26 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
             assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == tagged()
 
 
+@pytest.mark.parametrize("target_label", [None, "Итого"])
+def test_extraction_filters_normalized_main_entities_before_review(ready, monkeypatch, target_label):
+    report_id, revisions, _ = ready
+    normalized = ('# <ent t="text">Сумма</ent>\n'
+                  '<ent t="text">Итого</ent>: '
+                  '<ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+                  'Другое: <ent t="amount" u="RUB" value="20">20</ent>\n')
+    filtered = ('# Сумма\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+                'Другое: 20\n')
+    with database.session_scope() as session:
+        session.get(Report, report_id).target_row = target_label
+    monkeypatch.setattr(job, "normalize_document", lambda cfg, text: normalized)
+    assert request("POST", f"/reports/{report_id}/run-entity-extraction")[0] == 200
+    for revision_id in revisions:
+        job.process_entities(revision_id)
+    for document in request("GET", f"/reports/{report_id}")[1]["documents"]:
+        expected = filtered if document["role"] == "final_report" and target_label else normalized
+        assert request("GET", f'/reports/{report_id}/documents/{document["id"]}/markdown')[1]["content"] == expected
+
+
 @pytest.mark.parametrize("per_document", [False, True])
 def test_extraction_failure_can_be_retried_without_repeating_successes(ready, monkeypatch, per_document):
     report_id, revisions, pending = ready

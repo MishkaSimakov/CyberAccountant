@@ -16,7 +16,7 @@ from .generators.insurance import generate_insurance
 from .generators.llm import generate_llm
 from .generators.scope import generate_scope
 from .models import File, Report
-from .target_row import find_target_row_keys
+from .target_row import find_target_row_keys, find_target_row_spans
 from .verification_context import VerificationContext
 
 GENERATORS = {"scope": generate_scope, "llm": generate_llm, "insurance": generate_insurance}
@@ -73,9 +73,10 @@ def prepare_verification(report: Report, files: list[File]) -> VerificationConte
     registry = build_registry(tagged, seed=cfg.seed)
     registry.save(cfg.entities_path)
     target_row = find_target_row_keys(tagged, registry, report.target_row)
-    if report.target_row and not target_row:
+    if report.target_row and not any(role == "card" and find_target_row_spans(text, report.target_row)
+                                     for role, text in tagged.values()):
         raise ValueError("Не удалось найти проверяемую строку в итоговом отчёте.")
-    scope = {"target_row": sorted(target_row) if target_row else None, "target_label": report.target_row}
+    scope = {"target_row": sorted(target_row) if target_row is not None else None, "target_label": report.target_row}
     documents = run_replace(cfg, tagged, registry)
     return VerificationContext(cfg, documents, registry, scope, mapping, report)
 

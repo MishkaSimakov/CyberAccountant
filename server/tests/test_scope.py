@@ -1,5 +1,6 @@
 """Scope requirements use report settings; evaluated failures determine exclusions."""
 
+import re
 from datetime import date
 
 import pytest
@@ -8,7 +9,7 @@ from app import verification
 from app.verification_context import VerificationContext
 from app.generators.scope import generate_scope
 from app.models import Report
-from app.target_row import find_target_row_keys, find_target_row_spans
+from app.target_row import filter_target_row_entities, find_target_row_keys, find_target_row_spans
 from checkier.config import PipelineConfig
 from checkier.entities import build_registry
 from checkier.solver import solve_system
@@ -103,9 +104,9 @@ def test_target_row_excludes_entities_overlapping_label(label, row):
     assert keys == {entity.num for entity in registry.entities[-2:]}
 
 
-def test_target_row_with_only_label_entities_returns_none():
+def test_target_row_with_only_label_entities_selects_none():
     tagged = {"card1": ("card", '| <ent t="text">Итого</ent> | 10 |\n')}
-    assert find_target_row_keys(tagged, build_registry(tagged), "Итого") is None
+    assert find_target_row_keys(tagged, build_registry(tagged), "Итого") == set()
 
 
 @pytest.mark.parametrize("label", [
@@ -120,12 +121,12 @@ def test_target_row_with_only_label_entities_returns_none():
 def test_target_row_requires_literal_label(label):
     tagged = {"card1": ("card", '| 3 этап, 2026 г. | <ent t="amount">10</ent> |\n')}
     registry = build_registry(tagged)
-    assert find_target_row_keys(tagged, registry, label) is None
+    assert find_target_row_keys(tagged, registry, label) == (set() if label else None)
 
 
 def test_target_row_does_not_match_part_of_an_id():
     tagged = {"card1": ("card", '| 13 этап, 2026 г. | <ent t="amount">10</ent> |\n')}
-    assert find_target_row_keys(tagged, build_registry(tagged), "3 этап, 2026 г.") is None
+    assert find_target_row_keys(tagged, build_registry(tagged), "3 этап, 2026 г.") == set()
 
 
 def test_target_row_ignores_matches_in_supporting_documents():
@@ -133,12 +134,12 @@ def test_target_row_ignores_matches_in_supporting_documents():
         "card1": ("card", '| Другая строка | <ent t="amount">10</ent> |\n'),
         "data1": ("data", '| Итого | <ent t="amount">20</ent> |\n'),
     }
-    assert find_target_row_keys(tagged, build_registry(tagged), "Итого") is None
+    assert find_target_row_keys(tagged, build_registry(tagged), "Итого") == set()
 
 
-def test_target_row_with_no_entities_returns_none():
+def test_target_row_with_no_entities_selects_none():
     tagged = {"card1": ("card", '| Итого | 10 |\n')}
-    assert find_target_row_keys(tagged, build_registry(tagged), "Итого") is None
+    assert find_target_row_keys(tagged, build_registry(tagged), "Итого") == set()
 
 
 def test_target_row_spans_work_with_ocr_text_before_entities_exist():
@@ -146,3 +147,32 @@ def test_target_row_spans_work_with_ocr_text_before_entities_exist():
     start = text.index('| 3 этап, 2026 г.')
     assert find_target_row_spans(text, "3 этап, 2026 г.") == [(start, len(text))]
     assert find_target_row_spans(text, "3 этап, 2024 г.") == []
+
+
+@pytest.mark.parametrize("label, markup", [
+    ("Итого", '<ent t="text">Итого</ent>'),
+    ("3 этап, 2026 г.", '<ent t="number">3</ent> этап, <ent t="date">2026 г.</ent>'),
+    ("3 этап, 2026 г.", '<ent t="text">Строка 3 этап, 2026 г. отчёта</ent>'),
+])
+def test_filter_keeps_only_target_values_and_preserves_text(label, markup):
+    amount = '<ent t="amount" u="RUB" n="1000" value="3000">3</ent>'
+    text = (f'Договор <ent t="contract">ABC</ent>\r\n'
+            f'| Другая строка | <ent t="amount">10</ent> |\r\n'
+            f'| {markup} | {amount} |\r\n'
+            f'| {markup} | {amount} |')
+    plain_label = re.sub(r'</?ent\b[^>]*>', '', markup)
+    filtered = filter_target_row_entities(text, label)
+    assert filtered == (f'Договор ABC\r\n| Другая строка | 10 |\r\n'
+                        f'| {plain_label} | {amount} |\r\n| {plain_label} | {amount} |')
+    assert filter_target_row_entities(filtered, label) == filtered
+
+
+@pytest.mark.parametrize("label", [None, ""])
+def test_filter_without_target_keeps_all_entities(label):
+    text = '| Итого | <ent t="amount" value="10">10</ent> |\n'
+    assert filter_target_row_entities(text, label) == text
+
+
+def test_filter_preserves_empty_target_selection():
+    text = '| <ent t="text">Итого</ent> | 10 |\n| Другое | <ent t="amount">20</ent> |'
+    assert filter_target_row_entities(text, "Итого") == '| Итого | 10 |\n| Другое | 20 |'

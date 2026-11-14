@@ -6,6 +6,8 @@ from ..verification_context import VerificationContext
 
 
 def generate_llm(context: VerificationContext) -> list[dict]:
+    if context.scope["target_row"] == [] or not any(entity.role == "card" for entity in context.registry.entities):
+        return []
     report = context.report
     settings = dict(context.scope, contract_number=report.contract_number,
                     period_start=report.period_start.isoformat() if report.period_start else None,

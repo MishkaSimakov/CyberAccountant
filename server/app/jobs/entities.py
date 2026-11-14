@@ -10,8 +10,10 @@ from ..models import File
 from ..services.documents import find_document
 from ..services.reports import find_report, sync_processing_status
 from ..storage import artifact_path, save_entities
+from ..target_row import filter_target_row_entities
 
 logger = logging.getLogger(__name__)
+
 
 def process_entities(file_revision_id: int) -> None:
     """Run one document extraction, keeping LLM calls outside transactions."""
@@ -35,6 +37,8 @@ def process_entities(file_revision_id: int) -> None:
             cfg = PipelineConfig(data_dir=source.parent, out_dir=source.parent, tag_workers=1)
             tagged, _retries = tag_document(cfg, file.name, source.read_text(encoding="utf-8"))
             tagged = normalize_document(cfg, tagged)
+            if file.role == "final_report":
+                tagged = filter_target_row_entities(tagged, report.target_row)
             entities_path = save_entities(report_id, file.file_id, file.version, tagged)
     except Exception:
         logger.exception("Entries extraction failed for file revision %s", file_revision_id)

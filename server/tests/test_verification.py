@@ -69,6 +69,52 @@ def generate(report_id):
     process_requirement_generation(report_id)
 
 
+@pytest.mark.parametrize("target_label", [None, "Итого"])
+def test_removing_all_main_entities_keeps_selection_empty(reviewed, monkeypatch, target_label):
+    report_id, revisions, _ = reviewed
+    with database.session_scope() as session:
+        session.get(Report, report_id).target_row = target_label
+        document_id = session.get(File, revisions[0]).file_id
+    path = f"/reports/{report_id}"
+    assert request("POST", path + f"/documents/{document_id}/markdown", {
+        "content": "Итого: 0,11", "base_revision": 1,
+    })[0] == 200
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("No main entities remain to generate model requirements for")
+
+    monkeypatch.setattr("app.generators.llm.generate_relations", forbidden)
+    generate(report_id)
+    assert request("GET", path + "/requirements")[1]["requirements"] == []
+    requirements.run_verification(report_id)
+    process_verification(report_id)
+    status, result = request("GET", path + "/verification-result")
+    assert status == 200
+    assert result["scope"]["target_row"] == ([] if target_label else None)
+    assert result["card"]["cells"] == []
+    assert result["requirement_results"] == []
+    assert all(entity["role"] == "data" for entity in result["entities"])
+
+
+def test_empty_target_does_not_select_other_main_entities(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    text = 'Итого: 10\nДругое: <ent t="amount" value="20">20</ent>'
+    report = Report(id=1, target_row="Итого")
+    file = File(file_id=1, name="card.pdf", role="final_report", version=1,
+                entities_path=storage.save_entities(1, 1, 1, text))
+    context = verification.prepare_verification(report, [file])
+    assert context.scope["target_row"] == []
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("An empty target must not fall back to other main entities")
+
+    monkeypatch.setattr("app.generators.llm.generate_relations", forbidden)
+    assert verification.generate_requirements(context) == []
+    result = verification.evaluate_requirements(context, [])
+    assert result["card"]["cells"] == []
+    assert [entity["num"] for entity in result["constants"]] == [0]
+
+
 def test_generated_requirement_ids_restart_for_each_report(reviewed):
     report_id, _, _ = reviewed
     with database.session_scope() as session:
