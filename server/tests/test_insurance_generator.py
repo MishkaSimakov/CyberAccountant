@@ -1,5 +1,6 @@
 """Insurance-only verification through the shared corpus, registry and solver."""
 
+import calendar
 import re
 from datetime import date
 from decimal import Decimal
@@ -19,9 +20,13 @@ def tag(kind, value, text=None, unit=None):
 
 
 def calculation(month, amount, *, number=None, contract='24/03/15-01', unit='RUB'):
+    year, month_number = map(int, month.split('-'))
+    last_day = calendar.monthrange(year, month_number)[1]
+    period = (f'<ent t="date" start="{month}-01T00:00:00" '
+              f'end="{month}-{last_day:02d}T23:59:59">{month}</ent>')
     return f'''РАСЧЁТ СТРАХОВЫХ ВЗНОСОВ
 Документ: {tag('docid', number or 'ВЗН-' + month)}
-Проект: {tag('contract', contract)} | Период: {tag('date', month + '-01', month)}
+Проект: {tag('contract', contract)} | Период: {period}
 
 | База начислений, руб. | Начислено взносов, руб. | Код статьи |
 | --- | --- | --- |

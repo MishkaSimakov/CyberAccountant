@@ -10,7 +10,7 @@ Grammar (informal)::
     mul_expr  := unary (("*"|"/") unary)*
     unary     := "-" unary | primary
     primary   := NUMBER | "STRING" | DATE | ID | call | "(" expr ")"
-    call      := ("norm"|"raw") "(" ID ")"
+    call      := ("norm"|"raw"|"start"|"end") "(" ID ")"
     ID        := "mnemonic-word" | "#" digits          (per id_style)
 
 Evaluation is symbolic: entity ids evaluate to ``Sym`` leaves carrying the
@@ -120,7 +120,7 @@ def tokenize(src: str) -> list[Token]:
             i = j
             continue
         # function names
-        for fname in ("norm", "raw"):
+        for fname in ("start", "end", "norm", "raw"):
             if src.startswith(fname, i) and i + len(fname) < n and src[i + len(fname)] == "(":
                 tokens.append(Token("func", fname, i))
                 i += len(fname)
@@ -158,7 +158,7 @@ class DateLit(Node):
 @dataclass
 class Id(Node):
     key: str | int  # mnemonic (str) or numeric id (int)
-    func: str | None = None  # None | "norm" | "raw"
+    func: str | None = None  # None | "norm" | "raw" | "start" | "end"
 
 
 @dataclass

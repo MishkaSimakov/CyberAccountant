@@ -85,7 +85,10 @@ def main() -> None:
     tagged = probe("quoted-date tagging", lambda: tag_document(
         cfg, "date-check.md", 'Начало: "10" мая 2026 г.\n',
     )[0])
-    expected = '<ent t="date">"10" мая 2026 г.</ent>'
+    expected = (
+        '<ent t="date" start="2026-05-10T00:00:00" end="2026-05-10T23:59:59">'
+        '"10" мая 2026 г.</ent>'
+    )
     if not isinstance(tagged, str) or expected not in tagged:
         failures.append(f"quoted date was not tagged atomically; expected {expected!r}")
 

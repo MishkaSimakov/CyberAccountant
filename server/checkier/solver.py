@@ -148,8 +148,9 @@ class Solver:
         # None -> every card entity is a variable (targeting disabled)
         self.variable_keys = None if variable_keys is None else set(variable_keys)
         self.consts: dict[int, z3.ExprRef] = {}
+        self.end_consts: dict[int, z3.ExprRef] = {}
         #: entity keys with asserted grounding facts (constants)
-        self.grounded: set[str | int] = set()
+        self.grounded: set = set()
         #: solved (rigid) values for target-row variables (Decimal | str)
         self.pin: dict[str, Decimal | str] = {}
         #: target-row variables the system underdetermines
@@ -182,11 +183,11 @@ class Solver:
             return "real"
         return "string"
 
-    def _new_const(self, e: Entity) -> z3.ExprRef:
+    def _new_const(self, e: Entity, *, end: bool = False) -> z3.ExprRef:
         sort = self._const_sort(e)
         c: z3.ExprRef
         if sort == "int":
-            c = z3.Int(f"e{e.num}")
+            c = z3.Int(f"e{e.num}_end" if end else f"e{e.num}")
         elif sort == "real":
             c = z3.Real(f"e{e.num}")
         else:
@@ -195,7 +196,7 @@ class Solver:
             return z3.String(f"s{e.num}")  # placeholder, unused in assertions
         if self._is_variable(e):
             return c  # variable: deliberately unbound
-        val = e.value
+        val = e.end_value if end else e.value
         if val is None:
             return c  # truth unknown — leave free, relations may pin it
         d = _to_decimal(val)
@@ -203,11 +204,23 @@ class Solver:
             return c
         lit = z3.IntVal(int(d)) if sort == "int" else _real_val(d)
         self.acc.add(c == lit)
-        self.grounded.add(e.mnemonic)
-        self.grounded.add(e.num)
+        if end:
+            self.grounded.add(("end", e.mnemonic))
+            self.grounded.add(("end", e.num))
+        else:
+            self.grounded.add(e.mnemonic)
+            self.grounded.add(e.num)
         return c
 
     def _const(self, e: Entity, func: str | None = None) -> z3.ExprRef:
+        if func in ("start", "end"):
+            if e.type != "date":
+                raise FormulaError(f"{func}({e.mnemonic}) requires a date entity")
+            if func == "end":
+                if e.num not in self.end_consts:
+                    self.end_consts[e.num] = self._new_const(e, end=True)
+                return self.end_consts[e.num]
+            func = None  # Bare date IDs retain their historical start behavior.
         if func == "raw":
             if e.num in self.consts:
                 return self.consts[e.num]
@@ -229,6 +242,8 @@ class Solver:
     def _build_consts(self) -> None:
         for e in self.registry.entities:
             self._const(e)
+            if e.type == "date":
+                self._const(e, "end")
 
     # -- string identity resolution (worklist propagation, no z3) ---------------
     def _resolve_strings(self) -> None:
@@ -309,6 +324,8 @@ class Solver:
             e = self.by_key.get(node.key)
             if e is None:
                 raise FormulaError(f"unknown entity id {node.key!r}")
+            if node.func in ("start", "end"):
+                return self._const(e, node.func)
             if self._const_sort(e) == "string" and node.func != "raw":
                 return _StrVal(self.str_value.get(e.num), f"{node.key} (raw={e.raw!r})")
             return self._const(e, node.func)
@@ -428,6 +445,28 @@ class Solver:
             return l * r
         return l / r
 
+    def _relation_unknowns(self, node: Node) -> list:
+        unknown = []
+
+        def walk(current: Node) -> None:
+            if isinstance(current, Id):
+                entity = self.by_key.get(current.key)
+                if entity is None:
+                    return
+                if current.func == "end":
+                    grounded = (("end", entity.mnemonic) in self.grounded
+                                or ("end", entity.num) in self.grounded)
+                else:
+                    grounded = (entity.mnemonic in self.grounded or entity.num in self.grounded)
+                if not grounded:
+                    unknown.append(current.key)
+            elif isinstance(current, BinOp):
+                walk(current.left)
+                walk(current.right)
+
+        walk(node)
+        return unknown
+
     # -- solving ----------------------------------------------------------------
     def _check(self, assertion: z3.ExprRef):
         self.acc.push()
@@ -470,13 +509,7 @@ class Solver:
                 rel.status = "error"
                 rel.error = "An equation must produce a boolean value"
                 continue
-            rel.unknowns = [
-                k
-                for k in collect_ids(rel.ast)
-                if k in self.by_key
-                   and self.by_key[k].mnemonic not in self.grounded
-                   and self.by_key[k].num not in self.grounded
-            ]
+            rel.unknowns = self._relation_unknowns(rel.ast)
             if isinstance(result, bool):
                 rel.status = "true" if result else "false"
                 if not result:

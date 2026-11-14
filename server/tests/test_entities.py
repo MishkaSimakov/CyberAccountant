@@ -19,11 +19,27 @@ from app.services import entities, reports
 from test_documents import api, request, upload
 
 MARKDOWN = "# Сумма\nИтого: 100,00 руб.\n"
-SEGMENTS = [
-    {"content": "# Сумма\nИтого: ", "wrap": "100,00", "type": "amount", "unit": "RUB"},
-    {"content": " руб.\n", "wrap": "", "type": "EOF"},
-]
-TAGGED = '# Сумма\nИтого: <ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+
+
+def tagged(filename):
+    return (
+        f"# {filename}\n# Сумма\nИтого: "
+        '<ent t="amount" u="RUB" value="100.00">100,00</ent> руб.\n'
+    )
+
+
+def respond_to_extraction(prompt, **kwargs):
+    if kwargs["schema_name"] == "entity_wrapping":
+        processed = prompt.rsplit("NOW PROCESS THIS INPUT.\n\n", 1)[1]
+        before, after = processed.split("100,00", 1)
+        return [
+            {"content": before, "wrap": "100,00", "type": "entity"},
+            {"content": after, "wrap": "", "type": "EOF"},
+        ]
+    return {"e0": {
+        "type": "amount", "unit": "RUB", "norm": "1",
+        "value": "100.00", "start": None, "end": None,
+    }}
 
 
 @pytest.fixture
@@ -52,7 +68,7 @@ def ready(api, monkeypatch):
         extraction_ids.append(revision_id)
 
     monkeypatch.setattr(entities, "enqueue_entities", enqueue)
-    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", lambda *args, **kwargs: SEGMENTS)
+    monkeypatch.setattr("checkier.stage1_tag.call_llm_json", respond_to_extraction)
     return report_id, ocr_ids, extraction_ids
 
 
@@ -79,7 +95,7 @@ def test_extraction_preserves_full_model_logs_across_runs(ready, monkeypatch):
             log = content.decode("utf-8")
             assert log.count("\nRUN ") == run
             assert log.count("--- MODEL PROMPT |") == run * 9
-            assert f"Filename: {document['name']}" in log
+            assert f"# {document['name']}\n{MARKDOWN}" in log
             assert MARKDOWN in log
             assert content.count(output.encode("utf-8")) == run * 9
             assert log.count("ERROR (RuntimeError): tagging failed") == run
@@ -179,13 +195,13 @@ def test_extraction_preserves_ocr_and_exposes_raw_markup(ready):
     assert not details["blockers"]
     for document in details["documents"]:
         assert document["status"] == "completed"
-        assert request("GET", path + f'/documents/{document["id"]}/markdown')[1]["content"] == TAGGED
+        assert request("GET", path + f'/documents/{document["id"]}/markdown')[1]["content"] == tagged(document["name"])
         assert request("GET", path + f'/documents/{document["id"]}')[1]["status"] == "completed"
     with database.session_scope() as session:
         for revision_id in revisions:
             file = session.get(File, revision_id)
             assert storage.artifact_path(file.markdown_path).read_text(encoding="utf-8") == MARKDOWN
-            assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == TAGGED
+            assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == tagged(file.name)
 
 
 @pytest.mark.parametrize("per_document", [False, True])
@@ -268,7 +284,7 @@ def test_date_normalization_finishes_before_extraction_is_completed(ready, monke
     report_id, revisions, _ = ready
     request("POST", f"/reports/{report_id}/run-entity-extraction")
     monkeypatch.setattr(job, "tag_document", lambda *args, **kwargs: (
-        '<ent t="date">Январь 2026</ent>', 0
+        '<ent t="date">особый период</ent>', 0
     ))
 
     def normalize(*args, **kwargs):
@@ -276,7 +292,7 @@ def test_date_normalization_finishes_before_extraction_is_completed(ready, monke
             file = session.get(File, revisions[0])
             assert file.status == "entities_running"
             assert file.entities_path is None
-        return [{"raw": "Январь 2026", "normalized": "01.01.2026"}]
+        return [{"raw": "особый период", "start": "01.01.2026", "end": "31.01.2026"}]
 
     monkeypatch.setattr("checkier.stage2_dates.call_llm_json", normalize)
     job.process_entities(revisions[0])
@@ -284,7 +300,7 @@ def test_date_normalization_finishes_before_extraction_is_completed(ready, monke
         file = session.get(File, revisions[0])
         assert file.status == "completed"
         assert storage.artifact_path(file.entities_path).read_text(encoding="utf-8") == (
-            '<ent t="date" value="2026-01-01">Январь 2026</ent>'
+            '<ent t="date" start="2026-01-01T00:00:00" end="2026-01-31T23:59:59">особый период</ent>'
         )
 
 
@@ -406,7 +422,7 @@ def test_review_edits_preserve_revisions_and_checkier_fields(ready):
     with database.session_scope() as session:
         original = session.get(File, revisions[0])
         assert storage.artifact_path(original.markdown_path).read_text(encoding="utf-8") == MARKDOWN
-        assert storage.artifact_path(original.entities_path).read_text(encoding="utf-8") == TAGGED
+        assert storage.artifact_path(original.entities_path).read_text(encoding="utf-8") == tagged(original.name)
         edited = reports.report_documents(session, report_id)[0]
         assert edited.version == 2 and edited.status == "completed"
         assert "/edited/" in edited.entities_path
@@ -434,6 +450,7 @@ def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
     path = f"/reports/{report_id}"
     with database.session_scope() as session:
         file_id = session.get(File, revisions[0]).file_id
+        filename = session.get(File, revisions[0]).name
     markdown_path = path + f"/documents/{file_id}/markdown"
     content = MARKDOWN + "\n"
     status, result = request("POST", markdown_path, {"content": content, "base_revision": 1})
@@ -452,4 +469,4 @@ def test_edit_ocr_creates_revision_used_for_extraction(ready, monkeypatch):
     assert pending == [edited_id, revisions[1]]
     job.process_entities(revisions[0])  # The old OCR revision must stay obsolete.
     job.process_entities(edited_id)
-    assert request("GET", markdown_path)[1]["content"] == TAGGED
+    assert request("GET", markdown_path)[1]["content"] == tagged(filename)

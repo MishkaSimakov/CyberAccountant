@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from checkier.entities import EntityRegistry
+from checkier.entities import EntityRegistry, build_registry
 from checkier.solver import solve_system
 
 
@@ -189,6 +189,7 @@ def test_bounded_variable_is_unverified_not_pinned():
         cards={"card-d": ("date", "Январь 2026", None, "card")},
         data={},
     )
+    ents["card-d"].value = ents["card-d"].end_value = None
     d = ents["card-d"].key
     rels = [{"equation": f"01.01.2026 <= {d} && {d} <= 31.05.2026"}]
     relations, _, verdicts, _ = solve_system(rels, reg)
@@ -229,6 +230,31 @@ def test_non_target_card_cells_become_constants():
     vy = by_mn[ents["card-y"].mnemonic]
     assert vy.status == "constant"  # trusted, not verified
     assert vy.target is False
+
+
+def test_date_accessors_and_substitutor_use_inclusive_interval_bounds():
+    registry = build_registry({"data": ("data", '<ent t="date">2 квартал 2026</ent>')})
+    entity = registry.entities[0]
+    key = entity.key
+    inside = [{"equation": f"01.04.2026 <= start({key}) && end({key}) <= 30.06.2026"}]
+    relations, _, _, _ = solve_system(inside, registry)
+    assert relations[0].status == "true"
+    crossing = [{"equation": f"start({key}) >= 01.05.2026"}]
+    relations, _, _, _ = solve_system(crossing, registry)
+    assert relations[0].status == "false"
+    legacy = [{"equation": f"{key} == 01.04.2026"}]
+    relations, _, _, _ = solve_system(legacy, registry)
+    assert relations[0].status == "true"
+
+
+def test_date_accessors_reject_non_date_entities():
+    registry = EntityRegistry(0)
+    entity = registry.add(
+        type_="amount", raw="5", unit="RUB", norm="1", file="f1", role="data", span=(0, 0),
+    )
+    relations, _, _, _ = solve_system([{"equation": f"start({entity.key}) == 01.01.2026"}], registry)
+    assert relations[0].status == "error"
+    assert "requires a date" in relations[0].error
 
 
 def test_boolean_subexpression_compared_to_boolean():

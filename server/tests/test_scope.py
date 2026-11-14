@@ -11,6 +11,7 @@ from app.models import Report
 from app.target_row import find_target_row_keys, find_target_row_spans
 from checkier.config import PipelineConfig
 from checkier.entities import build_registry
+from checkier.solver import solve_system
 
 
 @pytest.mark.parametrize("style", ["numeric", "mnemonic"])
@@ -57,6 +58,21 @@ def test_scope_generator_emits_formulas_and_report_infers_exclusions(tmp_path, m
     monkeypatch.setattr(verification, "GENERATORS", {})
     assert verification.generate_requirements(context) == []
     assert verification.evaluate_requirements(context, [])["files"]["out_of_scope"] == {}
+
+
+def test_scope_requires_whole_interval_containment(tmp_path):
+    tagged = {"1": ("data", '<ent t="date">2 квартал 2026</ent>')}
+    registry = build_registry(tagged)
+    cfg = PipelineConfig(data_dir=tmp_path, out_dir=tmp_path, id_style="numeric")
+    mapping = {"1": {"role": "data", "original": "quarter.pdf"}}
+    scope = {"target_row": None, "target_label": None}
+    for end, expected in ((date(2026, 5, 31), "false"), (date(2026, 6, 30), "true")):
+        report = Report(period_start=date(2026, 4, 1), period_end=end)
+        context = VerificationContext(cfg, {}, registry, scope, mapping, report)
+        requirements = generate_scope(context)
+        assert requirements[0]["equation"] == "01.04.2026 <= start(#0) && end(#0) <= " + end.strftime("%d.%m.%Y")
+        relations, _, _, _ = solve_system(requirements, registry)
+        assert relations[0].status == expected
 
 
 def test_target_row_matches_full_label_through_entity_tags():

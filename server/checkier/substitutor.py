@@ -26,13 +26,23 @@ class Substitutor:
     def substitute(self, node: Node) -> Node:
         """Return a new AST whose references are replaced by recorded literals.
 
-        Bare IDs and norm() use normalized values; raw() parses the original
+        Bare IDs and norm() use normalized values (the start ordinal for dates);
+        start()/end() select explicit date bounds. raw() parses the original
         numeric text without applying its unit multiplier.
         """
         if isinstance(node, Id):
             entity = self.by_key.get(node.key)
             if entity is None:
                 raise FormulaError(f"unknown entity id {node.key!r}")
+            if node.func in ("start", "end"):
+                if entity.type != "date":
+                    raise FormulaError(f"{node.func}({node.key}) requires a date entity")
+                value = entity.end_value if node.func == "end" else entity.value
+                if value is None:
+                    raise MissingValue(
+                        f"entity {node.key!r} has no recorded {node.func} date bound"
+                    )
+                return Num(Decimal(str(value)))
             if node.func == "raw":
                 value = parse_amount(entity.raw)
                 if value is None or not value.is_finite():

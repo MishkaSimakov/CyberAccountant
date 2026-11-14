@@ -21,7 +21,8 @@ def run_registry(
 def normalize_document(cfg: PipelineConfig, tagged: str) -> str:
     """Add normalized values to extracted tags for review, without saving files.
 
-    Dates use ISO format for review; registries retain their ordinal values.
+    Dates use inclusive ISO start/end timestamps for review; registries retain
+    ordinal values. Legacy date-only values are accepted as one-day intervals.
     Unresolved values are empty, and original document text stays unchanged.
     """
     registry = build_registry({"document": ("data", tagged)}, seed=cfg.seed)
@@ -31,10 +32,19 @@ def normalize_document(cfg: PipelineConfig, tagged: str) -> str:
     def replace(match):
         entry = next(entries)
         value = entry.value
-        if entry.type == "date" and value is not None:
-            value = date.fromordinal(int(value)).isoformat()
         attributes = parse_tag_attrs(match.group(1))
-        attributes["value"] = "" if value is None else str(value)
+        if entry.type == "date":
+            attributes.pop("value", None)
+            attributes["start"] = (
+                date.fromordinal(int(value)).isoformat() + "T00:00:00"
+                if value is not None else ""
+            )
+            attributes["end"] = (
+                date.fromordinal(int(entry.end_value)).isoformat() + "T23:59:59"
+                if entry.end_value is not None else ""
+            )
+        else:
+            attributes["value"] = "" if value is None else str(value)
         markup = " ".join(f'{key}="{escape(value, quote=True)}"' for key, value in attributes.items())
         return f"<ent {markup}>{match.group(2)}</ent>"
 

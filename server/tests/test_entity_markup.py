@@ -41,6 +41,10 @@ def test_saved_markup_round_trips_through_checkier(type_, raw, attrs, expected):
     '<ent t="number" n="">10</ent>',
     '<ent t="date" value="2026-02-30">дата</ent>',
     '<ent t="date" value="2026-01">дата</ent>',
+    '<ent t="date" start="2026-01-01T00:00:00">дата</ent>',
+    '<ent t="date" start="2026-02-01T00:00:00" end="2026-01-31T23:59:59">дата</ent>',
+    '<ent t="date" start="2026-01-01T01:00:00" end="2026-01-31T23:59:59">дата</ent>',
+    '<ent t="number" start="2026-01-01T00:00:00" end="2026-01-31T23:59:59">10</ent>',
     '<ent t="number">10',
     '</ent>',
     '<ent t="number"><ent t="number">10</ent></ent>',
@@ -49,6 +53,21 @@ def test_invalid_markup_is_rejected(content):
     with pytest.raises(HTTPException) as error:
         prepare_entities(content)
     assert error.value.status_code == 422
+
+
+def test_date_interval_markup_round_trips_and_legacy_value_is_one_day():
+    content = (
+        '<ent t="date" start="2026-04-01T00:00:00" '
+        'end="2026-06-30T23:59:59">2 квартал 2026</ent>'
+    )
+    assert prepare_entities(content) == content
+    entity = build_registry({"document": ("data", content)}).entities[0]
+    assert entity.value == date(2026, 4, 1).toordinal()
+    assert entity.end_value == date(2026, 6, 30).toordinal()
+    legacy = build_registry({
+        "document": ("data", '<ent t="date" value="2026-01-01">Январь 2026</ent>'),
+    }).entities[0]
+    assert legacy.value == legacy.end_value == date(2026, 1, 1).toordinal()
 
 
 def test_plain_markdown_and_repeated_entries_are_preserved():

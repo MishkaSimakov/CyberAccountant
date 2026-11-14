@@ -105,11 +105,14 @@ def generate_insurance(context: VerificationContext) -> list[dict]:
             if str(field(text, "проект|договор", "contract").value).strip() != contract:
                 continue
             p = field(text, "период", "date")
+            if p.value is None or p.end_value is None:
+                raise ValueError("не определён период начисления")
             first = date.fromordinal(int(p.value))
-            last = first.replace(day=calendar.monthrange(first.year, first.month)[1])
+            last = date.fromordinal(int(p.end_value))
             if last < start or first > end:
                 continue
-            if first.day != 1 or first < start or last > end:
+            month_end = first.replace(day=calendar.monthrange(first.year, first.month)[1])
+            if first.day != 1 or last != month_end or first < start or last > end:
                 raise ValueError("нужен полный месячный период начисления")
             number = field(text, "документ", "docid").value
             if not number:
