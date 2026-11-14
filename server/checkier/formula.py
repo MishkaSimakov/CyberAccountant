@@ -27,7 +27,22 @@ from typing import Any
 
 
 class FormulaError(Exception):
-    pass
+    def __init__(self, message: str, *, user_message: str) -> None:
+        super().__init__(message)
+        self.user_message = user_message
+
+
+def formula_user_message(error: Exception) -> str:
+    """Return UI text without exposing diagnostics from external exceptions."""
+    if isinstance(error, FormulaError):
+        return error.user_message
+    if isinstance(error, ZeroDivisionError):
+        return "Деление на ноль в формуле."
+    if isinstance(error, RecursionError):
+        return "Формула слишком сложная. Упростите выражение."
+    if isinstance(error, ArithmeticError):
+        return "Не удалось выполнить арифметическую операцию в формуле."
+    return "Не удалось проверить формулу. Проверьте выражение и значения сущностей."
 
 
 # ---------------------------------------------------------------------------
@@ -64,12 +79,13 @@ def tokenize(src: str) -> list[Token]:
             while j < n and src[j] != '"':
                 j += 1
             if j >= n:
-                raise FormulaError(f"unterminated string at {i}")
-            tokens.append(Token("str", src[i + 1 : j], i))
+                raise FormulaError(f"unterminated string at {i}",
+                                   user_message=f"Незакрытая строка в позиции {i + 1}. Добавьте кавычку.")
+            tokens.append(Token("str", src[i + 1: j], i))
             i = j + 1
             continue
         # two-char ops
-        two = src[i : i + 2]
+        two = src[i: i + 2]
         if two in ("==", "!=", "<=", ">=", "&&", "||"):
             tokens.append(Token("op", two, i))
             i += 2
@@ -89,7 +105,11 @@ def tokenize(src: str) -> list[Token]:
         # date DD.MM.YYYY (check before number)
         m = _DATE_RE.match(src, i)
         if m:
-            d = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+            try:
+                d = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+            except ValueError as exc:
+                raise FormulaError(f"invalid date {m.group(0)!r} at {i}: {exc}",
+                                   user_message=f"Некорректная дата {m.group(0)} в позиции {i + 1}.") from exc
             tokens.append(Token("date", d, i))
             i = m.end()
             continue
@@ -100,7 +120,8 @@ def tokenize(src: str) -> list[Token]:
             try:
                 tokens.append(Token("num", Decimal(raw), i))
             except InvalidOperation as exc:
-                raise FormulaError(f"bad number {raw!r} at {i}") from exc
+                raise FormulaError(f"bad number {raw!r} at {i}",
+                                   user_message=f"Некорректное число {raw!r} в позиции {i + 1}.") from exc
             i = m.end()
             continue
         # mnemonic id  word-word
@@ -115,8 +136,9 @@ def tokenize(src: str) -> list[Token]:
             while j < n and src[j].isdigit():
                 j += 1
             if j == i + 1:
-                raise FormulaError(f"expected digits after '#' at {i}")
-            tokens.append(Token("id", int(src[i + 1 : j]), i))
+                raise FormulaError(f"expected digits after '#' at {i}",
+                                   user_message=f"После # в позиции {i + 1} укажите номер сущности.")
+            tokens.append(Token("id", int(src[i + 1: j]), i))
             i = j
             continue
         # function names
@@ -126,7 +148,8 @@ def tokenize(src: str) -> list[Token]:
                 i += len(fname)
                 break
         else:
-            raise FormulaError(f"unexpected character {c!r} at {i}")
+            raise FormulaError(f"unexpected character {c!r} at {i}",
+                               user_message=f"Недопустимый символ {c!r} в позиции {i + 1}.")
     tokens.append(Token("eof", None, n))
     return tokens
 
@@ -189,13 +212,15 @@ class Parser:
         tok = self.peek()
         if tok.kind == "op" and tok.value in ops:
             return self.advance()
-        raise FormulaError(f"expected one of {ops}, got {tok.kind}:{tok.value!r}")
+        raise FormulaError(f"expected one of {ops}, got {tok.kind}:{tok.value!r}",
+                           user_message=f"Ожидается оператор {' или '.join(ops)} в позиции {tok.pos + 1}.")
 
     # expr := or_expr
     def parse(self) -> Node:
         node = self.parse_or()
         if self.peek().kind != "eof":
-            raise FormulaError(f"trailing tokens at {self.peek().pos}")
+            raise FormulaError(f"trailing tokens at {self.peek().pos}",
+                               user_message=f"Лишнее выражение в позиции {self.peek().pos + 1}.")
         return node
 
     def parse_or(self) -> Node:
@@ -270,24 +295,29 @@ class Parser:
         if tok.kind == "func":
             fname = self.advance().value
             if self.peek().kind != "lparen":
-                raise FormulaError(f"expected '(' after {fname} at {self.peek().pos}")
+                raise FormulaError(f"expected '(' after {fname} at {self.peek().pos}",
+                                   user_message=f"После {fname} ожидается открывающая скобка в позиции {self.peek().pos + 1}.")
             self.advance()  # consume (
             inner = self.peek()
             if inner.kind != "id":
-                raise FormulaError(f"{fname}() expects an entity id at {inner.pos}")
+                raise FormulaError(f"{fname}() expects an entity id at {inner.pos}",
+                                   user_message=f"В функции {fname}() укажите сущность в позиции {inner.pos + 1}.")
             self.advance()
             if self.peek().kind != "rparen":
-                raise FormulaError(f"expected ')' at {self.peek().pos}")
+                raise FormulaError(f"expected ')' at {self.peek().pos}",
+                                   user_message=f"Ожидается закрывающая скобка в позиции {self.peek().pos + 1}.")
             self.advance()
             return Id(inner.value, func=fname)
         if tok.kind == "lparen":
             self.advance()
             node = self.parse_or()
             if self.peek().kind != "rparen":
-                raise FormulaError(f"expected ')' at {self.peek().pos}")
+                raise FormulaError(f"expected ')' at {self.peek().pos}",
+                                   user_message=f"Ожидается закрывающая скобка в позиции {self.peek().pos + 1}.")
             self.advance()
             return node
-        raise FormulaError(f"unexpected token {tok.kind}:{tok.value!r} at {tok.pos}")
+        raise FormulaError(f"unexpected token {tok.kind}:{tok.value!r} at {tok.pos}",
+                           user_message=f"Ожидается число, строка, дата или сущность в позиции {tok.pos + 1}.")
 
 
 def parse(src: str) -> Node:
@@ -311,7 +341,8 @@ Value = Decimal | str | int | bool | Sym
 def _truthy(v: Value) -> bool:
     if isinstance(v, bool):
         return v
-    raise FormulaError(f"expected boolean, got {v!r}")
+    raise FormulaError(f"expected boolean, got {v!r}",
+                       user_message="Операторы && и || требуют логических выражений, например #0 == #1.")
 
 
 def evaluate(node: Node, env: dict[str | int, Value]) -> Value:
@@ -337,7 +368,7 @@ def evaluate(node: Node, env: dict[str | int, Value]) -> Value:
             return Sym(n.key)
         if isinstance(n, BinOp):
             return eval_binop(n, ev)
-        raise FormulaError(f"unknown node {n!r}")
+        raise FormulaError(f"unknown node {n!r}", user_message="Неподдерживаемое выражение в формуле.")
 
     def eval_binop(n: BinOp, ev) -> Value:
         op = n.op
@@ -370,9 +401,11 @@ def evaluate(node: Node, env: dict[str | int, Value]) -> Value:
         r_numeric = isinstance(r, (Decimal, int)) and not isinstance(r, bool)
         if op in ("==", "!="):
             if type(l) is not type(r) and not (l_numeric and r_numeric):
-                raise FormulaError(f"type clash in '{op}': {l!r} vs {r!r}")
+                raise FormulaError(f"type clash in '{op}': {l!r} vs {r!r}",
+                                   user_message=f"Несовместимые типы значений для оператора {op}.")
         elif not (l_numeric and r_numeric):
-            raise FormulaError(f"non-numeric operands to '{op}': {l!r} vs {r!r}")
+            raise FormulaError(f"non-numeric operands to '{op}': {l!r} vs {r!r}",
+                               user_message=f"Оператор {op} требует числовых значений.")
         if op == "==":
             return l == r
         if op == "!=":
@@ -393,7 +426,7 @@ def evaluate(node: Node, env: dict[str | int, Value]) -> Value:
             return l * r
         if op == "/":
             return l / r
-        raise FormulaError(f"unknown operator {op!r}")
+        raise FormulaError(f"unknown operator {op!r}", user_message=f"Неподдерживаемый оператор {op}.")
 
     return ev(node)
 

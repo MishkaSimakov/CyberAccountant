@@ -376,6 +376,29 @@ def test_requirement_annotations_are_partial_and_scoped(reviewed):
     assert request("POST", f'/reports/{other["id"]}/run-verification')[0] == 409
 
 
+@pytest.mark.parametrize("equation, error", [
+    ("#0 = #1", "Недопустимый символ '=' в позиции 4."),
+    ("32.01.2026 == #0", "Некорректная дата 32.01.2026 в позиции 1."),
+    ("#999 == #0", "Неизвестные сущности: #999"),
+])
+def test_formula_api_returns_russian_errors(reviewed, equation, error):
+    report_id, _, _ = reviewed
+    generate(report_id)
+    path = f"/reports/{report_id}"
+    status, result = request("POST", path + "/requirements/validate-formula", {"equation": equation})
+    assert status == 200 and result == {"valid": False, "error": error}
+    definition = {"kind": "formula", "equation": equation}
+    for method, url in [("POST", path + "/requirements"), ("PUT", path + "/requirements/1")]:
+        status, result = request(method, url, definition)
+        assert status == 422 and result["detail"] == error
+
+    with database.session_scope() as session:
+        requirement = session.scalar(select(Requirement).where(Requirement.report_id == report_id))
+        requirement.json_data = definition
+    status, result = request("POST", path + "/run-verification")
+    assert status == 422 and result["detail"] == f"Требование 1: {error}"
+
+
 def test_invalid_generated_formulas_require_correction_before_verification(reviewed, monkeypatch):
     report_id, _, _ = reviewed
     monkeypatch.setattr("checkier.stage5_relations.call_llm_json", lambda *args, **kwargs: [
@@ -419,7 +442,7 @@ def test_assertions_do_not_constrain_formulas_and_keep_requirement_ids(reviewed,
     assert [item["verdict"] for item in outcomes] == ["false", "false", "true", "unverifiable", "error"]
     assert result["card"]["cells"][0]["expected"] == "100"
     assert definitions[1].text == "Сумма по документам"
-    assert outcomes[-1]["error"] == "Unknown entity IDs: [999]"
+    assert outcomes[-1]["error"] == "Неизвестные сущности: 999."
 
 
 def test_result_write_failure_keeps_definitions_and_can_be_retried(reviewed, monkeypatch):

@@ -246,8 +246,9 @@ def call_llm(
     unconstrained request would make structured-output guarantees meaningless.
     Streams tokens to on_token when provided.
 
-    reasoning: "disabled" requests minimum effort ("low"), "enabled" uses
-    the model default, and "exclude" hides reasoning from parsed output.
+    reasoning: "disabled" requests no reasoning effort ("none"), "enabled"
+    explicitly requests reasoning and its inclusion in the API response.
+    "exclude" uses the model default. Reasoning stays out of parsed output.
     """
     if schema is not None and not isinstance(schema, dict):
         raise LLMError("schema must be a JSON Schema object, not natural language")
@@ -255,6 +256,9 @@ def call_llm(
     # Portable APIs do not guarantee that reasoning can be fully disabled.
     if reasoning == "disabled":
         payload["reasoning"] = {"effort": "none"}
+    elif reasoning == "enabled":
+        payload["reasoning"] = {"enabled": True}
+        payload["include_reasoning"] = True
     if schema is not None:
         payload["text"] = {
             "format": {
@@ -269,7 +273,11 @@ def call_llm(
         log_model_prompt(prompt, model, schema_name)
         if on_token is None:
             response = _post(payload, timeout)
-            log_model_reasoning(_extract_reasoning(response), model, schema_name)
+            trace = _extract_reasoning(response)
+            if not trace and reasoning == "enabled":
+                metadata = json.dumps({"id": response.get("id"), "usage": response.get("usage")}, ensure_ascii=False)
+                trace = f"[No readable reasoning returned by API. Response metadata: {metadata}]"
+            log_model_reasoning(trace, model, schema_name)
             return _extract_text(response)
         chunks: list[str] = []
 

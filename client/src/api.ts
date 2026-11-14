@@ -175,7 +175,7 @@ export const getRequirements = (reportId: number) =>
     request<RequirementsResponse>(`/reports/${reportId}/requirements`)
 
 export const getVerificationResult = (reportId: number) =>
-    request<VerificationResult>(`/reports/${reportId}/verification-result`)
+    request<VerificationResult>(`/reports/${reportId}/verification-result`, {cache: 'no-store'})
 
 export type RequirementUpdate = Partial<Pick<Requirement, 'notes' | 'silenced'>>
 
